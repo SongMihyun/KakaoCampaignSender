@@ -104,7 +104,13 @@ jobs:
       - name: Compile Installer
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$ver "installer\KakaoCampaignSender.iss"
+          $out = Join-Path $pwd "dist\installer"
+          if (-not (Test-Path $out)) { New-Item -ItemType Directory -Force -Path $out }
+      
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
+            /DMyAppVersion=$ver `
+            /DOutputDir="$out" `
+            "installer\KakaoCampaignSender.iss"
 
       - name: Verify installer output
         run: |

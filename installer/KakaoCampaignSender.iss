@@ -26,7 +26,7 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 
 ; Output도 레포 루트 dist로 고정
-OutputDir={#RepoRoot}\dist\installer
+OutputDir={#OutputDir}
 OutputBaseFilename={#MyAppName}Setup_{#MyAppVersion}
 
 Compression=lzma2
