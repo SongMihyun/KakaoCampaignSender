@@ -50,21 +50,15 @@ jobs:
         run: |
           $ver  = "${{ steps.get_version.outputs.version }}"
           $path = "src/app/version.py"
+
           if (-not (Test-Path $path)) { throw "version.py not found: $path" }
 
-          $content = @"
-from __future__ import annotations
+          (Get-Content $path -Raw) `
+            -replace "__VERSION__", $ver `
+            | Set-Content -Encoding UTF8 $path
 
-__app_name__ = "KakaoCampaignSender"
-
-# ⚠️ DO NOT EDIT MANUALLY
-# This file is overwritten during CI release builds based on the git tag.
-__version__ = "$ver"
-"@
-
-          [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
           Write-Host "Injected version.py => $ver"
-          Get-Content $path | Select-Object -First 50
+          Get-Content $path | Select-Object -First 30
 
       - name: Clean dist/build
         run: |
