@@ -40,7 +40,11 @@ jobs:
       - name: Build EXE (PyInstaller)
         shell: pwsh
         run: |
-          poetry run pyinstaller -n KakaoCampaignSender -w -m app.main --clean --noconfirm --distpath dist/app
+          poetry run pyinstaller KakaoSender.spec `
+            --clean `
+            --noconfirm `
+            --distpath dist/app `
+            --workpath build
 
       - name: Install Inno Setup
         shell: pwsh
