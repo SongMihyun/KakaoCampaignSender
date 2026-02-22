@@ -172,6 +172,7 @@ __version__ = "$ver"
 
           ($obj | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 "dist/installer/latest.json"
 
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
