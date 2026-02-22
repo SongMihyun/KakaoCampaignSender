@@ -1,4 +1,4 @@
-name: release
+name: Windows Release Build
 
 on:
   push:
@@ -9,7 +9,7 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
+  build:
     runs-on: windows-latest
 
     steps:
@@ -25,28 +25,19 @@ jobs:
         run: |
           pipx install poetry
 
-      - name: Install deps
+      - name: Install dependencies
         run: |
-          poetry --version
           poetry install --no-interaction
 
       - name: Extract version from tag
-        id: ver
+        id: get_version
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
           $ver = $tag.TrimStart("v")
           echo "version=$ver" >> $env:GITHUB_OUTPUT
 
-      - name: Set version.py (optional)
-        shell: pwsh
-        run: |
-          $ver="${{ steps.ver.outputs.version }}"
-          (Get-Content "src/app/version.py") `
-            -replace '__version__\s*=\s*".*"', ('__version__ = "'+$ver+'"') `
-            | Set-Content "src/app/version.py"
-
-      - name: Build exe with PyInstaller
+      - name: Build EXE (PyInstaller)
         shell: pwsh
         run: |
           poetry run pyinstaller -n KakaoCampaignSender -w -m app.main --clean --noconfirm --distpath dist/app
@@ -56,16 +47,16 @@ jobs:
         run: |
           choco install innosetup -y
 
-      - name: Compile installer
+      - name: Compile Installer
         shell: pwsh
         run: |
-          $ver="${{ steps.ver.outputs.version }}"
+          $ver="${{ steps.get_version.outputs.version }}"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$ver installer\KakaoCampaignSender.iss
 
-      - name: Compute sha256 + create latest.json
+      - name: Generate sha256 + latest.json
         shell: pwsh
         run: |
-          $ver="${{ steps.ver.outputs.version }}"
+          $ver="${{ steps.get_version.outputs.version }}"
           $installer = Get-ChildItem "dist/installer" -Filter "*Setup_$ver.exe" | Select-Object -First 1
           if (-not $installer) { throw "Installer not found" }
 
@@ -79,10 +70,11 @@ jobs:
             notes        = ""
             published_at = (Get-Date).ToUniversalTime().ToString("o")
           }
+
           $json = ($obj | ConvertTo-Json -Depth 5)
           $json | Out-File -Encoding utf8 "dist/installer/latest.json"
 
-      - name: Release
+      - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
