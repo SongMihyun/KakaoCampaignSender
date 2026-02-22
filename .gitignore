@@ -27,8 +27,6 @@ ENV/
 # ---------------------------
 build/
 dist/
-*.spec
-!KakaoSender.spec  # spec 파일 유지하려면 이렇게
 
 # ---------------------------
 # Installer output
