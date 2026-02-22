@@ -12,6 +12,10 @@ jobs:
   build:
     runs-on: windows-latest
 
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,39 +26,33 @@ jobs:
           python-version: "3.11"
 
       - name: Install Poetry
-        shell: pwsh
         run: |
           pipx install poetry
           poetry --version
 
       - name: Validate poetry project
-        shell: pwsh
         run: |
           poetry check
 
       - name: Install dependencies
-        shell: pwsh
         run: |
           poetry install --no-interaction
 
       - name: Extract version from tag
         id: get_version
-        shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}"
           $ver = $tag.TrimStart("v")
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          Write-Host "TAG VERSION => $ver"
 
       - name: Inject version into src/app/version.py
-        shell: pwsh
         run: |
-          $ver = "${{ steps.get_version.outputs.version }}"
+          $ver  = "${{ steps.get_version.outputs.version }}"
           $path = "src/app/version.py"
-
           if (-not (Test-Path $path)) { throw "version.py not found: $path" }
 
           $content = @"
-# src/app/version.py
 from __future__ import annotations
 
 __app_name__ = "KakaoCampaignSender"
@@ -64,27 +62,22 @@ __app_name__ = "KakaoCampaignSender"
 __version__ = "$ver"
 "@
 
-          # UTF-8 (no BOM)로 고정 저장
           [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
-
           Write-Host "Injected version.py => $ver"
-          Get-Content $path | Select-Object -First 30
+          Get-Content $path | Select-Object -First 50
 
       - name: Clean dist/build
-        shell: pwsh
         run: |
           if (Test-Path "dist")  { Remove-Item "dist"  -Recurse -Force }
           if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
 
       - name: Verify spec exists
-        shell: pwsh
         run: |
           if (-not (Test-Path "KakaoSender.spec")) {
             throw "KakaoSender.spec not found at repo root."
           }
 
       - name: Build EXE (PyInstaller - spec only)
-        shell: pwsh
         run: |
           poetry run pyinstaller -y --clean `
             --distpath dist/app `
@@ -92,7 +85,6 @@ __version__ = "$ver"
             KakaoSender.spec
 
       - name: Verify build artifacts
-        shell: pwsh
         run: |
           $exePath = "dist/app/KakaoCampaignSender/KakaoCampaignSender.exe"
           if (-not (Test-Path $exePath)) {
@@ -103,44 +95,23 @@ __version__ = "$ver"
           Write-Host "OK: $exePath"
 
       - name: Install Inno Setup
-        shell: pwsh
         run: |
           choco install innosetup -y
           if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
             throw "ISCC.exe not found after install."
           }
 
-      - name: Verify installer script exists
-        shell: pwsh
+      - name: Verify installer inputs
         run: |
-          if (-not (Test-Path "installer/KakaoCampaignSender.iss")) {
-            throw "installer/KakaoCampaignSender.iss not found."
-          }
-          if (-not (Test-Path "installer/KakaoSender.ico")) {
-            throw "installer/KakaoSender.ico not found."
-          }
-
-      - name: Debug - show installer script
-        shell: pwsh
-        run: |
-          Write-Host "===== installer/KakaoCampaignSender.iss ====="
-          Get-Content "installer/KakaoCampaignSender.iss" | Select-Object -First 120      
-
-      - name: Debug - show dist tree
-        shell: pwsh
-        run: |
-          Write-Host "----- dist tree -----"
-          if (Test-Path dist) { Get-ChildItem -Recurse dist | Select-Object FullName }
-          else { Write-Host "dist not found" }
+          if (-not (Test-Path "installer/KakaoCampaignSender.iss")) { throw "installer/KakaoCampaignSender.iss not found." }
+          if (-not (Test-Path "installer/KakaoSender.ico")) { throw "installer/KakaoSender.ico not found." }
 
       - name: Compile Installer
-        shell: pwsh
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$ver "installer\KakaoCampaignSender.iss"
 
       - name: Verify installer output
-        shell: pwsh
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
           $pattern = "KakaoCampaignSenderSetup_$ver.exe"
@@ -153,14 +124,13 @@ __version__ = "$ver"
           Write-Host "OK: $($installer.FullName)"
 
       - name: Generate sha256 + latest.json
-        shell: pwsh
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
           $installer = Get-ChildItem "dist/installer" -Filter "KakaoCampaignSenderSetup_$ver.exe" | Select-Object -First 1
           if (-not $installer) { throw "Installer not found for latest.json" }
 
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
-          $url = "https://github.com/${{ github.repository }}/releases/download/v$ver/$($installer.Name)"
+          $url  = "https://github.com/${{ github.repository }}/releases/download/v$ver/$($installer.Name)"
 
           $obj = [ordered]@{
             version      = $ver
