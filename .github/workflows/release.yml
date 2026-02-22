@@ -45,6 +45,31 @@ jobs:
           $ver = $tag.TrimStart("v")
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      - name: Inject version into src/app/version.py
+        shell: pwsh
+        run: |
+          $ver = "${{ steps.get_version.outputs.version }}"
+          $path = "src/app/version.py"
+
+          if (-not (Test-Path $path)) { throw "version.py not found: $path" }
+
+          $content = @"
+# src/app/version.py
+from __future__ import annotations
+
+__app_name__ = "KakaoCampaignSender"
+
+# ⚠️ DO NOT EDIT MANUALLY
+# This file is overwritten during CI release builds based on the git tag.
+__version__ = "$ver"
+"@
+
+          # UTF-8 (no BOM)로 고정 저장
+          [System.IO.File]::WriteAllText($path, $content, (New-Object System.Text.UTF8Encoding($false)))
+
+          Write-Host "Injected version.py => $ver"
+          Get-Content $path | Select-Object -First 30
+
       - name: Clean dist/build
         shell: pwsh
         run: |

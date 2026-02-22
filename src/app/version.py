@@ -2,4 +2,7 @@
 from __future__ import annotations
 
 __app_name__ = "KakaoCampaignSender"
-__version__ = "1.0.10"  # ✅ 여기만 올리면 됨 (tag와 맞추기)
+
+# ⚠️ DO NOT EDIT MANUALLY
+# This file is overwritten during CI release builds based on the git tag.
+__version__ = "0.0.0-dev"

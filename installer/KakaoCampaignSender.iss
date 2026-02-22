@@ -3,11 +3,14 @@
 #define MyAppName "KakaoCampaignSender"
 #define MyAppExeName "KakaoCampaignSender.exe"
 
-; ✅ iss 파일 위치(= installer 폴더) 기준으로 "레포 루트 dist"를 정확히 지칭
-#define MyAppDistDir "{#SourcePath}\..\dist\app\KakaoCampaignSender"
+#define MyAppDistDir "{#SourcePath}..\dist\app\KakaoCampaignSender"
 
-#define MyAppIconSource "{#SourcePath}\KakaoSender.ico"
-#define MyAppIconName   "KakaoSender.ico"
+#ifexist "{#SourcePath}KakaoSender.ico"
+  #define MyAppIconSource "{#SourcePath}KakaoSender.ico"
+#else
+  #error "Icon not found: installer/KakaoSender.ico"
+#endif
+#define MyAppIconName "KakaoSender.ico"
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.0.0"
@@ -23,8 +26,7 @@ DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 
-; ✅ OutputDir도 레포 루트 dist로 고정
-OutputDir={#SourcePath}\..\dist\installer
+OutputDir={#SourcePath}..\dist\installer
 OutputBaseFilename={#MyAppName}Setup_{#MyAppVersion}
 
 Compression=lzma2
@@ -44,10 +46,7 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "desktopicon"; Description: "바탕화면 바로가기 생성"; GroupDescription: "추가 작업:"; Flags: unchecked
 
 [Files]
-; ✅ PyInstaller 결과물을 통째로 설치 (레포 루트 dist 기준)
 Source: "{#MyAppDistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
-
-; ✅ 아이콘을 설치 폴더에 고정 이름으로 복사
 Source: "{#MyAppIconSource}"; DestDir: "{app}"; DestName: "{#MyAppIconName}"; Flags: ignoreversion
 
 [Icons]
