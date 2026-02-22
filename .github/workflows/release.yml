@@ -50,12 +50,12 @@ jobs:
         run: |
           $ver  = "${{ steps.get_version.outputs.version }}"
           $path = "src/app/version.py"
-
           if (-not (Test-Path $path)) { throw "version.py not found: $path" }
 
-          (Get-Content $path -Raw) `
-            -replace "__VERSION__", $ver `
-            | Set-Content -Encoding UTF8 $path
+          $raw = Get-Content $path -Raw
+          $raw = $raw -replace '"__VERSION__"', ('"' + $ver + '"')
+
+          [System.IO.File]::WriteAllText($path, $raw, (New-Object System.Text.UTF8Encoding($false)))
 
           Write-Host "Injected version.py => $ver"
           Get-Content $path | Select-Object -First 30
@@ -106,7 +106,17 @@ jobs:
           $ver = "${{ steps.get_version.outputs.version }}"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$ver "installer\KakaoCampaignSender.iss"
 
-
+      - name: Verify installer output
+        run: |
+          $ver = "${{ steps.get_version.outputs.version }}"
+          $pattern = "KakaoCampaignSenderSetup_$ver.exe"
+          $installer = Get-ChildItem "dist/installer" -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) {
+            Write-Host "----- dist/installer tree -----"
+            if (Test-Path "dist/installer") { Get-ChildItem -Recurse "dist/installer" | Select-Object FullName }
+            throw "Installer not found: dist/installer/$pattern"
+          }
+          Write-Host "OK: $($installer.FullName)"
 
       - name: Generate sha256 + latest.json
         run: |
