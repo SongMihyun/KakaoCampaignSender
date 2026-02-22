@@ -27,11 +27,11 @@ jobs:
           pipx install poetry
           poetry --version
 
-      # ✅ (권장) lock 파일이 pyproject와 불일치하면 바로 실패시켜서 원인 명확화
-      - name: Validate poetry.lock
+      # ✅ (권장) 프로젝트/pyproject/lock 상태 점검
+      - name: Validate poetry project
         shell: pwsh
         run: |
-          poetry lock --check
+          poetry check
 
       - name: Install dependencies
         shell: pwsh
