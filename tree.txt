@@ -1,0 +1,189 @@
+���� PATH�� ����Դϴ�.
+���� �Ϸ� ��ȣ�� AC99-5FAF�Դϴ�.
+C:.
+|   installer.iss
+|   KakaoSender.ico
+|   KakaoSender.spec
+|   kakao_not_found_recipients.csv
+|   poetry.lock
+|   pyproject.toml
+|   README.md
+|   tree.txt
+|   
++---.github
+|   \---workflows
+|           release.yml
+|           
++---.idea
+|   |   .gitignore
+|   |   
+|   \---dataSources
++---.venv
+|                       
++---installer
+|       KakaoCampaignSender.iss
+|       
++---installer_out
+|       KakaoSender_Setup.exe
+|       
+\---src
+    |   .gitignore
+    |   
+    +---app
+    |   |   kakao_launch.py
+    |   |   main.py
+    |   |   paths.py
+    |   |   version.py
+    |   |   __init__.py
+    |   |   
+    |   +---data
+    |   |   |   campaigns_repo.py
+    |   |   |   contacts_repo.py
+    |   |   |   db_bootstrap.py
+    |   |   |   groups_repo.py
+    |   |   |   schema.py
+    |   |   |   send_lists_repo.py
+    |   |   |   send_logs_repo.py
+    |   |   |   
+    |   |   \---__pycache__
+    |   |           campaigns_repo.cpython-314.pyc
+    |   |           contacts_repo.cpython-314.pyc
+    |   |           db_bootstrap.cpython-314.pyc
+    |   |           groups_repo.cpython-314.pyc
+    |   |           schema.cpython-314.pyc
+    |   |           send_lists_repo.cpython-314.pyc
+    |   |           send_logs_repo.cpython-314.pyc
+    |   |           
+    |   +---exporters
+    |   |   |   contacts_excel_export.py
+    |   |   |   
+    |   |   \---__pycache__
+    |   |           contacts_excel_export.cpython-314.pyc
+    |   |           
+    |   +---importers
+    |   |   |   contacts_excel.py
+    |   |   |   
+    |   |   \---__pycache__
+    |   |           contacts_excel.cpython-314.pyc
+    |   |           
+    |   +---platform
+    |   |   |   kakaotalk_window.py
+    |   |   |   win_clipboard.py
+    |   |   |   win_file_picker.py
+    |   |   |   win_file_picker_sta.py
+    |   |   |   
+    |   |   \---__pycache__
+    |   |           win_file_picker.cpython-314.pyc
+    |   |           win_file_picker_sta.cpython-314.pyc
+    |   |           
+    |   +---sender
+    |   |   |   image_attach_cache.py
+    |   |   |   image_attach_ctrl_t.py
+    |   |   |   image_dib_cache.py
+    |   |   |   kakao_dialog_send.py
+    |   |   |   kakao_pc_driver.py
+    |   |   |   kakao_pc_hooks.py
+    |   |   |   speed_profiles.py
+    |   |   |   trace_logger.py
+    |   |   |   win32_core.py
+    |   |   |   
+    |   |   \---__pycache__
+    |   |           image_attach_cache.cpython-314.pyc
+    |   |           image_attach_ctrl_t.cpython-314.pyc
+    |   |           image_dib_cache.cpython-314.pyc
+    |   |           kakao_dialog_send.cpython-314.pyc
+    |   |           kakao_pc_driver.cpython-314.pyc
+    |   |           kakao_pc_hooks.cpython-314.pyc
+    |   |           speed_profiles.cpython-314.pyc
+    |   |           trace_logger.cpython-314.pyc
+    |   |           win32_core.cpython-314.pyc
+    |   |           
+    |   +---system
+    |   |   |   reset_app.py
+    |   |   |   send_report.py
+    |   |   |   send_run_logger.py
+    |   |   |   
+    |   |   \---__pycache__
+    |   |           reset_app.cpython-314.pyc
+    |   |           send_report.cpython-314.pyc
+    |   |           send_run_logger.cpython-314.pyc
+    |   |           
+    |   +---ui
+    |   |       splash.py
+    |   |       
+    |   +---update
+    |   |       updater.py
+    |   |       update_config.py
+    |   |       update_dialog.py
+    |   |       update_service.py
+    |   |       
+    |   \---__pycache__
+    |           kakao_launch.cpython-314.pyc
+    |           main.cpython-314.pyc
+    |           paths.cpython-314.pyc
+    |           __init__.cpython-314.pyc
+    |           
+    \---ui
+        |   app_events.py
+        |   main_window.py
+        |   __init__.py
+        |   
+        +---layout
+        |   |   header.py
+        |   |   navigation.py
+        |   |   statusbar.py
+        |   |   
+        |   \---__pycache__
+        |           header.cpython-314.pyc
+        |           navigation.cpython-314.pyc
+        |           statusbar.cpython-314.pyc
+        |           
+        +---pages
+        |   |   campaign_name_dialog.py
+        |   |   campaign_page.py
+        |   |   campaign_preview_dialog.py
+        |   |   contacts_dialog.py
+        |   |   contacts_model.py
+        |   |   contacts_page.py
+        |   |   groups_page.py
+        |   |   group_dialog.py
+        |   |   image_preview_dialog.py
+        |   |   import_preview_dialog.py
+        |   |   logs_page.py
+        |   |   send_page.py
+        |   |   text_item_dialog.py
+        |   |   
+        |   \---__pycache__
+        |           campaign_name_dialog.cpython-314.pyc
+        |           campaign_page.cpython-314.pyc
+        |           campaign_preview_dialog.cpython-314.pyc
+        |           contacts_dialog.cpython-314.pyc
+        |           contacts_model.cpython-314.pyc
+        |           contacts_page.cpython-314.pyc
+        |           groups_page.cpython-314.pyc
+        |           group_dialog.cpython-314.pyc
+        |           image_preview_dialog.cpython-314.pyc
+        |           import_preview_dialog.cpython-314.pyc
+        |           logs_page.cpython-314.pyc
+        |           send_page.cpython-314.pyc
+        |           text_item_dialog.cpython-314.pyc
+        |           
+        +---utils
+        |   |   worker.py
+        |   |   
+        |   \---__pycache__
+        |           worker.cpython-314.pyc
+        |           
+        +---widgets
+        |   |   checkable_header.py
+        |   |   contacts_sort_proxy.py
+        |   |   
+        |   \---__pycache__
+        |           checkable_header.cpython-314.pyc
+        |           contacts_sort_proxy.cpython-314.pyc
+        |           
+        \---__pycache__
+                app_events.cpython-314.pyc
+                main_window.cpython-314.pyc
+                __init__.cpython-314.pyc
+                

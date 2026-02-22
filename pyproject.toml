@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "kakao-campaign-sender"
+version = "0.1.0"
+description = "Local desktop app for contacts/campaigns and sending jobs"
+authors = ["idbla <idbla@example.com>"]
+readme = "README.md"
+packages = [{ include = "app", from = "src" },
+            { include = "ui", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.14,<3.15"
+pyside6 = "^6.10.2"
+openpyxl = "^3.1.5"
+pywinauto = "^0.6.9"
+pywin32 = "^311"
+pillow = "^12.1.1"
+pyautogui = "^0.9.54"
+pyperclip = "^1.11.0"
+psutil = "^7.2.2"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "pyinstaller (>=6.19.0,<7.0.0)"
+]
