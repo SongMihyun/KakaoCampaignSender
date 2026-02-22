@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "kakao-campaign-sender"
-version = "0.1.7"
+version = "0.1.8"
 description = "Local desktop app for contacts/campaigns and sending jobs"
 authors = ["idbla <idbla@example.com>"]
 readme = "README.md"

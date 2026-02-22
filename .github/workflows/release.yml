@@ -27,7 +27,6 @@ jobs:
           pipx install poetry
           poetry --version
 
-      # ✅ (권장) 프로젝트/pyproject/lock 상태 점검
       - name: Validate poetry project
         shell: pwsh
         run: |
@@ -46,28 +45,27 @@ jobs:
           $ver = $tag.TrimStart("v")
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
-      # ✅ dist/build 완전 청소 (이중 산출물 방지 핵심)
       - name: Clean dist/build
         shell: pwsh
         run: |
           if (Test-Path "dist")  { Remove-Item "dist"  -Recurse -Force }
           if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
 
-      # ✅ spec 파일 존재 검증 (예: "KakaoSender.spec")
       - name: Verify spec exists
         shell: pwsh
         run: |
           if (-not (Test-Path "KakaoSender.spec")) {
-            throw "KakaoSender.spec not found at repo root. Commit it and ensure the filename matches."
+            throw "KakaoSender.spec not found at repo root."
           }
 
-      # ✅ PyInstaller: spec 방식 ONLY + distpath 고정 => dist/app/KakaoCampaignSender
       - name: Build EXE (PyInstaller - spec only)
         shell: pwsh
         run: |
-          poetry run pyinstaller -y --clean --distpath dist/app KakaoSender.spec
+          poetry run pyinstaller -y --clean `
+            --distpath dist/app `
+            --workpath build/pyinstaller `
+            KakaoSender.spec
 
-      # ✅ 산출물 경로 검증(완전 통일 기준)
       - name: Verify build artifacts
         shell: pwsh
         run: |
@@ -87,22 +85,22 @@ jobs:
             throw "ISCC.exe not found after install."
           }
 
-      # ✅ iss 파일 존재 검증
       - name: Verify installer script exists
         shell: pwsh
         run: |
           if (-not (Test-Path "installer/KakaoCampaignSender.iss")) {
             throw "installer/KakaoCampaignSender.iss not found."
           }
+          if (-not (Test-Path "installer/KakaoSender.ico")) {
+            throw "installer/KakaoSender.ico not found."
+          }
 
-      # ✅ Installer 컴파일 (버전 주입)
       - name: Compile Installer
         shell: pwsh
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$ver "installer\KakaoCampaignSender.iss"
 
-      # ✅ 인스톨러 산출물 검증
       - name: Verify installer output
         shell: pwsh
         run: |
@@ -116,7 +114,6 @@ jobs:
           }
           Write-Host "OK: $($installer.FullName)"
 
-      # ✅ latest.json + sha256 생성
       - name: Generate sha256 + latest.json
         shell: pwsh
         run: |
@@ -135,10 +132,8 @@ jobs:
             published_at = (Get-Date).ToUniversalTime().ToString("o")
           }
 
-          $json = ($obj | ConvertTo-Json -Depth 5)
-          $json | Out-File -Encoding utf8 "dist/installer/latest.json"
+          ($obj | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 "dist/installer/latest.json"
 
-      # ✅ GitHub Release 생성 + 산출물 업로드
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:

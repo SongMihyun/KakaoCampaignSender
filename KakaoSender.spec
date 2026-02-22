@@ -28,18 +28,19 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
+# ✅ 핵심: exclude_binaries=True (그래야 dist/app 루트에 exe가 “따로” 안 떨어짐)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,
     name="KakaoCampaignSender",   # ✅ EXE 이름 통일
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
     console=False,                # ✅ GUI
+    icon="installer/KakaoSender.ico",  # (있으면 적용, 없으면 이 줄 제거)
 )
 
 coll = COLLECT(
@@ -48,5 +49,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="KakaoCampaignSender",   # ✅ 폴더명 통일 (distpath 아래에 이 이름으로 생성)
+    name="KakaoCampaignSender",   # ✅ 폴더명 통일
 )

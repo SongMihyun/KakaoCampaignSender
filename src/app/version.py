@@ -2,4 +2,4 @@
 from __future__ import annotations
 
 __app_name__ = "KakaoCampaignSender"
-__version__ = "1.0.7"  # ✅ 여기만 올리면 됨 (tag와 맞추기)
+__version__ = "1.0.8"  # ✅ 여기만 올리면 됨 (tag와 맞추기)

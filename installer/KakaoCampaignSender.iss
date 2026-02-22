@@ -1,20 +1,20 @@
 ; installer/KakaoCampaignSender.iss
 ; ------------------------------------------------------------
 ; KakaoCampaignSender Installer (Inno Setup 6)
-; - Version injected by CI: ISCC.exe /DMyAppVersion=1.2.3 ...
-; - Installs from PyInstaller output: dist\app\KakaoCampaignSender\*
-; - Creates desktop + start menu shortcuts
-; - Uses localappdata install to minimize UAC
+; - CI injects version: ISCC.exe /DMyAppVersion=1.2.3 ...
+; - Installs from: dist\app\KakaoCampaignSender\*
+; - Desktop + Start menu shortcuts
+; - Installs to LocalAppData (minimal UAC)
 ; ------------------------------------------------------------
 
 #define MyAppName "KakaoCampaignSender"
 #define MyAppExeName "KakaoCampaignSender.exe"
 
-; ✅ PyInstaller 산출물(최종 폴더명 통일)
-#define MyAppDistDir "dist\app\KakaoCampaignSender"
+; ✅ 중요: iss가 installer 폴더에 있으므로, dist는 한 단계 위(..)에 있음
+#define MyAppDistDir "{#SourcePath}\..\dist\app\KakaoCampaignSender"
 
-; ✅ 아이콘: 소스 경로(컴파일 시) / 설치 후 파일명 분리
-#define MyAppIconSource "KakaoSender.ico"
+; ✅ 아이콘도 installer 폴더 기준으로 정확히
+#define MyAppIconSource "{#SourcePath}\KakaoSender.ico"
 #define MyAppIconName   "KakaoSender.ico"
 
 #ifndef MyAppVersion
@@ -31,7 +31,7 @@ DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 
-OutputDir=dist\installer
+OutputDir={#SourcePath}\..\dist\installer
 OutputBaseFilename={#MyAppName}Setup_{#MyAppVersion}
 
 Compression=lzma2
@@ -39,7 +39,6 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 
-; ✅ 컴파일 시 아이콘 파일 경로
 SetupIconFile={#MyAppIconSource}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
@@ -52,17 +51,13 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "desktopicon"; Description: "바탕화면 바로가기 생성"; GroupDescription: "추가 작업:"; Flags: unchecked
 
 [Files]
-; ✅ PyInstaller 결과물을 통째로 설치
 Source: "{#MyAppDistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; ✅ 아이콘을 설치 폴더에 "KakaoSender.ico" 이름으로 복사
+; 설치 폴더에 아이콘을 고정 파일명으로 복사
 Source: "{#MyAppIconSource}"; DestDir: "{app}"; DestName: "{#MyAppIconName}"; Flags: ignoreversion
 
 [Icons]
-; ✅ 시작메뉴
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppIconName}"
-
-; ✅ 바탕화면(옵션)
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\{#MyAppIconName}"
 
 [Run]
