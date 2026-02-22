@@ -7,13 +7,15 @@ Param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# ✅ 항상 이 스크립트가 있는 폴더(=레포 루트)에서 실행되도록 고정
+Set-Location $PSScriptRoot
+
 function Remove-DirSafe([string]$Path) {
   if (Test-Path $Path) {
     Write-Host ">> remove: $Path" -ForegroundColor Cyan
     try {
       Remove-Item $Path -Recurse -Force -ErrorAction Stop
     } catch {
-      # 폴더 잠김/권한 이슈 대비: 1회 재시도
       Start-Sleep -Milliseconds 500
       Remove-Item $Path -Recurse -Force
     }
@@ -27,18 +29,24 @@ if (-not (Test-Path $Spec)) {
   throw "Spec not found: $Spec (레포 루트에 있는지 파일명 확인)"
 }
 
-# 2) dist/build 정리
+# 2) 아이콘 존재 확인(로컬 기준)
+$icon = Join-Path $PSScriptRoot "installer\KakaoSender.ico"
+if (-not (Test-Path $icon)) {
+  throw "Icon not found: $icon"
+}
+
+# 3) dist/build 정리
 if (-not $NoClean) {
   Remove-DirSafe "dist"
   Remove-DirSafe "build"
 }
 
-# 3) PyInstaller 빌드
+# 4) PyInstaller 빌드
 Write-Host ">> build exe: poetry run pyinstaller ..." -ForegroundColor Cyan
 poetry run pyinstaller -y --clean --distpath $DistPath $Spec
 
-# 4) 산출물 검증(현재 통일 기준)
-$exePath = Join-Path $DistPath "KakaoCampaignSender/KakaoCampaignSender.exe"
+# 5) 산출물 검증(통일 기준)
+$exePath = Join-Path $DistPath "KakaoCampaignSender\KakaoCampaignSender.exe"
 if (-not (Test-Path $exePath)) {
   Write-Host "----- dist/app tree -----" -ForegroundColor Yellow
   if (Test-Path $DistPath) { Get-ChildItem -Recurse $DistPath | Select-Object FullName }

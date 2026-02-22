@@ -1,17 +1,23 @@
 # KakaoSender.spec
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
 from PyInstaller.utils.hooks import collect_all
 
-hiddenimports = []
-datas = []
-binaries = []
+hiddenimports, datas, binaries = [], [], []
 
 for pkg in ["pywinauto", "comtypes", "PIL"]:
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
     hiddenimports += h
+
+# ✅ 레포 루트 기준(= pyinstaller 실행한 현재 폴더)
+REPO_DIR = os.path.abspath(os.getcwd())
+ICON_PATH = os.path.join(REPO_DIR, "installer", "KakaoSender.ico")
+
+if not os.path.exists(ICON_PATH):
+    raise SystemExit(f"[spec] icon not found: {ICON_PATH} (cwd={os.getcwd()})")
 
 a = Analysis(
     ["src/app/main.py"],
@@ -28,19 +34,14 @@ a = Analysis(
 
 pyz = PYZ(a.pure)
 
-# ✅ 핵심: exclude_binaries=True (그래야 dist/app 루트에 exe가 “따로” 안 떨어짐)
 exe = EXE(
     pyz,
     a.scripts,
     [],
     exclude_binaries=True,
-    name="KakaoCampaignSender",   # ✅ EXE 이름 통일
-    debug=False,
-    bootloader_ignore_signals=False,
-    strip=False,
-    upx=False,
-    console=False,                # ✅ GUI
-    icon="installer/Kㄷ턋akaoSender.ico",  # (있으면 적용, 없으면 이 줄 제거)
+    name="KakaoCampaignSender",
+    console=False,
+    icon=ICON_PATH,
 )
 
 coll = COLLECT(
@@ -49,5 +50,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="KakaoCampaignSender",   # ✅ 폴더명 통일
+    name="KakaoCampaignSender",
 )

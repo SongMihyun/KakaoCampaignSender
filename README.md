@@ -37,3 +37,11 @@ src/app/sender/
 .\release.ps1 -Version 0.1.16 -BuildLocal
 3) dist/build 삭제 없이 빌드만 스킵하고 싶으면
 .\release.ps1 -Version 0.1.16 -BuildLocal -NoClean
+
+
+기본(요청하신 3줄과 동일 동작)
+.\build_exe.ps1
+dist/build 삭제 없이 빌드만(테스트용)
+.\build_exe.ps1 -NoClean
+spec/출력 경로 바꾸고 싶을 때
+.\build_exe.ps1 -Spec "KakaoSender.spec" -DistPath "dist/app"
