@@ -1,13 +1,26 @@
 ; installer/KakaoCampaignSender.iss
+; ------------------------------------------------------------
+; KakaoCampaignSender Installer (Inno Setup 6)
+; - CI injects:
+;   ISCC.exe /DMyAppVersion=1.2.3 /DOutputDir="..." /DMyAppDistDir="..."
+; - Installs from PyInstaller output: dist\app\KakaoCampaignSender\*
+; ------------------------------------------------------------
 
 #define MyAppName "KakaoCampaignSender"
 #define MyAppExeName "KakaoCampaignSender.exe"
 
-; iss 파일(=installer 폴더) 기준으로 경로 고정
-#define RepoRoot        "{#SourcePath}\.."
-#define MyAppDistDir    "{#RepoRoot}\dist\app\KakaoCampaignSender"
+; ✅ CI에서 /DMyAppDistDir 로 주입. 로컬 빌드용 기본값도 제공.
+#ifndef MyAppDistDir
+  #define RepoRoot     "{#SourcePath}\.."
+  #define MyAppDistDir "{#RepoRoot}\dist\app\KakaoCampaignSender"
+#endif
 
-; 아이콘도 installer 폴더 기준으로 고정
+; ✅ CI에서 /DOutputDir 로 주입. 로컬 빌드용 기본값도 제공.
+#ifndef OutputDir
+  #define OutputDir "{#SourcePath}\..\dist\installer"
+#endif
+
+; ✅ 아이콘(컴파일 시점) - installer 폴더 기준 고정
 #define MyAppIconSource "{#SourcePath}\KakaoSender.ico"
 #define MyAppIconName   "KakaoSender.ico"
 
@@ -25,7 +38,6 @@ DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 
-; Output도 레포 루트 dist로 고정
 OutputDir={#OutputDir}
 OutputBaseFilename={#MyAppName}Setup_{#MyAppVersion}
 
@@ -34,7 +46,6 @@ SolidCompression=yes
 WizardStyle=modern
 PrivilegesRequired=lowest
 
-; ✅ 여기서 아이콘을 “무조건” 찾게 됨
 SetupIconFile={#MyAppIconSource}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
@@ -47,7 +58,7 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "desktopicon"; Description: "바탕화면 바로가기 생성"; GroupDescription: "추가 작업:"; Flags: unchecked
 
 [Files]
-; ✅ PyInstaller 결과물을 통째로 설치
+; ✅ PyInstaller 결과물을 통째로 설치 (CI/로컬 모두 동일)
 Source: "{#MyAppDistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 ; ✅ 아이콘을 설치 폴더에 복사(바로가기용)

@@ -1,3 +1,4 @@
+# .github/workflows/release.yml
 name: Windows Release Build
 
 on:
@@ -46,6 +47,7 @@ jobs:
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           Write-Host "TAG VERSION => $ver"
 
+      # ✅ tag 버전을 version.py에 주입 (__VERSION__ 토큰 치환)
       - name: Inject version into src/app/version.py
         run: |
           $ver  = "${{ steps.get_version.outputs.version }}"
@@ -55,10 +57,11 @@ jobs:
           $raw = Get-Content $path -Raw
           $raw = $raw -replace '"__VERSION__"', ('"' + $ver + '"')
 
+          # UTF-8 no BOM 저장
           [System.IO.File]::WriteAllText($path, $raw, (New-Object System.Text.UTF8Encoding($false)))
 
           Write-Host "Injected version.py => $ver"
-          Get-Content $path | Select-Object -First 30
+          Get-Content $path | Select-Object -First 60
 
       - name: Clean dist/build
         run: |
@@ -77,6 +80,13 @@ jobs:
             --distpath dist/app `
             --workpath build/pyinstaller `
             KakaoSender.spec
+
+      # ✅ dist 전체 트리 출력(문제 추적용)
+      - name: Debug - show dist tree
+        run: |
+          Write-Host "----- dist tree -----"
+          if (Test-Path dist) { Get-ChildItem -Recurse dist | Select-Object FullName }
+          else { Write-Host "dist not found" }
 
       - name: Verify build artifacts
         run: |
@@ -101,15 +111,20 @@ jobs:
           if (-not (Test-Path "installer/KakaoSender.ico")) { throw "installer/KakaoSender.ico not found." }
           Get-ChildItem installer | Select-Object FullName,Length
 
+      # ✅ Inno에 OutputDir + MyAppDistDir 절대경로로 주입 (CI에서 가장 안정적)
       - name: Compile Installer
         run: |
-          $ver = "${{ steps.get_version.outputs.version }}"
-          $out = Join-Path $pwd "dist\installer"
-          if (-not (Test-Path $out)) { New-Item -ItemType Directory -Force -Path $out }
-      
+          $ver    = "${{ steps.get_version.outputs.version }}"
+          $outDir = Join-Path $pwd "dist\installer"
+          $appDir = Join-Path $pwd "dist\app\KakaoCampaignSender"
+
+          if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
+          if (-not (Test-Path $appDir)) { throw "MyAppDistDir missing: $appDir" }
+
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
             /DMyAppVersion=$ver `
-            /DOutputDir="$out" `
+            /DOutputDir="$outDir" `
+            /DMyAppDistDir="$appDir" `
             "installer\KakaoCampaignSender.iss"
 
       - name: Verify installer output
