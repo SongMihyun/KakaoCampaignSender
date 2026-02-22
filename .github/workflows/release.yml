@@ -101,6 +101,13 @@ jobs:
           Write-Host "===== installer/KakaoCampaignSender.iss ====="
           Get-Content "installer/KakaoCampaignSender.iss" | Select-Object -First 120      
 
+      - name: Debug - show dist tree
+        shell: pwsh
+        run: |
+          Write-Host "----- dist tree -----"
+          if (Test-Path dist) { Get-ChildItem -Recurse dist | Select-Object FullName }
+          else { Write-Host "dist not found" }
+
       - name: Compile Installer
         shell: pwsh
         run: |
