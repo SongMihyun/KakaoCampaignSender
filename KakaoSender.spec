@@ -8,7 +8,6 @@ datas = []
 binaries = []
 
 for pkg in ["pywinauto", "comtypes", "PIL"]:
-    # PyInstaller 6.19+ : collect_all() returns a tuple: (datas, binaries, hiddenimports)
     d, b, h = collect_all(pkg)
     datas += d
     binaries += b
@@ -35,12 +34,12 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="KakaoCampaignSender",
+    name="KakaoCampaignSender",   # ✅ EXE 이름 통일
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,
-    console=False,  # GUI
+    console=False,                # ✅ GUI
 )
 
 coll = COLLECT(
@@ -49,5 +48,5 @@ coll = COLLECT(
     a.datas,
     strip=False,
     upx=False,
-    name="KakaoCampaignSender",
+    name="KakaoCampaignSender",   # ✅ 폴더명 통일 (distpath 아래에 이 이름으로 생성)
 )
