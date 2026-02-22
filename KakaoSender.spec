@@ -40,7 +40,7 @@ exe = EXE(
     strip=False,
     upx=False,
     console=False,                # ✅ GUI
-    icon="installer/KakaoSender.ico",  # (있으면 적용, 없으면 이 줄 제거)
+    icon="installer/Kㄷ턋akaoSender.ico",  # (있으면 적용, 없으면 이 줄 제거)
 )
 
 coll = COLLECT(

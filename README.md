@@ -27,3 +27,13 @@ src/app/sender/
   ├─ image_attach_cache.py           # temp png 파일 캐시(기존 유지, 약간 정리)
   ├─ image_attach_ctrl_t.py          # Ctrl+T attach 전송(캐시 사용)
   └─ image_dib_cache.py              # PNG->DIB 메모리 캐시(신규)
+
+
+
+사용법 (핵심)
+1) “버전만” 입력해서 자동 Push + Tag
+.\release.ps1 -Version 0.1.16
+2) “로컬 빌드까지” 같이 하고 Push + Tag
+.\release.ps1 -Version 0.1.16 -BuildLocal
+3) dist/build 삭제 없이 빌드만 스킵하고 싶으면
+.\release.ps1 -Version 0.1.16 -BuildLocal -NoClean

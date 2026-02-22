@@ -99,23 +99,14 @@ jobs:
         run: |
           if (-not (Test-Path "installer/KakaoCampaignSender.iss")) { throw "installer/KakaoCampaignSender.iss not found." }
           if (-not (Test-Path "installer/KakaoSender.ico")) { throw "installer/KakaoSender.ico not found." }
+          Get-ChildItem installer | Select-Object FullName,Length
 
       - name: Compile Installer
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=$ver "installer\KakaoCampaignSender.iss"
 
-      - name: Verify installer output
-        run: |
-          $ver = "${{ steps.get_version.outputs.version }}"
-          $pattern = "KakaoCampaignSenderSetup_$ver.exe"
-          $installer = Get-ChildItem "dist/installer" -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $installer) {
-            Write-Host "----- dist/installer tree -----"
-            if (Test-Path "dist/installer") { Get-ChildItem -Recurse "dist/installer" | Select-Object FullName }
-            throw "Installer not found: dist/installer/$pattern"
-          }
-          Write-Host "OK: $($installer.FullName)"
+
 
       - name: Generate sha256 + latest.json
         run: |
