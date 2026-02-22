@@ -95,6 +95,12 @@ jobs:
             throw "installer/KakaoSender.ico not found."
           }
 
+      - name: Debug - show installer script
+        shell: pwsh
+        run: |
+          Write-Host "===== installer/KakaoCampaignSender.iss ====="
+          Get-Content "installer/KakaoCampaignSender.iss" | Select-Object -First 120      
+
       - name: Compile Installer
         shell: pwsh
         run: |

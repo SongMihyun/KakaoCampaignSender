@@ -1,19 +1,11 @@
 ; installer/KakaoCampaignSender.iss
-; ------------------------------------------------------------
-; KakaoCampaignSender Installer (Inno Setup 6)
-; - CI injects version: ISCC.exe /DMyAppVersion=1.2.3 ...
-; - Installs from: dist\app\KakaoCampaignSender\*
-; - Desktop + Start menu shortcuts
-; - Installs to LocalAppData (minimal UAC)
-; ------------------------------------------------------------
 
 #define MyAppName "KakaoCampaignSender"
 #define MyAppExeName "KakaoCampaignSender.exe"
 
-; ✅ 중요: iss가 installer 폴더에 있으므로, dist는 한 단계 위(..)에 있음
+; ✅ iss 파일 위치(= installer 폴더) 기준으로 "레포 루트 dist"를 정확히 지칭
 #define MyAppDistDir "{#SourcePath}\..\dist\app\KakaoCampaignSender"
 
-; ✅ 아이콘도 installer 폴더 기준으로 정확히
 #define MyAppIconSource "{#SourcePath}\KakaoSender.ico"
 #define MyAppIconName   "KakaoSender.ico"
 
@@ -31,6 +23,7 @@ DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 
+; ✅ OutputDir도 레포 루트 dist로 고정
 OutputDir={#SourcePath}\..\dist\installer
 OutputBaseFilename={#MyAppName}Setup_{#MyAppVersion}
 
@@ -51,9 +44,10 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "desktopicon"; Description: "바탕화면 바로가기 생성"; GroupDescription: "추가 작업:"; Flags: unchecked
 
 [Files]
+; ✅ PyInstaller 결과물을 통째로 설치 (레포 루트 dist 기준)
 Source: "{#MyAppDistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; 설치 폴더에 아이콘을 고정 파일명으로 복사
+; ✅ 아이콘을 설치 폴더에 고정 이름으로 복사
 Source: "{#MyAppIconSource}"; DestDir: "{app}"; DestName: "{#MyAppIconName}"; Flags: ignoreversion
 
 [Icons]
