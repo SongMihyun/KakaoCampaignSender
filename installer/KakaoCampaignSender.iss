@@ -14,7 +14,7 @@
 #define MyAppDistDir "dist\app\KakaoCampaignSender"
 
 ; ✅ 아이콘: 소스 경로(컴파일 시) / 설치 후 파일명 분리
-#define MyAppIconSource "installer\KakaoSender.ico"
+#define MyAppIconSource "KakaoSender.ico"
 #define MyAppIconName   "KakaoSender.ico"
 
 #ifndef MyAppVersion
