@@ -125,6 +125,8 @@ jobs:
             /DMyAppVersion=$ver `
             /DOutputDir="$outDir" `
             /DMyAppDistDir="$appDir" `
+            /DMyAppIconSource="$icoPath" `   # ✅ 추가
+            /E"dist\installer\preprocessed.iss" `   # ✅ 전처리 결과 덤프
             "installer\KakaoCampaignSender.iss"
 
       - name: Verify installer output

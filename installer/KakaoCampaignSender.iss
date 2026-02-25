@@ -20,8 +20,10 @@
   #define OutputDir "{#SourcePath}\..\dist\installer"
 #endif
 
-; ✅ 아이콘(컴파일 시점) - installer 폴더 기준 고정
-#define MyAppIconSource "{#SourcePath}\KakaoSender.ico"
+; ✅ 아이콘(컴파일 시점)
+#ifndef MyAppIconSource
+  #define MyAppIconSource "{#SourcePath}\KakaoSender.ico"
+#endif
 #define MyAppIconName   "KakaoSender.ico"
 
 #ifndef MyAppVersion
