@@ -117,18 +117,39 @@ jobs:
           $ver    = "${{ steps.get_version.outputs.version }}"
           $outDir = Join-Path $pwd "dist\installer"
           $appDir = Join-Path $pwd "dist\app\KakaoCampaignSender"
+          $ico    = Join-Path $pwd "installer\KakaoSender.ico"
+          $iss    = Join-Path $pwd "installer\KakaoCampaignSender.iss"
 
-          if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
-          if (-not (Test-Path $appDir)) { throw "MyAppDistDir missing: $appDir" }
+          if (-not (Test-Path $outDir)) { 
+            New-Item -ItemType Directory -Force -Path $outDir | Out-Null 
+          }
 
-          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" `
-            /DMyAppVersion=$ver `
-            /DOutputDir="$outDir" `
-            /DMyAppDistDir="$appDir" `
-            /DMyAppIconSource="$icoPath" `   # ✅ 추가
-            /E"dist\installer\preprocessed.iss" `   # ✅ 전처리 결과 덤프
-            "installer\KakaoCampaignSender.iss"
+          if (-not (Test-Path $appDir)) { 
+            throw "MyAppDistDir missing: $appDir" 
+          }
 
+          if (-not (Test-Path $ico)) { 
+            throw "Icon missing: $ico" 
+          }
+
+          if (-not (Test-Path $iss)) { 
+            throw "ISS file missing: $iss" 
+          }
+
+          $ISCC = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+
+          $args = @(
+            "/DMyAppVersion=$ver",
+            "/DOutputDir=$outDir",
+            "/DMyAppDistDir=$appDir",
+            "/DMyAppIconSource=$ico",
+            $iss
+          )
+
+          Write-Host "Running ISCC with arguments:"
+          $args | ForEach-Object { Write-Host "  $_" }
+
+          Start-Process -FilePath $ISCC -ArgumentList $args -Wait -NoNewWindow
       - name: Verify installer output
         run: |
           $ver = "${{ steps.get_version.outputs.version }}"
