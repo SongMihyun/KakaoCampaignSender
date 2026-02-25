@@ -1,0 +1,174 @@
+diff --git a/src/app/sender/kakao_pc_driver.py b/src/app/sender/kakao_pc_driver.py
+index 1111111..2222222 100644
+--- a/src/app/sender/kakao_pc_driver.py
++++ b/src/app/sender/kakao_pc_driver.py
+@@ -1,6 +1,7 @@
+ # ✅ FILE: src/app/sender/kakao_pc_driver.py
+ from __future__ import annotations
+
++import math
+ import os
+ import sys
+ import time
+@@ -690,102 +691,175 @@ class KakaoPcDriver(KakaoSenderDriver):
+         if ok:
+             try:
+                 self._restore_chat_focus_after_image_dialog()
+             except Exception:
+                 pass
+
+         return bool(ok)
+
+-    def _dismiss_toast_popup_if_any(self) -> bool:
+-        """
+-        새 메세지 미니창(답장 가능한 토스트)이 foreground로 올라오면
+-        ESC로 닫고 True 반환.
+-        """
+-        try:
+-            fg = int(w32.get_foreground_hwnd() or 0)
+-            if fg <= 0:
+-                return False
+-
+-            # 같은 프로세스인지 확인(카카오 프로세스)
+-            if int(w32.get_pid(fg) or 0) != int(w32.get_pid(int(self._hwnd)) or 0):
+-                return False
+-
+-            # top-level로 정규화
+-            top = int(self._top_level_hwnd(fg) or fg)
+-            rect = w32.get_window_rect(top)
+-            l, t, r, b = rect
+-            w = max(0, r - l)
+-            h = max(0, b - t)
+-
+-            # ✅ 토스트는 대체로 작다(너무 보수적으로 잡지 말고 "작은 창" 위주)
+-            if not (w <= 750 and h <= 420):
+-                return False
+-
+-            # ✅ 메인/채팅창 자체면 토스트가 아님
+-            if top in (int(self._hwnd), int(self._chat_hwnd or 0)):
+-                return False
+-
+-            self._trace("POPUP:toast_detected", fg_hwnd=fg, top_hwnd=top, rect=rect)
+-            self._send_keys_fast("{ESC}")
+-            self._sleep_abs(0.05)
+-            self._trace("POPUP:toast_closed", top_hwnd=top)
+-            return True
+-        except Exception:
+-            return False
+-
+-        def _ensure_chat_focus_strict(self) -> None:
+-            """
+-            1) 토스트(미니창) 뜨면 ESC로 닫기
+-            2) 채팅창 재포커스
+-            3) 입력창 focus 보장
+-            """
+-            # 토스트 제거 1~2회 시도(연속 알림 대응)
+-            for _ in range(2):
+-                if not self._dismiss_toast_popup_if_any():
+-                    break
+-
+-            # 채팅창 전면화 + 입력창 포커스
+-            try:
+-                self._ensure_foreground_chat()
+-            except Exception:
+-                pass
+-
+-            try:
+-                self._focus_chat_input_best_effort(fast_only=False)
+-            except Exception:
+-                pass
+-
+-            self._sleep_abs(0.02)
++    def _is_probably_toast_hwnd(self, top_hwnd: int) -> bool:
++        """
++        ✅ EVA_Window_Dblclk가 메인/개인창/토스트에 섞이는 케이스 대응:
++        토스트(답장 가능한 알림 미니창) 추정 규칙(보수적으로):
++        - same pid
++        - top-level rect가 '작은 창' 범주
++        - main/chat hwnd 자체는 제외
++        """
++        try:
++            top = int(top_hwnd or 0)
++            if top <= 0:
++                return False
++
++            if int(w32.get_pid(top) or 0) != int(w32.get_pid(int(self._hwnd)) or 0):
++                return False
++
++            if top in (int(self._hwnd), int(self._chat_hwnd or 0)):
++                return False
++
++            rect = w32.get_window_rect(top)
++            l, t, r, b = rect
++            ww = max(0, r - l)
++            hh = max(0, b - t)
++
++            # 실전 토스트 범위(하단 배너 + 답장 UI 포함)
++            if ww <= 900 and hh <= 520:
++                return True
++        except Exception:
++            pass
++        return False
++
++    def _dismiss_toast_popup_if_any(self) -> bool:
++        """
++        ✅ foreground가 토스트/미니창이면 닫고 True.
++        - ESC는 실패할 때가 있어 1차 ESC, 2차 WM_CLOSE 시도(가능하면).
++        """
++        try:
++            fg = int(w32.get_foreground_hwnd() or 0)
++            if fg <= 0:
++                return False
++
++            top = int(self._top_level_hwnd(fg) or fg)
++            if not self._is_probably_toast_hwnd(top):
++                return False
++
++            rect = w32.get_window_rect(top)
++            self._trace("POPUP:toast_detected", fg_hwnd=fg, top_hwnd=top, rect=rect, cls=str(w32.get_class_name(top) or ""))
++
++            # 1) ESC
++            try:
++                self._send_keys_fast("{ESC}")
++                self._sleep_abs(0.05)
++            except Exception:
++                pass
++
++            # 아직 떠있으면 2) WM_CLOSE
++            try:
++                if w32.is_window(top):
++                    WM_CLOSE = 0x0010
++                    w32.user32.PostMessageW(int(top), WM_CLOSE, 0, 0)
++                    self._sleep_abs(0.05)
++            except Exception:
++                pass
++
++            self._trace("POPUP:toast_closed", top_hwnd=top)
++            return True
++        except Exception:
++            return False
++
++    def _ensure_chat_focus_strict(self) -> None:
++        """
++        ✅ “토스트 닫기 → 채팅 전면화 → 입력창 포커스”를 한 방에 보장.
++        - attach_image_via_ctrl_v 에서 ensure_focus_before_paste로 호출됨
++        - TEXT 전송에서도 동일하게 사용 가능
++        """
++        # 토스트 제거 1~2회 (연속 알림 대응)
++        for _ in range(2):
++            if not self._dismiss_toast_popup_if_any():
++                break
++
++        # 채팅창 전면화
++        try:
++            self._ensure_foreground_chat()
++        except Exception:
++            pass
++
++        # 입력창 focus
++        try:
++            self._focus_chat_input_best_effort(fast_only=False)
++        except Exception:
++            pass
++
++        self._sleep_abs(0.02)

@@ -28,7 +28,7 @@ src/app/sender/
   ├─ image_attach_ctrl_t.py          # Ctrl+T attach 전송(캐시 사용)
   └─ image_dib_cache.py              # PNG->DIB 메모리 캐시(신규)
 
-
+poetry run python .\src\app\main.py
 
 사용법 (핵심)
 1) “버전만” 입력해서 자동 Push + Tag

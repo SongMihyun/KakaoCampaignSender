@@ -1,4 +1,4 @@
-
+# ✅ FILE: src/app/sender/image_attach_ctrl_t.py
 
 from __future__ import annotations
 

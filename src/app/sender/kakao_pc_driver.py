@@ -16,9 +16,11 @@ from dataclasses import dataclass, field
 from typing import List, Tuple, Any, Callable, Optional
 from contextlib import contextmanager
 
-from app.sender.kakao_pc_hooks import open_chat_by_name_hook, send_image_dialog_hook, ChatNotFound
+from app.sender.kakao_pc_hooks import open_chat_by_name_hook, send_image_dialog_hook, ChatNotFound, _is_kakao_toast_quick_reply
 from app.sender.image_attach_ctrl_t import send_png_via_ctrl_t
 from ctypes import wintypes
+from app.sender.image_attach_ctrl_v import attach_image_via_ctrl_v
+
 
 # ✅ 단일 Win32 코어 사용
 from app.sender.win32_core import (
@@ -42,6 +44,7 @@ from app.sender.win32_core import (
     force_foreground_strict,
     set_clipboard_text,
     set_clipboard_dib,
+    get_class_name,
 )
 
 from app.sender import win32_core as w32
@@ -178,10 +181,10 @@ class SpeedProfile:
 
 class KakaoSenderDriver:
     def start(self) -> None:
-        return
+        raise NotImplementedError
 
     def recover(self) -> None:
-        self.start()
+        raise NotImplementedError
 
     def send_to_name(self, name: str, message: str, image_bytes_list: List[bytes]) -> None:
         raise NotImplementedError
@@ -190,7 +193,7 @@ class KakaoSenderDriver:
         raise NotImplementedError
 
     def stop(self) -> None:
-        return
+        raise NotImplementedError
 
 
 @dataclass
@@ -686,6 +689,23 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._trace_fg("FG:before_force_chat")
         try:
             w32.force_foreground_strict(self._chat_hwnd, retries=3, sleep=self._sf(0.03))
+
+            # =====================================================
+            # ✅ ShadowWnd 보정(핵심)
+            # - 포그라운드가 KakaoTalkShadowWnd면 실제 채팅창 hwnd로 재동기화
+            # =====================================================
+            try:
+                fg = int(w32.get_foreground_hwnd() or 0)
+                ft = str(w32.get_window_text(fg) or "")
+                if "KakaoTalkShadowWnd" in ft:
+                    real = w32.foreground_hwnd_if_same_process(self._hwnd)
+                    if real and int(real) != fg and w32.is_window(int(real)):
+                        self._trace("FG:shadow_detected", fg_hwnd=fg, fg_title=ft, real_hwnd=int(real))
+                        self._chat_hwnd = int(real)
+                        w32.force_foreground_strict(int(real), retries=2, sleep=self._sf(0.02))
+            except Exception:
+                pass
+
         finally:
             self._trace("FG:force_chat_done", ms=int((time.perf_counter() - t_fg) * 1000))
             self._trace_fg("FG:after_force_chat")
@@ -721,6 +741,17 @@ class KakaoPcDriver(KakaoSenderDriver):
                     h = int(w.handle)
                     if not h or h == self._hwnd:
                         continue
+
+                    # ✅ 토스트 배제
+                    if _is_kakao_toast_quick_reply(
+                            hwnd=h,
+                            main_hwnd=int(self._hwnd),
+                            get_pid=w32.get_pid,
+                            get_window_rect=w32.get_window_rect,
+                            lazy_pywinauto=_lazy_pywinauto,
+                    ):
+                        continue
+
                     t = str(w.window_text() or "").strip()
                     is_new = (h not in before)
                     if is_new:
@@ -881,23 +912,22 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._trace("OPEN_CHAT:begin", name=(name or "").strip())
 
         self._check_stop()
+        name = (name or "").strip()
+        if not name:
+            return False
 
         # ✅ open context reset
         self._chat_in_main = False
         self._chat_hwnd = 0
         self._mode = "MAIN"
+        self._search_ready = False  # 매 수신자마다 검색창 상태 재확보
 
         self._chat_input_ctrl_cache.clear()
         self._chat_input_ctrl_cache_ts.clear()
 
-        # ✅ 수신자 context 세팅 (close 실패 로그에 사용)
-        self._active_recipient = (name or "").strip()
-
+        self._active_recipient = name
         self._last_image_bytes = b""
         self._ctrl_t_fallback_done = False
-
-        self._chat_hwnd = 0
-        self._mode = "MAIN"
 
         def _send_keys_main(keys: str) -> None:
             self._send_keys(keys, to_chat=False)
@@ -909,19 +939,18 @@ class KakaoPcDriver(KakaoSenderDriver):
             """
             hwnd 의미
             - hwnd > 0 : 새 개인창 핸들
-            - hwnd == 0: ✅ open-in-main (메인창 내 채팅)
+            - hwnd == 0: open-in-main (메인창 내 채팅)
             """
             h = int(hwnd or 0)
             if h <= 0:
                 self._chat_in_main = True
-                self._chat_hwnd = int(self._hwnd)  # 메인창을 채팅 대상으로 사용
+                self._chat_hwnd = int(self._hwnd)  # 메인창
                 self._mode = "CHAT"
                 return
 
             self._chat_in_main = False
             self._chat_hwnd = h
-            if self._chat_hwnd and self._chat_hwnd != self._hwnd:
-                self._mode = "CHAT"
+            self._mode = "CHAT"
 
         def _get_search_ready() -> bool:
             return bool(self._search_ready)
@@ -929,15 +958,18 @@ class KakaoPcDriver(KakaoSenderDriver):
         def _set_search_ready(v: bool) -> None:
             self._search_ready = bool(v)
 
+        # ------------------------------
+        # hook 실행
+        # ------------------------------
         try:
             t_hook0 = time.perf_counter()
             self._trace("OPEN_CHAT:hook_call")
 
             open_chat_by_name_hook(
-                name=(name or "").strip(),
+                name=name,
                 ensure_foreground_main=lambda: self._ensure_foreground_main_fast(),
                 send_keys_main=_send_keys_main,
-                set_clipboard_text=w32.set_clipboard_text,  # ✅ win32_core 사용
+                set_clipboard_text=w32.set_clipboard_text,
                 snapshot_visible_hwnds=self._snapshot_visible_hwnds,
                 find_new_chat_hwnd=self._find_new_chat_hwnd,
                 set_chat_hwnd=_set_chat_hwnd,
@@ -959,18 +991,14 @@ class KakaoPcDriver(KakaoSenderDriver):
                     "delete_delay": self._sf(self._profile.hooks.delete_delay),
                     "extra_delete_delay": self._sf(self._profile.hooks.extra_delete_delay),
                     "paste_name_delay": self._sf(self._profile.hooks.paste_name_delay),
-
-                    # ✅ 추가(선택): ENTER 후 개인창 감지 폴링 시간(짧게)
-                    "open_wait1": self._sf(0.16),  # 1차 ENTER 후 최대 대기
-                    "open_wait2": self._sf(0.18),  # 2차 ENTER 후 최대 대기
-
-                    # ✅ 추가(선택): 키 입력 직후 안정화 (너무 크면 느려짐)
+                    "open_wait1": self._sf(0.16),
+                    "open_wait2": self._sf(0.18),
                     "enter1_post_key_sleep": self._sf(0.008),
                     "enter2_post_key_sleep": self._sf(0.008),
                 },
-                # ✅ fastpath
                 get_foreground_hwnd=w32.get_foreground_hwnd,
                 get_window_text=w32.get_window_text,
+                is_search_no_result=self._is_main_search_no_result,
             )
 
             self._trace(
@@ -978,104 +1006,52 @@ class KakaoPcDriver(KakaoSenderDriver):
                 ms=int((time.perf_counter() - t_hook0) * 1000),
                 chat_hwnd=int(self._chat_hwnd),
                 mode=self._mode,
+                chat_in_main=bool(self._chat_in_main),
             )
 
         except ChatNotFound:
             self._log_not_found_recipient(name)
+            self._chat_in_main = False
+            self._chat_hwnd = 0
+            self._mode = "MAIN"
+            self._trace("OPEN_CHAT:fail", total_ms=int((time.perf_counter() - t0) * 1000), chat_hwnd=0)
+            return False
+
+        # ------------------------------
+        # ✅ 핵심: 개인창만 성공 처리
+        # ------------------------------
+        if bool(self._chat_in_main):
+            # open-in-main이면 전송하면 안 됨 -> 스킵하고 다음 사람
+            self._trace("OPEN_CHAT:skip_open_in_main", recipient=name, main_hwnd=int(self._hwnd))
+            self._log_recipient_status(name, "SKIP_OPEN_IN_MAIN")
+
+            self._chat_in_main = False
             self._chat_hwnd = 0
             self._mode = "MAIN"
             try:
                 self._ensure_foreground_main_fast()
             except Exception:
                 pass
-            self._trace(
-                "OPEN_CHAT:fail",
-                total_ms=int((time.perf_counter() - t0) * 1000),
-                chat_hwnd=int(self._chat_hwnd),
-            )
             return False
-        except Exception as e:
-            self._log(f"[CHAT] open_chat exception: {e}")
-            raise
 
-        # =========================================================
-        # ✅ POST-HOOK 구간( hook_done ~ success 사이 ) 원인 분해 로그
-        # =========================================================
-        t_post0 = time.perf_counter()
+        # 개인창 hwnd 유효성 체크
+        if not (self._chat_hwnd and self._chat_hwnd != self._hwnd and w32.is_window(int(self._chat_hwnd))):
+            self._log_not_found_recipient(name)
+            self._chat_hwnd = 0
+            self._mode = "MAIN"
+            self._trace("OPEN_CHAT:fail", total_ms=int((time.perf_counter() - t0) * 1000), chat_hwnd=0)
+            return False
+
+        # 개인창 전면화
         try:
-            fg0 = int(w32.get_foreground_hwnd() or 0)
-            ft0 = str(w32.get_window_text(fg0) or "")
-        except Exception:
-            fg0, ft0 = 0, ""
-        self._trace(
-            "OPEN_CHAT:post_hook_begin",
-            chat_hwnd=int(self._chat_hwnd),
-            mode=self._mode,
-            fg_hwnd=int(fg0),
-            fg_title=ft0,
-            chat_in_main=bool(getattr(self, "_chat_in_main", False)),
-        )
-
-        if (not self._chat_hwnd) or (self._chat_hwnd == self._hwnd):
-            self._patch_chat_hwnd_from_foreground(name)
-
-        # (A) patch까지 걸린 시간
-        self._trace(
-            "OPEN_CHAT:post_hook_after_patch",
-            ms=int((time.perf_counter() - t_post0) * 1000),
-            chat_hwnd=int(self._chat_hwnd),
-            mode=self._mode,
-            chat_in_main=bool(getattr(self, "_chat_in_main", False)),
-        )
-
-        if self._chat_hwnd and self._chat_hwnd != self._hwnd and w32.is_window(int(self._chat_hwnd)):
-            # (B) ensure_foreground_chat 시간
-            t_fg = time.perf_counter()
             self._mode = "CHAT"
             self._ensure_foreground_chat()
-            self._trace(
-                "OPEN_CHAT:post_hook_after_fg",
-                ms=int((time.perf_counter() - t_fg) * 1000),
-                total_post_ms=int((time.perf_counter() - t_post0) * 1000),
-                fg_hwnd=int(w32.get_foreground_hwnd() or 0),
-                fg_title=str(w32.get_window_text(int(w32.get_foreground_hwnd() or 0)) or ""),
-            )
+        except Exception:
+            pass
 
-            # (C) focus_chat_input 시간 (✅ post-hook에서는 포커스 생략)
-            t_fi = time.perf_counter()
-            # try:
-            #     self._focus_chat_input_best_effort(fast_only=True)
-            # except Exception:
-            #     pass
-            self._trace(
-                "OPEN_CHAT:post_hook_after_focus",
-                ms=int((time.perf_counter() - t_fi) * 1000),
-                total_post_ms=int((time.perf_counter() - t_post0) * 1000),
-            )
-
-            # (D) success 직전 전체 post_hook 총합
-            self._trace(
-                "OPEN_CHAT:post_hook_end",
-                ms=int((time.perf_counter() - t_post0) * 1000),
-                chat_hwnd=int(self._chat_hwnd),
-                fg_hwnd=int(w32.get_foreground_hwnd() or 0),
-                fg_title=str(w32.get_window_text(int(w32.get_foreground_hwnd() or 0)) or ""),
-            )
-
-            self._trace(
-                "OPEN_CHAT:success",
-                total_ms=int((time.perf_counter() - t0) * 1000),
-                chat_hwnd=int(self._chat_hwnd),
-            )
-            return True
-
-        self._log_not_found_recipient(name)
-        self._trace(
-            "OPEN_CHAT:fail",
-            total_ms=int((time.perf_counter() - t0) * 1000),
-            chat_hwnd=int(self._chat_hwnd),
-        )
-        return False
+        self._trace("OPEN_CHAT:success", total_ms=int((time.perf_counter() - t0) * 1000),
+                    chat_hwnd=int(self._chat_hwnd))
+        return True
 
     # ----------------------------
     # retry runner
@@ -1169,32 +1145,121 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._trace("IMG:once_begin", bytes_len=len(png_bytes))
         self._last_image_bytes = png_bytes
 
-        target_hwnd = int(self._chat_hwnd or self._hwnd)
+        # hwnd 만료 체크
+        if self._chat_hwnd and not w32.is_window(int(self._chat_hwnd)):
+            self._chat_hwnd = 0
+            self._mode = "MAIN"
 
-        # round-robin: ctrl+t 경로 주기적 사용
-        self._img_rr_idx = (self._img_rr_idx + 1) % self._img_rr_mod
-        use_ctrl_t = (self._img_rr_idx == 0)
+        # (1) DIB 변환/캐시
+        t_dib0 = time.perf_counter()
+        dib = self._png_to_dib_bytes(png_bytes)
+        self._trace("IMG:dib_ready", ms=int((time.perf_counter() - t_dib0) * 1000), dib_len=len(dib))
+
+        # (2) Ctrl+V 붙여넣기 + 모달 엔터 전송 (분리 모듈)
+        ok = attach_image_via_ctrl_v(
+            dib_bytes=dib,
+            active_recipient=str(self._active_recipient or ""),
+            kakao_main_hwnd=int(self._hwnd),
+            chat_hwnd=int(self._chat_hwnd or self._hwnd),
+
+            # win32/env
+            user32=w32.user32,
+            get_foreground_hwnd=w32.get_foreground_hwnd,
+            get_window_text=w32.get_window_text,
+            get_class_name=w32.get_class_name,
+            get_pid=w32.get_pid,
+            set_clipboard_dib=w32.set_clipboard_dib,
+            lazy_pywinauto=_lazy_pywinauto,  # ✅ 반드시 전달
+
+            # actions
+            ensure_foreground_chat=self._ensure_foreground_chat,
+            focus_chat_input_best_effort=lambda: bool(self._focus_chat_input_best_effort()),
+            send_keys_chat=lambda keys: self._send_keys(keys, to_chat=True),
+            sleep=self._sleep,
+            sleep_abs=self._sleep_abs,
+
+            # dialog
+            send_image_dialog_hook=send_image_dialog_hook,
+            image_dialog_timeout_sec=self._sf(self._image_dialog_timeout),
+            key_delay=self._sf(self._key_delay),
+            debug=bool(self._debug_log),
+            log=self._log,
+            timings={
+                "try_interval": self._sf(self._profile.img_dlg.try_interval),
+                "loop_sleep": self._sf(self._profile.img_dlg.loop_sleep),
+                "post_click_sleep": self._sf(self._profile.img_dlg.post_click_sleep),
+                "enter_gap_sec": self._sf(self._profile.img_dlg.enter_gap_sec),
+            },
+            prefer_hwnd=int(self._chat_hwnd or self._hwnd),
+
+            # post
+            restore_chat_focus_after_image_dialog=self._restore_chat_focus_after_image_dialog,
+
+            # trace/debug
+            trace=self._trace,
+            dump_mismatch_debug=self._dump_mismatch_debug,
+            image_paste_settle_sec=float(self._image_paste_settle_sec or 0.0),
+        )
+
+        if not ok:
+            self._trace("IMG:once_end", ok=False, total_ms=int((time.perf_counter() - t0) * 1000))
+            return False
+
+        # (3) 후처리
+        self._sleep(max(0.02, self._send_interval))
+        self._trace("IMG:once_end", ok=True, total_ms=int((time.perf_counter() - t0) * 1000))
+        return True
+
+    def _paste_image_and_send(self, png_bytes: bytes) -> bool:
+        if not png_bytes:
+            return True
+
+        # 3번은 클립보드, 1번은 Ctrl+T
+        rr_mod = 4
+        idx = int(getattr(self, "_img_rr_idx", 0))
+        use_ctrl_t = (idx % rr_mod) == (rr_mod - 1)
+        self._img_rr_idx = idx + 1
 
         if use_ctrl_t:
-            self._trace("IMG:ctrl_t_begin", rr_idx=self._img_rr_idx)
-            t_ct0 = time.perf_counter()
+            self._trace("IMG:route", route="CTRL_T", rr_idx=idx)
+            return self._run_with_retry(
+                "IMG_CTRL_T",
+                lambda: self._send_image_via_ctrl_t_once(png_bytes),
+            )
+
+        self._trace("IMG:route", route="CLIPBOARD", rr_idx=idx)
+        return self._run_with_retry(
+            "IMG",
+            lambda: self._paste_image_and_send_once(png_bytes),
+        )
+
+    def _send_image_via_ctrl_t_once(self, png_bytes: bytes) -> bool:
+        self._check_stop()
+        if not png_bytes:
+            return True
+
+        try:
+            self._ensure_foreground_chat()
+            self._focus_chat_input_best_effort()
+            self._sleep_abs(0.02)
+        except Exception:
+            pass
+
+        try:
             ok = send_png_via_ctrl_t(
                 png_bytes=png_bytes,
                 send_keys_fast=self._send_keys_fast,
-                set_clipboard_text=set_clipboard_text,  # ✅ win32_core
+                set_clipboard_text=w32.set_clipboard_text,
                 ensure_foreground_chat=self._ensure_foreground_chat,
                 focus_chat_input_best_effort=self._focus_chat_input_best_effort,
                 sleep_abs=self._sleep_abs,
                 send_image_dialog_hook=send_image_dialog_hook,
-                timeout_sec=self._sf(max(0.8, self._image_dialog_timeout)),
+                timeout_sec=max(1.2, self._sf(float(self._image_dialog_timeout))),
                 key_delay=self._sf(self._key_delay),
                 debug=self._debug_log,
                 log=self._log,
-
-                # ✅ 여기 2줄 추가
                 prefer_hwnd=int(self._chat_hwnd or self._hwnd),
                 get_foreground_hwnd=w32.get_foreground_hwnd,
-
                 timings={
                     "focus_settle": self._sf(self._profile.ctrl_t.focus_settle),
                     "after_ctrl_t": self._sf(self._profile.ctrl_t.after_ctrl_t),
@@ -1209,110 +1274,17 @@ class KakaoPcDriver(KakaoSenderDriver):
                     "enter_gap_sec": self._sf(self._profile.img_dlg.enter_gap_sec),
                 },
             )
-            self._trace("IMG:ctrl_t_done", ok=ok, ms=int((time.perf_counter() - t_ct0) * 1000))
-
-            if ok:
-                self._restore_chat_focus_after_image_dialog()
-                self._sleep(max(0.02, self._send_interval))
-                self._trace("IMG:once_end", ok=True, total_ms=int((time.perf_counter() - t0) * 1000))
-                return True
-            else:
-                self._log("[CTRL+T] failed -> fallback to PASTE once")
-
-        # hwnd 만료 체크
-        if self._chat_hwnd and not w32.is_window(int(self._chat_hwnd)):
-            self._chat_hwnd = 0
-            self._mode = "MAIN"
-
-        # (1) DIB 변환/캐시
-        t_dib0 = time.perf_counter()
-        dib = self._png_to_dib_bytes(png_bytes)
-        self._trace("IMG:dib_ready", ms=int((time.perf_counter() - t_dib0) * 1000), dib_len=len(dib))
-
-        # (2) 포그라운드
-        t_fg0 = time.perf_counter()
-        self._trace_fg("IMG:fg_before")
-        self._ensure_foreground_chat()
-        self._trace("IMG:ensure_fg_done", ms=int((time.perf_counter() - t_fg0) * 1000))
-        self._trace_fg("IMG:fg_after")
-
-        # (3) 포커스 스킵 로직
-        t_fi0 = time.perf_counter()
-        focus_skipped = False
-        focused = False
-        try:
-            nowp = time.perf_counter()
-            tgt = int(self._chat_hwnd or self._hwnd)
-            if (
-                    w32.get_foreground_hwnd() == tgt
-                    and self._last_focus_hwnd == tgt
-                    and (nowp - float(self._last_focus_perf or 0.0)) <= 1.0
-            ):
-                focus_skipped = True
-                focused = True
-            else:
-                focused = bool(self._focus_chat_input_best_effort())
-        except Exception:
-            focused = False
-
-        self._trace(
-            "IMG:focus_input_done",
-            ms=int((time.perf_counter() - t_fi0) * 1000),
-            ok=focused,
-            skipped=focus_skipped,
-        )
-
-        # (4) Clipboard set (✅ win32_core 사용)
-        t_cb0 = time.perf_counter()
-        w32.set_clipboard_dib(dib)
-        self._trace("IMG:clipboard_set_done", ms=int((time.perf_counter() - t_cb0) * 1000))
-
-        # (5) paste (^V)
-        self._sleep(0.02)
-        t_v0 = time.perf_counter()
-        self._trace_fg("IMG:before_ctrl_v")
-        self._send_keys("^v", to_chat=True)
-        self._trace("IMG:paste_keys_done", ms=int((time.perf_counter() - t_v0) * 1000))
-        self._trace_fg("IMG:after_ctrl_v")
-
-        # (6) paste settle
-        if self._image_paste_settle_sec > 0:
-            self._trace("IMG:paste_settle_sleep", sec=self._image_paste_settle_sec)
-            self._sleep_abs(self._image_paste_settle_sec)
-
-        # (7) 전송 다이얼로그
-        t_dlg0 = time.perf_counter()
-        ok = send_image_dialog_hook(
-            timeout_sec=self._sf(self._image_dialog_timeout),
-            key_delay=self._sf(self._key_delay),
-            debug=self._debug_log,
-            log=self._log,
-            timings={
-                "try_interval": self._sf(self._profile.img_dlg.try_interval),
-                "loop_sleep": self._sf(self._profile.img_dlg.loop_sleep),
-                "post_click_sleep": self._sf(self._profile.img_dlg.post_click_sleep),
-                "enter_gap_sec": self._sf(self._profile.img_dlg.enter_gap_sec),
-            },
-            prefer_hwnd=int(self._chat_hwnd or self._hwnd),
-        )
-        self._trace("IMG:dialog_done", ok=ok, ms=int((time.perf_counter() - t_dlg0) * 1000))
-
-        if not ok:
-            self._trace("IMG:once_end", ok=False, total_ms=int((time.perf_counter() - t0) * 1000))
+        except Exception as e:
+            self._log(f"[CTRL+T] send exception: {e}")
             return False
 
-        # ✅ 다이얼로그 성공 직후 반드시 복구
-        self._restore_chat_focus_after_image_dialog()
+        if ok:
+            try:
+                self._restore_chat_focus_after_image_dialog()
+            except Exception:
+                pass
 
-        self._sleep(max(0.02, self._send_interval))
-
-        self._trace("IMG:once_end", ok=True, total_ms=int((time.perf_counter() - t0) * 1000))
-        return True
-
-    def _paste_image_and_send(self, png_bytes: bytes) -> bool:
-        if not png_bytes:
-            return True
-        return self._run_with_retry("IMG", lambda: self._paste_image_and_send_once(png_bytes))
+        return bool(ok)
 
     # ----------------------------
     # image dialog 이후 포커스 복구 (핵심 안정화)
@@ -1606,7 +1578,7 @@ class KakaoPcDriver(KakaoSenderDriver):
                 focus_chat_input_best_effort=self._focus_chat_input_best_effort,
                 sleep_abs=self._sleep_abs,
                 send_image_dialog_hook=send_image_dialog_hook,
-                timeout_sec=self._sf(max(0.8, self._image_dialog_timeout)),
+                timeout_sec=max(1.2, self._sf(float(self._image_dialog_timeout))),
                 key_delay=self._sf(self._key_delay),
                 debug=self._debug_log,
                 log=self._log,
@@ -1650,59 +1622,68 @@ class KakaoPcDriver(KakaoSenderDriver):
         if not name:
             raise ValueError("수신자 이름이 비어있습니다.")
 
-        items = list(campaign_items or [])
-
-        prepared: list[tuple[str, str, bytes]] = []
-        for it in items:
-            typ = str(getattr(it, "item_type", "") or "").upper().strip()
-            if typ == "TEXT":
-                t = (getattr(it, "text", "") or "").strip()
-                prepared.append(("TEXT", t, b""))
-            else:
-                b = getattr(it, "image_bytes", b"") or b""
-                try:
-                    b = bytes(b)
-                except Exception:
-                    pass
-                prepared.append(("IMG", "", b))
-
-        opened = self._open_chat_by_name(name)
-        if not opened:
-            return
-
-        failures: List[str] = []
-        sent_any = False
+        # ✅ 전송 중에는 개인창만 허용
+        _prev_open_in_main = bool(self._open_in_main)
+        self._open_in_main = False
         try:
-            for idx, (typ, t, b) in enumerate(prepared, start=1):
-                self._check_stop()
+            # ---- 기존 로직 그대로 ----
+            items = list(campaign_items or [])
 
+            prepared: list[tuple[str, str, bytes]] = []
+            for it in items:
+                typ = str(getattr(it, "item_type", "") or "").upper().strip()
                 if typ == "TEXT":
-                    if t:
-                        ok = self._paste_text_and_send(t)
-                        sent_any = True
-                        if not ok:
-                            failures.append(f"{idx}:TEXT:retry_exceeded")
+                    t = (getattr(it, "text", "") or "").strip()
+                    prepared.append(("TEXT", t, b""))
                 else:
-                    if b:
-                        ok = self._paste_image_and_send(b)
-                        sent_any = True
-                        if not ok:
-                            failures.append(f"{idx}:IMG:retry_exceeded")
+                    b = getattr(it, "image_bytes", b"") or b""
+                    try:
+                        b = bytes(b)
+                    except Exception:
+                        pass
+                    prepared.append(("IMG", "", b))
 
-                self._sleep(max(0.02, self._send_interval))
+            opened = self._open_chat_by_name(name)
+            if not opened:
+                return
 
-            if not sent_any:
-                raise RuntimeError("캠페인 아이템이 비어있어 전송할 내용이 없습니다.")
-        finally:
+            failures: List[str] = []
+            sent_any = False
             try:
-                self._close_chat()
-            except CloseForcedByConfirm:
-                failures.append("CLOSE_FORCED_CONFIRM")
-            except Exception as e:
-                self._trace("SEND_CAMPAIGN:close_chat_exception", err=str(e))
+                for idx, (typ, t, b) in enumerate(prepared, start=1):
+                    self._check_stop()
 
-        if failures:
-            raise RuntimeError("일부 아이템 전송 실패:\n" + "\n".join(failures))
+                    if typ == "TEXT":
+                        if t:
+                            ok = self._paste_text_and_send(t)
+                            sent_any = True
+                            if not ok:
+                                failures.append(f"{idx}:TEXT:retry_exceeded")
+                    else:
+                        if b:
+                            ok = self._paste_image_and_send(b)
+                            sent_any = True
+                            if not ok:
+                                failures.append(f"{idx}:IMG:retry_exceeded")
+
+                    self._sleep(max(0.02, self._send_interval))
+
+                if not sent_any:
+                    raise RuntimeError("캠페인 아이템이 비어있어 전송할 내용이 없습니다.")
+            finally:
+                try:
+                    self._close_chat()
+                except CloseForcedByConfirm:
+                    failures.append("CLOSE_FORCED_CONFIRM")
+                except Exception as e:
+                    self._trace("SEND_CAMPAIGN:close_chat_exception", err=str(e))
+
+            if failures:
+                raise RuntimeError("일부 아이템 전송 실패:\n" + "\n".join(failures))
+
+        finally:
+            # ✅ 원복
+            self._open_in_main = _prev_open_in_main
 
     def send_to_name(self, name: str, message: str, image_bytes_list: List[bytes]) -> None:
         self._check_stop()
@@ -1796,6 +1777,63 @@ class KakaoPcDriver(KakaoSenderDriver):
             self._mode = "CHAT"
             return
 
+    def _is_clipboard_image_dialog_foreground(self, fg_hwnd: int) -> bool:
+        """
+        현재 foreground hwnd가 '클립보드 이미지 전송' 모달(#32770)인지 판별.
+        - 이 모달은 title이 '' 인 경우가 많아서, title로는 판별 불가.
+        - 같은 프로세스(pid) + #32770 + texts에 '클립보드 이미지 전송' 포함이면 True.
+        """
+        try:
+            fg = int(fg_hwnd or 0)
+            if fg <= 0:
+                return False
+
+            # 같은 프로세스인지(카카오톡 프로세스)
+            try:
+                if int(w32.get_pid(fg) or 0) != int(w32.get_pid(self._hwnd) or 0):
+                    return False
+            except Exception:
+                return False
+
+            # pywinauto로 다이얼로그/텍스트 확인 (가드에 걸릴 때만 호출되므로 부담 적음)
+            Desktop, _, _ = _lazy_pywinauto()
+            dlg = Desktop(backend="win32").window(handle=fg)
+
+            try:
+                if str(getattr(dlg.element_info, "class_name", "") or "") != "#32770":
+                    return False
+            except Exception:
+                return False
+
+            try:
+                blob = " ".join([t for t in (dlg.texts() or []) if t]).strip()
+            except Exception:
+                blob = ""
+
+            return ("클립보드 이미지 전송" in blob)
+
+        except Exception:
+            return False
+
+    def _is_modal_dialog_same_pid(self, fg_hwnd: int) -> bool:
+        """
+        ✅ same pid + #32770 이면 '카카오톡 모달'로 간주.
+        - '클립보드 이미지 전송' 뿐 아니라, 전송 관련/확인창/차단 팝업 등도 동일 class로 뜸
+        - title이 비어있는 케이스가 많아서 class/pid 기반으로 우선 통과 처리
+        """
+        try:
+            fg = int(fg_hwnd or 0)
+            if fg <= 0:
+                return False
+
+            if int(w32.get_pid(fg) or 0) != int(w32.get_pid(self._hwnd) or 0):
+                return False
+
+            cls = str(w32.get_class_name(fg) or "")
+            return cls == "#32770"
+        except Exception:
+            return False
+
     # ----------------------------
     # image helpers
     # ----------------------------
@@ -1814,6 +1852,30 @@ class KakaoPcDriver(KakaoSenderDriver):
         dib = bmp[14:]
         self._dib_cache[key] = dib
         return dib
+
+    def _top_level_hwnd(self, hwnd: int) -> int:
+        """
+        ✅ foreground가 child로 튀는 케이스 대응:
+        - GetAncestor(GA_ROOT=2)로 top-level hwnd를 얻는다.
+        """
+        try:
+            h = int(hwnd or 0)
+            if h <= 0:
+                return 0
+            GA_ROOT = 2
+            root = int(w32.user32.GetAncestor(h, GA_ROOT) or 0)
+            return root if root > 0 else h
+        except Exception:
+            return int(hwnd or 0)
+
+    def _fg_top_level(self) -> int:
+        """현재 foreground hwnd를 top-level 기준으로 정규화해서 반환"""
+        try:
+            fg = int(w32.get_foreground_hwnd() or 0)
+            return int(self._top_level_hwnd(fg) or 0)
+        except Exception:
+            return 0
+
 
     # ----------------------------
     # trace utils
@@ -1841,6 +1903,81 @@ class KakaoPcDriver(KakaoSenderDriver):
         except Exception:
             pass
 
+    def _dump_mismatch_debug(self, *, stage: str, fg_hwnd: int) -> None:
+        """
+        mismatch 발생 시 원인 확정용 덤프.
+        - foreground hwnd/title/class/pid/rect
+        - main/chat hwnd 정보
+        - 가능하면(#32770) pywinauto texts 일부도 수집
+        """
+        try:
+            fg = int(fg_hwnd or 0)
+            main = int(self._hwnd or 0)
+            chat = int(self._chat_hwnd or 0)
+
+            fg_title = ""
+            fg_class = ""
+            fg_pid = 0
+            fg_rect = (0, 0, 0, 0)
+
+            try:
+                fg_title = str(w32.get_window_text(fg) or "")
+            except Exception:
+                pass
+            try:
+                fg_class = str(w32.get_class_name(fg) or "")
+            except Exception:
+                pass
+            try:
+                fg_pid = int(w32.get_pid(fg) or 0)
+            except Exception:
+                pass
+            try:
+                fg_rect = tuple(w32.get_window_rect(fg))
+            except Exception:
+                pass
+
+            main_pid = 0
+            try:
+                main_pid = int(w32.get_pid(main) or 0)
+            except Exception:
+                pass
+
+            payload = {
+                "stage": stage,
+                "recipient": (self._active_recipient or ""),
+                "fg_hwnd": fg,
+                "fg_title": fg_title,
+                "fg_class": fg_class,
+                "fg_pid": fg_pid,
+                "main_hwnd": main,
+                "main_pid": main_pid,
+                "chat_hwnd": chat,
+                "mode": (self._mode or ""),
+                "chat_in_main": bool(getattr(self, "_chat_in_main", False)),
+                "fg_rect": fg_rect,
+            }
+
+            # #32770 모달이면 texts까지 시도(가벼운 1회)
+            if fg and fg_class == "#32770":
+                try:
+                    Desktop, _, _ = _lazy_pywinauto()
+                    dlg = Desktop(backend="win32").window(handle=fg)
+                    txts = []
+                    try:
+                        txts = [t for t in (dlg.texts() or []) if t]
+                    except Exception:
+                        txts = []
+                    # 너무 길면 앞부분만
+                    payload["dlg_texts"] = txts[:20]
+                except Exception:
+                    pass
+
+            self._trace("IMG:mismatch_dump", **payload)
+
+        except Exception:
+            # 덤프 실패는 로직에 영향 주지 않음
+            pass
 
     def _invalidate_chat_input_cache(self, hwnd: int) -> None:
         """특정 hwnd의 입력창 컨트롤 캐시 무효화"""
@@ -1926,6 +2063,42 @@ class KakaoPcDriver(KakaoSenderDriver):
 
         except Exception:
             return None
+
+    def _is_main_search_no_result(self) -> bool:
+        """
+        메인 검색 결과가 '없음' 상태인지 감지.
+        - 카카오톡 검색 리스트에 '검색 결과가 없습니다' 문구가 뜨는 케이스를 대상으로 함.
+        - win32 backend 기준: window_text/texts() 기반의 보수적 감지.
+        """
+        try:
+            Desktop, _, _ = _lazy_pywinauto()
+            win = Desktop(backend="win32").window(handle=int(self._hwnd))
+
+            texts = []
+            try:
+                texts = win.texts()
+            except Exception:
+                texts = []
+
+            blob = " ".join([t for t in (texts or []) if t]).strip()
+            if not blob:
+                try:
+                    blob = str(win.window_text() or "").strip()
+                except Exception:
+                    blob = ""
+
+            keys = (
+                "검색 결과가 없습니다",
+                "검색결과가 없습니다",
+                "검색 결과 없음",
+                "검색 결과를 찾을 수 없습니다",
+                "검색 결과가 없어요",
+                "결과가 없습니다",
+            )
+            return any(k in blob for k in keys)
+
+        except Exception:
+            return False
 
 __all__ = [
     "KakaoSenderDriver",

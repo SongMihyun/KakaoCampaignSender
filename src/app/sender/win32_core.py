@@ -7,6 +7,13 @@ import time
 from ctypes import wintypes
 from typing import Tuple, Optional
 
+# -------------------------------------------------------------------
+# wintypes 보강 (환경에 따라 LRESULT 미정의)
+# -------------------------------------------------------------------
+if not hasattr(wintypes, "LRESULT"):
+    # LRESULT = LONG_PTR (WPARAM/LPARAM과 동일 계열 포인터 크기)
+    wintypes.LRESULT = wintypes.LPARAM  # type: ignore[attr-defined]
+
 # -----------------------------------------------------------------------------
 # Win32 core bindings + common helpers
 # -----------------------------------------------------------------------------
@@ -63,6 +70,9 @@ user32.GetWindowTextLengthW.restype = ctypes.c_int
 user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
 user32.GetWindowTextW.restype = ctypes.c_int
 
+user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+user32.GetClassNameW.restype = ctypes.c_int
+
 user32.OpenClipboard.argtypes = [wintypes.HWND]
 user32.OpenClipboard.restype = wintypes.BOOL
 user32.CloseClipboard.argtypes = []
@@ -88,6 +98,18 @@ user32.SetCursorPos.restype = wintypes.BOOL
 # UINT SendInput(UINT cInputs, LPINPUT pInputs, int cbSize);
 user32.SendInput.argtypes = [wintypes.UINT, ctypes.c_void_p, ctypes.c_int]
 user32.SendInput.restype = wintypes.UINT
+
+# --- SendMessageW (WM_PASTE 등 메시지 전송) ---
+user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.SendMessageW.restype = wintypes.LRESULT
+
+# --- GetAncestor (top-level/root hwnd 정규화) ---
+GA_PARENT = 1
+GA_ROOT = 2
+GA_ROOTOWNER = 3
+
+user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+user32.GetAncestor.restype = wintypes.HWND
 
 
 def lazy_pywinauto():
@@ -128,6 +150,18 @@ def get_window_text(hwnd: int) -> str:
     user32.GetWindowTextW(wintypes.HWND(hwnd), buf, n + 1)
     return (buf.value or "").strip()
 
+def get_class_name(hwnd: int) -> str:
+    """
+    hwnd의 Win32 class name 반환.
+    예) '#32770', 'KakaoTalkShadowWnd', 'RICHEDIT50W' 등
+    """
+    if not is_window(hwnd):
+        return ""
+    buf = ctypes.create_unicode_buffer(256)
+    n = int(user32.GetClassNameW(wintypes.HWND(int(hwnd)), buf, 256) or 0)
+    if n <= 0:
+        return ""
+    return (buf.value or "").strip()
 
 def get_window_rect(hwnd: int) -> Tuple[int, int, int, int]:
     rc = wintypes.RECT()
@@ -382,4 +416,8 @@ __all__ = [
     "force_foreground_strict",
     "set_clipboard_text",
     "set_clipboard_dib",
+    "get_class_name",
+    "GA_PARENT",
+    "GA_ROOT",
+    "GA_ROOTOWNER",
 ]
