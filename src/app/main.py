@@ -1,9 +1,9 @@
 from __future__ import annotations
 
+import ctypes
 import logging
 import os
 import sys
-import ctypes
 from ctypes import wintypes
 
 # ----------------------------
@@ -12,17 +12,26 @@ from ctypes import wintypes
 ole32 = ctypes.WinDLL("ole32", use_last_error=True)
 
 COINIT_APARTMENTTHREADED = 0x2
+
 S_OK = 0x00000000
 S_FALSE = 0x00000001
 RPC_E_CHANGED_MODE = 0x80010106
 
+# ✅ wintypes.HRESULT 보강 (환경에 따라 미정의)
+HRESULT = getattr(wintypes, "HRESULT", ctypes.c_long)
+
 ole32.CoInitializeEx.argtypes = [wintypes.LPVOID, wintypes.DWORD]
-ole32.CoInitializeEx.restype = wintypes.HRESULT
+ole32.CoInitializeEx.restype = HRESULT
 ole32.CoUninitialize.argtypes = []
 ole32.CoUninitialize.restype = None
 
 
 def _com_init_sta_main_best_effort() -> bool:
+    """
+    COM STA 선점(가능하면 True).
+    - S_OK / S_FALSE: 초기화 성공
+    - RPC_E_CHANGED_MODE: 이미 MTA 등 다른 모드로 초기화되어 모드 변경 불가 (이 경우 False)
+    """
     hr = int(ole32.CoInitializeEx(None, COINIT_APARTMENTTHREADED))
     if hr in (S_OK, S_FALSE):
         return True
@@ -55,6 +64,7 @@ def main() -> None:
     splash = None
     try:
         from app.ui.splash import make_splash
+
         splash = make_splash()
         splash.show()
         app.processEvents()
@@ -92,6 +102,7 @@ def main() -> None:
     _splash_msg("데이터베이스 초기화 중…")
     try:
         from app.data.db_bootstrap import ensure_db_initialized
+
         ensure_db_initialized()
     except Exception as e:
         logging.getLogger("main").exception(f"DB init failed: {e}")
