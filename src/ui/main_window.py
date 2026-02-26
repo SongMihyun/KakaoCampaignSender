@@ -102,11 +102,20 @@ class MainWindow(QMainWindow):
         self._apply_style()
 
     def closeEvent(self, event) -> None:
+        # 1) 발송 워커/드라이버 정리
         try:
             if hasattr(self, "send_page") and self.send_page:
                 self.send_page.cleanup()
         except Exception:
             pass
+
+        # 2) 업데이트가 예약되어 있으면 종료 직전에 설치 실행
+        try:
+            from app.updater import launch_installer_if_pending
+            launch_installer_if_pending()
+        except Exception:
+            pass
+
         super().closeEvent(event)
 
     def _go_page(self, idx: int) -> None:

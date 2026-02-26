@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Optional
 
 from app.sender.image_attach_cache import get_or_create_temp_png
+from app.sender.win32_core import close_open_dialog_if_any, ensure_foreground_chat_hwnd
 
 
 def send_png_via_ctrl_t(
@@ -113,7 +114,19 @@ def send_png_via_ctrl_t(
         )
         log(f"[CTRL+T] dialog_hook:end ok={ok} ms={_ms(time.perf_counter() - t_d0)} prefer_hwnd={prefer_hwnd}")
         log(f"[CTRL+T] send result={ok} path={tmp_path}")
-        return ok
+
+        # ✅ PATCH: Ctrl+T 실패 시 '열기(#32770)' 모달 정리 + 채팅 복귀
+        if not ok:
+            try:
+                close_open_dialog_if_any()
+            except Exception:
+                pass
+            try:
+                ensure_foreground_chat_hwnd(int(prefer_hwnd or 0))
+            except Exception:
+                pass
+
+        return bool(ok)
     except Exception as e:
         log(f"[CTRL+T] dialog hook failed: {e}")
         return False

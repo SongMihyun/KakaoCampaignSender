@@ -331,6 +331,101 @@ def force_foreground_strict(hwnd: int, *, retries: int = 6, sleep: float = 0.06)
         f"※ 자동화 앱/대상앱 권한(관리자/일반)을 동일하게 맞추세요."
     )
 
+def _is_open_dialog(title: str, cls: str) -> bool:
+    t = (title or "").strip()
+    c = (cls or "").strip()
+    return (c == "#32770") and (t in ("열기", "Open") or ("열기" in t) or ("Open" in t))
+
+
+def close_open_dialog_if_any(
+    *,
+    wait_after_sec: float = 0.05,
+    max_try: int = 3,
+) -> bool:
+    """
+    Foreground가 '열기(Open)' 공용 파일 다이얼로그(#32770)로 튀는 케이스를 닫는다.
+    중요: foreground가 dialog 내부 child(Edit/List)로 잡히는 경우가 많아서
+          GetAncestor(GA_ROOT)로 top-level을 기준으로 판별/닫기한다.
+    """
+    import time
+    import logging
+    from ctypes import wintypes
+
+    from app.sender.win32_core import (
+        user32,
+        get_foreground_hwnd,
+        get_window_text,
+        get_class_name,
+        get_pid,
+    )
+
+    logger = logging.getLogger(__name__)
+
+    GA_ROOT = 2
+    WM_CLOSE = 0x0010
+
+    def _root(hwnd: int) -> int:
+        try:
+            h = int(hwnd or 0)
+            if h <= 0:
+                return 0
+            r = int(user32.GetAncestor(wintypes.HWND(h), GA_ROOT) or 0)
+            return r if r > 0 else h
+        except Exception:
+            return int(hwnd or 0)
+
+    def _looks_like_open_dialog(hwnd: int) -> bool:
+        try:
+            h = int(hwnd or 0)
+            if h <= 0:
+                return False
+            cls = str(get_class_name(h) or "")
+            if cls != "#32770":
+                return False
+
+            title = str(get_window_text(h) or "").strip()
+            # title이 빈 값인 케이스도 있어 "열기/Open" 포함 여부로만 강하게 묶지 않음
+            if title and (("열기" in title) or ("Open" in title)):
+                return True
+
+            # title이 비어도, 파일 대화상자일 수 있으니 보수적으로 True 처리(운영 안정성 우선)
+            return True
+        except Exception:
+            return False
+
+    found = False
+
+    for _ in range(max_try):
+        fg = int(get_foreground_hwnd() or 0)
+        top = _root(fg)
+        if not _looks_like_open_dialog(top):
+            break
+
+        found = True
+        try:
+            # 가장 확실: WM_CLOSE
+            user32.PostMessageW(wintypes.HWND(top), WM_CLOSE, 0, 0)
+            time.sleep(wait_after_sec)
+        except Exception as e:
+            logger.info(f"[MODAL] WM_CLOSE failed: {e}")
+            # 최후수단: ESC
+            try:
+                from pywinauto.keyboard import send_keys
+                send_keys("{ESC}")
+                time.sleep(wait_after_sec)
+            except Exception:
+                pass
+
+    return found
+
+def ensure_foreground_chat_hwnd(chat_hwnd: int, settle_sec: float = 0.02) -> None:
+    """
+    모달 정리 후 채팅창을 다시 전면화한다.
+    """
+    import time
+    if chat_hwnd:
+        force_foreground_strict(chat_hwnd)
+        time.sleep(settle_sec)
 
 # -----------------------------------------------------------------------------
 # Clipboard helpers

@@ -74,20 +74,16 @@ def main() -> None:
         except Exception:
             pass
 
-    # ✅ 3) 업데이트 체크 (여기서 업데이트 시작되면 앱 종료)
-    #    - 네트워크 실패/차단이면 조용히 스킵하고 계속 실행
+    # ✅ 3) 업데이트 체크/다운로드 준비 (실패해도 앱은 계속 실행)
     _splash_msg("업데이트 확인 중…")
     try:
-        from app.update.update_service import check_and_run_update
-        started_update = check_and_run_update(parent=None)
-        if started_update:
-            # 설치 실행 후 종료 요청됨
-            if com_inited:
-                try:
-                    ole32.CoUninitialize()
-                except Exception:
-                    pass
-            sys.exit(0)
+        from app.version import __version__, LATEST_JSON_URL
+        from app.updater import check_and_prepare_update, set_pending_update
+
+        plan = check_and_prepare_update(LATEST_JSON_URL, __version__)
+        if plan.available:
+            # ✅ 종료 시 설치되도록 예약만 걸어둠
+            set_pending_update(plan)
     except Exception:
         # 업데이트 실패는 런타임 중단 사유 아님
         pass

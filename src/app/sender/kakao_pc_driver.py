@@ -20,6 +20,7 @@ from app.sender.kakao_pc_hooks import open_chat_by_name_hook, send_image_dialog_
 from app.sender.image_attach_ctrl_t import send_png_via_ctrl_t
 from ctypes import wintypes
 from app.sender.image_attach_ctrl_v import attach_image_via_ctrl_v
+from app.sender.win32_core import close_open_dialog_if_any
 
 
 # ✅ 단일 Win32 코어 사용
@@ -916,6 +917,12 @@ class KakaoPcDriver(KakaoSenderDriver):
         if not name:
             return False
 
+        # ✅ PATCH: 이전 수신자에서 남은 '열기(#32770)' 모달 선 정리 (연쇄 NOT_FOUND 방지)
+        try:
+            close_open_dialog_if_any()
+        except Exception:
+            pass
+
         # ✅ open context reset
         self._chat_in_main = False
         self._chat_hwnd = 0
@@ -1429,6 +1436,12 @@ class KakaoPcDriver(KakaoSenderDriver):
                 return
 
             self._sleep_abs(0.10)
+
+            # ✅ PATCH: ESC 전에 '열기(Open)' 같은 모달부터 정리
+            try:
+                close_open_dialog_if_any()
+            except Exception:
+                pass
 
             try:
                 self._send_keys_fast("{ESC}")
