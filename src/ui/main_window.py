@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import sys
+import subprocess
+import os
+
 from PySide6.QtWidgets import (
     QMainWindow,
     QWidget,
@@ -38,7 +41,6 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
 
-        # ✅ 창 제목 "카센더"
         self.setWindowTitle(__display_name__)
         self.resize(1180, 760)
 
@@ -50,6 +52,11 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(10)
 
         self.header = Header()
+
+        # ✅ 햄버거 메뉴 액션 연결(복구 포인트)
+        self.header.logout_requested.connect(self.logout)
+        self.header.uninstall_requested.connect(self.uninstall_application)
+
         self.nav = Navigation()
         self.status = StatusBar()
 
@@ -192,8 +199,23 @@ class MainWindow(QMainWindow):
                 padding: 8px 10px;
                 background: #ffffff;
             }
+
+            /* ✅ 헤더 햄버거 버튼 살짝 정리 */
+            QToolButton#HeaderMenuBtn {
+                border: 1px solid #e5e7eb;
+                border-radius: 8px;
+                background: #ffffff;
+                padding: 0px 6px;
+                font-weight: 900;
+            }
+            QToolButton#HeaderMenuBtn:hover {
+                background: #f3f4f6;
+            }
         """)
 
+    # -------------------------
+    # ✅ 전체 초기화(기존)
+    # -------------------------
     def reset_application(self) -> None:
         reply = QMessageBox.question(
             self,
@@ -225,6 +247,77 @@ class MainWindow(QMainWindow):
             "종료 후 로컬 데이터가 자동으로 삭제됩니다.\n\n"
             f"삭제 로그: {log_path}",
         )
+
+        QApplication.quit()
+        sys.exit(0)
+
+    # -------------------------
+    # ✅ 로그아웃(로그인 다이얼로그로 되돌리기)
+    # -------------------------
+    def logout(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "로그아웃",
+            "로그아웃 하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # ✅ 로그인 화면으로 되돌리는 흐름(현재 구조에 맞게)
+        try:
+            from ui.dialogs.login_dialog import LoginDialog
+        except Exception:
+            QMessageBox.information(self, "안내", "LoginDialog를 찾을 수 없습니다.")
+            return
+
+        self.hide()
+        ok = LoginDialog.run_login(self)
+        if ok:
+            self.show()
+            self._go_page(0)
+        else:
+            self.close()
+
+    # -------------------------
+    # ✅ 프로그램 제거(언인스톨러 실행)
+    # -------------------------
+    def uninstall_application(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "프로그램 제거",
+            "프로그램 제거(언인스톨)를 실행합니다.\n"
+            "제거가 시작되면 프로그램은 종료됩니다.\n\n계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            if hasattr(self, "send_page") and self.send_page:
+                self.send_page.cleanup()
+        except Exception:
+            pass
+
+        # ✅ Inno Setup 기본 언인스톨러: unins000.exe
+        uninst = os.path.join(os.path.dirname(sys.executable), "unins000.exe")
+
+        if not os.path.exists(uninst):
+            QMessageBox.warning(
+                self,
+                "언인스톨러 없음",
+                "언인스톨러(unins000.exe)를 찾지 못했습니다.\n"
+                "Windows '앱 및 기능'에서 카센더를 제거해주세요.",
+            )
+            return
+
+        try:
+            subprocess.Popen([uninst], shell=False)
+        except Exception as e:
+            QMessageBox.critical(self, "제거 실행 실패", f"제거 실행 중 오류:\n{e}")
+            return
 
         QApplication.quit()
         sys.exit(0)

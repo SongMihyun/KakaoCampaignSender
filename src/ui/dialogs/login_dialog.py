@@ -4,12 +4,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSettings
 from PySide6.QtGui import QIcon, QColor
 from PySide6.QtWidgets import (
     QDialog, QWidget, QVBoxLayout, QHBoxLayout,
     QComboBox, QLineEdit, QPushButton, QMessageBox,
-    QGraphicsDropShadowEffect, QLabel
+    QGraphicsDropShadowEffect, QLabel, QCheckBox
 )
 
 # ✅ 하드코딩 계정
@@ -84,6 +84,15 @@ class LogoWidget(QWidget):
 # Main dialog
 # -----------------------------
 class LoginDialog(QDialog):
+    # ✅ 설정 저장 키(QSettings)
+    # 회사/앱명은 충돌만 안 나면 됩니다.
+    ORG_NAME = "Kasender"
+    APP_NAME = "Kasender"
+
+    KEY_REMEMBER = "login/remember"
+    KEY_ID = "login/id"
+    KEY_PW = "login/pw"
+
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
 
@@ -140,7 +149,6 @@ class LoginDialog(QDialog):
         # inputs area (가로 폭/위치 조정)
         form = QVBoxLayout()
         form.setSpacing(12)
-        # ✅ 가로폭을 넓혀 카톡처럼(너무 아래 쏠림 방지 위해 위쪽 마진 0)
         form.setContentsMargins(72, 0, 72, 0)
 
         self.cbo_id = QComboBox()
@@ -149,7 +157,6 @@ class LoginDialog(QDialog):
         self.cbo_id.setInsertPolicy(QComboBox.NoInsert)
         self.cbo_id.setMinimumHeight(64)
         self.cbo_id.setPlaceholderText("아이디")
-        self.cbo_id.addItems(["mimi"])
 
         self.txt_pw = QLineEdit()
         self.txt_pw.setObjectName("PwBox")
@@ -157,12 +164,17 @@ class LoginDialog(QDialog):
         self.txt_pw.setPlaceholderText("비밀번호")
         self.txt_pw.setMinimumHeight(64)
 
+        # ✅ 저장 체크박스 추가
+        self.chk_remember = QCheckBox("아이디/비밀번호 저장")
+        self.chk_remember.setObjectName("RememberChk")
+
         self.btn_login = QPushButton("로그인")
         self.btn_login.setObjectName("LoginBtn")
         self.btn_login.setMinimumHeight(68)
 
         form.addWidget(self.cbo_id)
         form.addWidget(self.txt_pw)
+        form.addWidget(self.chk_remember)
         form.addWidget(self.btn_login)
 
         root.addLayout(form)
@@ -178,8 +190,55 @@ class LoginDialog(QDialog):
 
         self._apply_style()
 
-        # 포커스
-        self.cbo_id.setFocus()
+        # ✅ 저장된 값 로드(여기서 자동 채움)
+        self._load_saved_login()
+
+        # 포커스: 아이디가 있으면 비번으로, 없으면 아이디로
+        if (self.cbo_id.currentText() or "").strip():
+            self.txt_pw.setFocus()
+        else:
+            self.cbo_id.setFocus()
+
+    # -------------------------
+    # Settings
+    # -------------------------
+    def _settings(self) -> QSettings:
+        return QSettings(self.ORG_NAME, self.APP_NAME)
+
+    def _load_saved_login(self) -> None:
+        s = self._settings()
+        remember = bool(s.value(self.KEY_REMEMBER, False, type=bool))
+        saved_id = str(s.value(self.KEY_ID, "", type=str) or "")
+        saved_pw = str(s.value(self.KEY_PW, "", type=str) or "")
+
+        self.chk_remember.setChecked(remember)
+
+        if saved_id:
+            # 콤보에 없으면 추가 후 세팅
+            if self.cbo_id.findText(saved_id) < 0:
+                self.cbo_id.addItem(saved_id)
+            self.cbo_id.setCurrentText(saved_id)
+
+        # 비밀번호는 체크된 경우에만 복원
+        if remember and saved_pw:
+            self.txt_pw.setText(saved_pw)
+
+    def _save_or_clear_login(self) -> None:
+        s = self._settings()
+
+        uid = (self.cbo_id.currentText() or "").strip()
+        pw = (self.txt_pw.text() or "").strip()
+        remember = self.chk_remember.isChecked()
+
+        # 아이디는 편의상 항상 저장
+        s.setValue(self.KEY_ID, uid)
+
+        if remember:
+            s.setValue(self.KEY_REMEMBER, True)
+            s.setValue(self.KEY_PW, pw)   # ✅ 요청대로 비번도 저장(평문)
+        else:
+            s.setValue(self.KEY_REMEMBER, False)
+            s.setValue(self.KEY_PW, "")   # 저장 해제 시 비번 제거
 
     def _apply_style(self) -> None:
         self.setStyleSheet("""
@@ -210,6 +269,13 @@ class LoginDialog(QDialog):
             QComboBox#IdBox::drop-down { border: none; width: 38px; }
             QComboBox#IdBox::down-arrow { width: 10px; height: 10px; }
 
+            QCheckBox#RememberChk {
+                spacing: 8px;
+                padding-left: 2px;
+                font-size: 13px;
+                color: rgba(0,0,0,0.65);
+            }
+
             QPushButton#LoginBtn {
                 background: rgba(255,255,255,0.55);
                 border: 1px solid rgba(0,0,0,0.12);
@@ -227,6 +293,8 @@ class LoginDialog(QDialog):
         pw = (self.txt_pw.text() or "").strip()
 
         if uid == LOGIN_ID and pw == LOGIN_PW:
+            # ✅ 로그인 성공 시 저장/해제 처리
+            self._save_or_clear_login()
             self.accept()
             return
 
