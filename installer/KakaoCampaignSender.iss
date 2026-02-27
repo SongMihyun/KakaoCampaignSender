@@ -1,13 +1,13 @@
 ; installer/KakaoCampaignSender.iss
 ; ------------------------------------------------------------
 ; KakaoCampaignSender Installer (Inno Setup 6)
-; - CI injects:
-;   ISCC.exe /DMyAppVersion=1.2.3 /DOutputDir="..." /DMyAppDistDir="..."
-; - Installs from PyInstaller output: dist\app\KakaoCampaignSender\*
 ; ------------------------------------------------------------
 
 #define MyAppName "KakaoCampaignSender"
 #define MyAppExeName "KakaoCampaignSender.exe"
+
+; ✅ 사용자 노출용 바로가기 이름
+#define MyShortcutName "카센더"
 
 ; ✅ CI에서 /DMyAppDistDir 로 주입. 로컬 빌드용 기본값도 제공.
 #ifndef MyAppDistDir
@@ -60,15 +60,16 @@ Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"
 Name: "desktopicon"; Description: "바탕화면 바로가기 생성"; GroupDescription: "추가 작업:"; Flags: unchecked
 
 [Files]
-; ✅ PyInstaller 결과물을 통째로 설치 (CI/로컬 모두 동일)
+; ✅ PyInstaller 결과물을 통째로 설치
 Source: "{#MyAppDistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
-; ✅ 아이콘을 설치 폴더에 복사(바로가기용)
+; ✅ 아이콘 설치 폴더에 복사(바로가기용)
 Source: "{#MyAppIconSource}"; DestDir: "{app}"; DestName: "{#MyAppIconName}"; Flags: ignoreversion
 
 [Icons]
-Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppIconName}"
-Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\{#MyAppIconName}"
+; ✅ 사용자 노출 이름은 "카센더"
+Name: "{autoprograms}\{#MyShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; IconFilename: "{app}\{#MyAppIconName}"
+Name: "{autodesktop}\{#MyShortcutName}"; Filename: "{app}\{#MyAppExeName}"; WorkingDir: "{app}"; Tasks: desktopicon; IconFilename: "{app}\{#MyAppIconName}"
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{#MyAppName} 실행"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "{#MyShortcutName} 실행"; Flags: nowait postinstall skipifsilent

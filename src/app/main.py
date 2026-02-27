@@ -60,6 +60,17 @@ def main() -> None:
 
     app = QApplication(sys.argv)
 
+    # ✅ 1.5) 로그인(통과해야만 앱 실행)
+    try:
+        from ui.dialogs.login_dialog import LoginDialog
+        ok = LoginDialog.run_login()
+        if not ok:
+            # 로그인 취소/실패로 종료
+            sys.exit(0)
+    except Exception:
+        # 로그인 모듈 로드 실패 시 보수적으로 종료
+        sys.exit(0)
+
     # ✅ 2) 스플래시(로딩 표시) 즉시 노출
     splash = None
     try:

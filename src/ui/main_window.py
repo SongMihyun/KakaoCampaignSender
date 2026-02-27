@@ -1,4 +1,4 @@
-# (파일 경로는 질문에 나온 두 번째 코드 블록 파일 기준)
+# src/ui/main_window.py
 from __future__ import annotations
 
 import sys
@@ -16,9 +16,10 @@ from app.data.contacts_repo import ContactsRepo
 from app.data.groups_repo import GroupsRepo
 from app.data.campaigns_repo import CampaignsRepo
 from app.data.send_lists_repo import SendListsRepo
-from app.data.send_logs_repo import SendLogsRepo   # ✅ 추가
+from app.data.send_logs_repo import SendLogsRepo
 
 from app.system.reset_app import schedule_delete_all_local_data
+from app.version import __display_name__
 
 from ui.layout.header import Header
 from ui.layout.navigation import Navigation
@@ -36,7 +37,9 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle("Kakao Campaign Sender (Local)")
+
+        # ✅ 창 제목 "카센더"
+        self.setWindowTitle(__display_name__)
         self.resize(1180, 760)
 
         root = QWidget()
@@ -47,10 +50,6 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(10)
 
         self.header = Header()
-        # ✅ Header 메뉴 액션 연결
-        self.header.logout_requested.connect(self.logout)
-        self.header.uninstall_requested.connect(self.uninstall_application)
-
         self.nav = Navigation()
         self.status = StatusBar()
 
@@ -63,7 +62,6 @@ class MainWindow(QMainWindow):
         self.campaigns_repo = CampaignsRepo(db_path)
         self.send_lists_repo = SendListsRepo(db_path)
 
-        # ✅ 로그 Repo 추가
         self.send_logs_repo = SendLogsRepo(db_path)
         self.send_logs_repo.ensure_tables()
 
@@ -81,11 +79,10 @@ class MainWindow(QMainWindow):
             on_status=self.status.set_message,
         )
 
-        # ✅ LogsPage는 repo 주입형으로 생성
         self.logs_page = LogsPage(
             logs_repo=self.send_logs_repo,
             campaigns_repo=self.campaigns_repo,
-            on_reset_all=self.reset_application,  # ✅ 전체 리셋 버튼이 MainWindow.reset_application 호출
+            on_reset_all=self.reset_application,
         )
 
         self.stack.addWidget(self.contacts_page)  # 0
@@ -106,14 +103,12 @@ class MainWindow(QMainWindow):
         self._apply_style()
 
     def closeEvent(self, event) -> None:
-        # 1) 발송 워커/드라이버 정리
         try:
             if hasattr(self, "send_page") and self.send_page:
                 self.send_page.cleanup()
         except Exception:
             pass
 
-        # 2) 업데이트가 예약되어 있으면 종료 직전에 설치 실행
         try:
             from app.updater import launch_installer_if_pending
             launch_installer_if_pending()
@@ -133,7 +128,6 @@ class MainWindow(QMainWindow):
         self.header.set_subtitle(title)
         self.status.set_message(f"Ready | {title}")
 
-        # ✅ 로그 페이지 진입 시 자동 새로고침(운영 UX 개선)
         try:
             if idx == 4 and hasattr(self, "logs_page") and self.logs_page:
                 self.logs_page.refresh()
@@ -200,7 +194,6 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    # (기존 reset_application은 유지 가능: 메뉴/별도 버튼에서 쓰려면 남겨두세요)
     def reset_application(self) -> None:
         reply = QMessageBox.question(
             self,
@@ -233,64 +226,5 @@ class MainWindow(QMainWindow):
             f"삭제 로그: {log_path}",
         )
 
-        QApplication.quit()
-        sys.exit(0)
-
-
-    def logout(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "로그아웃",
-            "로그아웃 하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        # 현재는 계정/세션 개념이 없으므로 최소 동작: 홈으로 이동
-        self._go_page(0)
-        QMessageBox.information(self, "완료", "로그아웃 되었습니다.")
-
-    def uninstall_application(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "프로그램 제거",
-            "프로그램 제거(언인스톨)를 실행합니다.\n"
-            "제거가 시작되면 프로그램은 종료됩니다.\n\n계속하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        # 1) 발송 워커/드라이버 정리
-        try:
-            if hasattr(self, "send_page") and self.send_page:
-                self.send_page.cleanup()
-        except Exception:
-            pass
-
-        # 2) 언인스톨러 실행
-        try:
-            from app.system.uninstall import find_uninstaller, launch_uninstaller
-
-            uninst = find_uninstaller()
-            if not uninst:
-                QMessageBox.warning(
-                    self,
-                    "언인스톨러 없음",
-                    "언인스톨러를 찾지 못했습니다.\n"
-                    "Windows '앱 및 기능'에서 KakaoCampaignSender를 제거해주세요.",
-                )
-                return
-
-            launch_uninstaller(uninst)
-
-        except Exception as e:
-            QMessageBox.critical(self, "제거 실행 실패", f"제거 실행 중 오류:\n{e}")
-            return
-
-        # 3) 앱 종료(언인스톨 진행을 위해)
         QApplication.quit()
         sys.exit(0)
