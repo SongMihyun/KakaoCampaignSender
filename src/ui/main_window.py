@@ -47,6 +47,10 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(10)
 
         self.header = Header()
+        # ✅ Header 메뉴 액션 연결
+        self.header.logout_requested.connect(self.logout)
+        self.header.uninstall_requested.connect(self.uninstall_application)
+
         self.nav = Navigation()
         self.status = StatusBar()
 
@@ -229,5 +233,64 @@ class MainWindow(QMainWindow):
             f"삭제 로그: {log_path}",
         )
 
+        QApplication.quit()
+        sys.exit(0)
+
+
+    def logout(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "로그아웃",
+            "로그아웃 하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 현재는 계정/세션 개념이 없으므로 최소 동작: 홈으로 이동
+        self._go_page(0)
+        QMessageBox.information(self, "완료", "로그아웃 되었습니다.")
+
+    def uninstall_application(self) -> None:
+        reply = QMessageBox.question(
+            self,
+            "프로그램 제거",
+            "프로그램 제거(언인스톨)를 실행합니다.\n"
+            "제거가 시작되면 프로그램은 종료됩니다.\n\n계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # 1) 발송 워커/드라이버 정리
+        try:
+            if hasattr(self, "send_page") and self.send_page:
+                self.send_page.cleanup()
+        except Exception:
+            pass
+
+        # 2) 언인스톨러 실행
+        try:
+            from app.system.uninstall import find_uninstaller, launch_uninstaller
+
+            uninst = find_uninstaller()
+            if not uninst:
+                QMessageBox.warning(
+                    self,
+                    "언인스톨러 없음",
+                    "언인스톨러를 찾지 못했습니다.\n"
+                    "Windows '앱 및 기능'에서 KakaoCampaignSender를 제거해주세요.",
+                )
+                return
+
+            launch_uninstaller(uninst)
+
+        except Exception as e:
+            QMessageBox.critical(self, "제거 실행 실패", f"제거 실행 중 오류:\n{e}")
+            return
+
+        # 3) 앱 종료(언인스톨 진행을 위해)
         QApplication.quit()
         sys.exit(0)
