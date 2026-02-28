@@ -16,11 +16,10 @@ from app.data.campaigns_repo import CampaignsRepo, CampaignRow, ItemType
 from ui.pages.campaign_name_dialog import CampaignNameDialog
 from ui.pages.text_item_dialog import TextItemDialog
 from ui.pages.image_preview_dialog import ImagePreviewDialog
-
 from ui.utils.worker import run_bg
 
-# ✅ STA 파일피커(요즘 스타일)
 from app.platform.win_file_picker import pick_open_files, pick_open_file, Filter
+from ui.app_events import app_events
 
 
 @dataclass
@@ -408,6 +407,12 @@ class CampaignPage(QWidget):
         self._on_status(f"캠페인 저장: {name} (id={cid})")
         self._reload_campaigns_combo()
 
+        # ✅ 다른 페이지(발송 등)도 즉시 갱신되도록 이벤트 발행
+        try:
+            app_events.campaigns_changed.emit()
+        except Exception:
+            pass
+
     def _load_selected_campaign(self) -> None:
         cid = self._selected_campaign_id()
         if cid is None:
@@ -451,5 +456,10 @@ class CampaignPage(QWidget):
             return
 
         self._reload_campaigns_combo()
+        # ✅ 다른 페이지(발송 등)도 즉시 갱신되도록 이벤트 발행
+        try:
+            app_events.campaigns_changed.emit()
+        except Exception:
+            pass
         self._on_status(f"캠페인 삭제: id={cid}")
         QMessageBox.information(self, "완료", f"캠페인 삭제 완료 (id={cid})")

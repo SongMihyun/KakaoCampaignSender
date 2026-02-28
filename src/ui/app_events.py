@@ -12,6 +12,7 @@ class AppEvents(QObject):
     """
     contacts_changed = Signal()
     groups_changed = Signal()
+    campaigns_changed = Signal()
 
 
 # 전역 싱글톤

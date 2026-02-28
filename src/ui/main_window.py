@@ -1,4 +1,3 @@
-# src/ui/main_window.py
 from __future__ import annotations
 
 import sys
@@ -21,6 +20,7 @@ from app.data.campaigns_repo import CampaignsRepo
 from app.data.send_lists_repo import SendListsRepo
 from app.data.send_logs_repo import SendLogsRepo
 
+from app.stores.contacts_store import ContactsStore
 from app.system.reset_app import schedule_delete_all_local_data
 from app.version import __display_name__
 
@@ -52,16 +52,16 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(10)
 
         self.header = Header()
-
-        # ✅ 햄버거 메뉴 액션 연결(복구 포인트)
         self.header.logout_requested.connect(self.logout)
         self.header.uninstall_requested.connect(self.uninstall_application)
 
         self.nav = Navigation()
         self.status = StatusBar()
-
         self.stack = QStackedWidget()
 
+        # -------------------------
+        # Repos / Store
+        # -------------------------
         db_path = contacts_db_path()
 
         self.contacts_repo = ContactsRepo(db_path)
@@ -72,13 +72,47 @@ class MainWindow(QMainWindow):
         self.send_logs_repo = SendLogsRepo(db_path)
         self.send_logs_repo.ensure_tables()
 
-        self.contacts_page = ContactsPage(repo=self.contacts_repo, on_status=self.status.set_message)
-        self.groups_page = GroupsPage(repo=self.groups_repo, on_status=self.status.set_message)
-        self.campaign_page = CampaignPage(repo=self.campaigns_repo, on_status=self.status.set_message)
+        self.contacts_store = ContactsStore()
+
+        # ✅ 이벤트 허브(전역 동기화) - 로딩 성공/실패와 무관하게 항상 연결
+        from ui.app_events import app_events
+        app_events.contacts_changed.connect(self._on_contacts_changed_global)  # type: ignore[attr-defined]
+
+        # ✅ 최초 1회 로딩 (list_all/search_contacts 중 하나로 통일)
+        try:
+            self.contacts_store.load_rows(self.contacts_repo.list_all())
+        except Exception:
+            # 최후수단
+            try:
+                self.contacts_store.load_rows(self.contacts_repo.search_contacts(""))
+            except Exception:
+                self.contacts_store.clear()
+
+        # -------------------------
+        # Pages
+        # -------------------------
+        self.contacts_page = ContactsPage(
+            repo=self.contacts_repo,
+            contacts_store=self.contacts_store,
+            on_status=self.status.set_message
+        )
+
+        self.groups_page = GroupsPage(
+            repo=self.groups_repo,
+            contacts_repo=self.contacts_repo,
+            contacts_store=self.contacts_store,
+            on_status=self.status.set_message
+        )
+
+        self.campaign_page = CampaignPage(
+            repo=self.campaigns_repo,
+            on_status=self.status.set_message
+        )
 
         self.send_page = SendPage(
             contacts_repo=self.contacts_repo,
             groups_repo=self.groups_repo,
+            contacts_store=self.contacts_store,
             campaigns_repo=self.campaigns_repo,
             send_lists_repo=self.send_lists_repo,
             send_logs_repo=self.send_logs_repo,
@@ -200,7 +234,6 @@ class MainWindow(QMainWindow):
                 background: #ffffff;
             }
 
-            /* ✅ 헤더 햄버거 버튼 살짝 정리 */
             QToolButton#HeaderMenuBtn {
                 border: 1px solid #e5e7eb;
                 border-radius: 8px;
@@ -213,9 +246,70 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    # -------------------------
-    # ✅ 전체 초기화(기존)
-    # -------------------------
+    def _load_contacts_store_from_db(self) -> int:
+        all_rows = self.contacts_repo.search_contacts("")
+        self.contacts_store.load_rows(all_rows)
+        return len(all_rows)
+
+    def _on_contacts_changed_global(self) -> None:
+        # 1) 디바운스 타이머 준비(최초 1회 생성)
+        if not hasattr(self, "_contacts_sync_timer"):
+            from PySide6.QtCore import QTimer
+            self._contacts_sync_timer = QTimer(self)  # type: ignore[attr-defined]
+            self._contacts_sync_timer.setSingleShot(True)  # type: ignore[attr-defined]
+            self._contacts_sync_timer.timeout.connect(self._do_contacts_store_sync_bg)  # type: ignore[attr-defined]
+
+        try:
+            self._contacts_sync_timer.start(120)  # type: ignore[attr-defined]
+        except Exception:
+            self._do_contacts_store_sync_bg()
+
+    def _do_contacts_store_sync_bg(self) -> None:
+        try:
+            from ui.utils.worker import run_bg
+        except Exception:
+            try:
+                cnt = self._load_contacts_store_from_db()
+                self.status.set_message(f"대상자 캐시 동기화 완료: {cnt}건")
+            except Exception as e:
+                self.status.set_message(f"대상자 캐시 동기화 실패: {e}")
+            return
+
+        def job():
+            return self.contacts_repo.search_contacts("")
+
+        def done(all_rows):
+            try:
+                self.contacts_store.load_rows(all_rows)
+                self._refresh_pages_after_contacts_sync()
+                self.status.set_message(f"대상자 캐시 동기화 완료: {len(all_rows)}건")
+            except Exception as e:
+                self.status.set_message(f"대상자 캐시 반영 실패: {e}")
+
+        def err(tb: str):
+            self.status.set_message(f"대상자 캐시 동기화 실패: {tb}")
+
+        run_bg(job, on_done=done, on_error=err)
+
+    def _refresh_pages_after_contacts_sync(self) -> None:
+        try:
+            if hasattr(self, "groups_page") and self.groups_page:
+                if hasattr(self.groups_page, "refresh_candidates"):
+                    self.groups_page.refresh_candidates()
+                if hasattr(self.groups_page, "refresh"):
+                    self.groups_page.refresh()
+        except Exception:
+            pass
+
+        try:
+            if hasattr(self, "send_page") and self.send_page:
+                if hasattr(self.send_page, "refresh"):
+                    self.send_page.refresh()
+                if hasattr(self.send_page, "refresh_groups"):
+                    self.send_page.refresh_groups()
+        except Exception:
+            pass
+
     def reset_application(self) -> None:
         reply = QMessageBox.question(
             self,
@@ -251,9 +345,6 @@ class MainWindow(QMainWindow):
         QApplication.quit()
         sys.exit(0)
 
-    # -------------------------
-    # ✅ 로그아웃(로그인 다이얼로그로 되돌리기)
-    # -------------------------
     def logout(self) -> None:
         reply = QMessageBox.question(
             self,
@@ -265,7 +356,6 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        # ✅ 로그인 화면으로 되돌리는 흐름(현재 구조에 맞게)
         try:
             from ui.dialogs.login_dialog import LoginDialog
         except Exception:
@@ -280,9 +370,6 @@ class MainWindow(QMainWindow):
         else:
             self.close()
 
-    # -------------------------
-    # ✅ 프로그램 제거(언인스톨러 실행)
-    # -------------------------
     def uninstall_application(self) -> None:
         reply = QMessageBox.question(
             self,
@@ -301,7 +388,6 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
-        # ✅ Inno Setup 기본 언인스톨러: unins000.exe
         uninst = os.path.join(os.path.dirname(sys.executable), "unins000.exe")
 
         if not os.path.exists(uninst):

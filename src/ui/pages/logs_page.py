@@ -22,6 +22,7 @@ from app.paths import user_data_dir
 from ui.pages.campaign_preview_dialog import CampaignPreviewDialog
 
 
+
 class LogsPage(QWidget):
     """
     로그/리포트 화면
@@ -33,11 +34,11 @@ class LogsPage(QWidget):
     """
 
     def __init__(
-        self,
-        *,
-        logs_repo: SendLogsRepo,
-        campaigns_repo=None,  # ✅ optional (MainWindow에서 넘기면 기존 리포트도 이미지 정상 표시)
-        on_reset_all: Optional[Callable[[], None]] = None
+            self,
+            *,
+            logs_repo: SendLogsRepo,
+            campaigns_repo=None,
+            on_reset_all: Optional[Callable[[], None]] = None
     ) -> None:
         super().__init__()
         self.setObjectName("Page")
@@ -217,7 +218,7 @@ class LogsPage(QWidget):
         root.addLayout(btn_row)
 
         # -------------------------
-        # Wire
+        # Wire (✅ tbl 생성 이후 연결)
         # -------------------------
         self.btn_refresh.clicked.connect(self.refresh)
         self.btn_fail_only.clicked.connect(self._set_fail_only)
@@ -236,6 +237,9 @@ class LogsPage(QWidget):
 
         # ✅ 표 클릭 -> 캠페인 미리보기 팝업
         self.tbl.clicked.connect(self._on_table_clicked)
+
+        # ✅ 더블클릭 -> 상세 팝업
+        self.tbl.doubleClicked.connect(self._on_table_double_clicked)
 
         self.btn_reports_refresh.clicked.connect(self.refresh_reports)
         self.cbo_reports.currentIndexChanged.connect(lambda _: self.open_selected_report())
@@ -358,7 +362,13 @@ class LogsPage(QWidget):
         return rows
 
     def open_selected_report(self) -> None:
-        path = self.cbo_reports.currentData()
+        # ✅ 콤보 변경 중 재진입 방지
+        self.cbo_reports.blockSignals(True)
+        try:
+            path = self.cbo_reports.currentData()
+        finally:
+            self.cbo_reports.blockSignals(False)
+
         if not path:
             self._active_source = "DB"
             self._report_path = None
@@ -385,12 +395,21 @@ class LogsPage(QWidget):
         self._report_obj = obj
         self._report_rows = self._build_report_rows(obj)
 
+        # ✅ 전환 안내는 먼저 표시(이후 selectionChanged가 reason으로 덮을 수 있으니 refresh 후 다시 세팅)
         self.txt_log_view.setPlainText(
             f"[SEND REPORT]\n- file: {str(p)}\n\n"
             "✅ 표는 리포트 상세로 전환되었습니다.\n"
             "✅ 표 행 클릭 → 보낸 캠페인 미리보기(팝업)\n"
         )
+
         self.refresh()
+
+        # ✅ refresh 이후에도 안내가 보이게 유지(첫 행 자동선택/preview 때문에 덮이는 케이스 방지)
+        self.txt_log_view.setPlainText(
+            f"[SEND REPORT]\n- file: {str(p)}\n\n"
+            "✅ 표는 리포트 상세로 전환되었습니다.\n"
+            "✅ 표 행 클릭 → 보낸 캠페인 미리보기(팝업)\n"
+        )
 
     # -------------------------
     # Table helpers
@@ -456,21 +475,87 @@ class LogsPage(QWidget):
             return
         self._open_campaign_preview_for_row(index.row())
 
+    def _on_table_double_clicked(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            return
+        row = index.row()
+
+        # 현재 표에 렌더된 원본 row 접근
+        detail: dict = {}
+        if self._active_source == "REPORT":
+            if 0 <= row < len(self._shown_rows):
+                r = dict(self._shown_rows[row])
+                # 상세 팝업에 캠페인명/그룹명/아이템 스냅샷도 넣어주기
+                list_meta = r.get("_list_meta") if isinstance(r.get("_list_meta"), dict) else {}
+                detail = {
+                    "ts": r.get("ts", ""),
+                    "channel": r.get("channel", ""),
+                    "recipient": r.get("recipient", ""),
+                    "status": r.get("status", ""),
+                    "reason": r.get("reason", ""),
+                    "attempt": r.get("attempt", ""),
+                    "message_len": r.get("message_len", ""),
+                    "image_count": r.get("image_count", ""),
+                    "campaign_id": r.get("campaign_id", ""),
+                    "campaign_name": r.get("_campaign_name", ""),
+                    "campaign_title": f"{r.get('_group_name', '')} + {r.get('_campaign_name', '')}".strip(" +"),
+                    "campaign_items": (list_meta.get("campaign_items") or []),
+                }
+        else:
+            # DB 모드: 현재 표 컬럼에서 읽기
+            data = self._selected_row_values()
+            if not data:
+                return
+            # DB 로그에 campaign_name이 없다면, channel이나 batch_id로 대체 표기
+            detail = {
+                "ts": data.get("ts", ""),
+                "channel": data.get("channel", ""),
+                "recipient": data.get("recipient", ""),
+                "status": data.get("status", ""),
+                "reason": data.get("reason", ""),
+                "attempt": data.get("attempt", ""),
+                "message_len": data.get("message_len", ""),
+                "image_count": data.get("image_count", ""),
+                "campaign_id": data.get("campaign_id", ""),
+                "campaign_name": "(DB 로그) 캠페인명 미기록",
+                "campaign_title": str(data.get("channel", "") or "캠페인"),
+            }
+
+        from ui.pages.log_detail_dialog import LogDetailDialog
+        dlg = LogDetailDialog(
+            title="발송 상세",
+            detail=detail,
+            campaigns_repo=self.campaigns_repo,  # 있으면 DB 재조회 가능
+            parent=self,
+        )
+        dlg.exec()
+
     def _items_need_bytes(self, items: List[Any]) -> bool:
         """
         CampaignPreviewDialog이 이미지를 렌더링하려면 image_bytes가 필요.
         리포트에는 없는 경우가 많음 -> True면 DB 재조회 필요.
+
+        ✅ dict 뿐 아니라, CampaignItemRow 같은 객체(item_type/image_bytes 속성)도 대응.
         """
         for it in items:
-            if not isinstance(it, dict):
+            # dict 경로(리포트)
+            if isinstance(it, dict):
+                if str(it.get("item_type", "")).upper() != "IMAGE":
+                    continue
+                b = it.get("image_bytes", None)
+                if isinstance(b, (bytes, bytearray)) and len(b) > 0:
+                    continue
+                return True
+
+            # object 경로(DB/Repo)
+            typ = str(getattr(it, "item_type", "") or "").upper()
+            if typ != "IMAGE":
                 continue
-            if str(it.get("item_type", "")).upper() != "IMAGE":
+            b2 = getattr(it, "image_bytes", None)
+            if isinstance(b2, (bytes, bytearray)) and len(b2) > 0:
                 continue
-            b = it.get("image_bytes", None)
-            if isinstance(b, (bytes, bytearray)) and len(b) > 0:
-                continue
-            # bytes가 없으면 재조회 필요
             return True
+
         return False
 
     def _open_campaign_preview_for_row(self, row: int) -> None:
@@ -536,27 +621,46 @@ class LogsPage(QWidget):
             return
 
         self.model.setRowCount(0)
+
+        # ✅ DB 모드도 _shown_rows를 "표와 동일한 개념"으로 유지 (확장 대비)
         self._shown_rows = []
+        for rr in (rows or []):
+            self._shown_rows.append({
+                "id": rr.id,
+                "ts": rr.ts,
+                "campaign_id": rr.campaign_id,
+                "batch_id": rr.batch_id,
+                "channel": rr.channel,
+                "recipient": rr.recipient,
+                "status": rr.status,
+                "reason": rr.reason,
+                "attempt": rr.attempt,
+                "message_len": rr.message_len,
+                "image_count": rr.image_count,
+            })
 
         def _it(v: object) -> QStandardItem:
             x = QStandardItem("" if v is None else str(v))
             x.setEditable(False)
             return x
 
-        for rr in (rows or []):
+        for r in self._shown_rows:
             self.model.appendRow([
-                _it(rr.id),
-                _it(rr.ts),
-                _it(rr.campaign_id),
-                _it(rr.batch_id),
-                _it(rr.channel),
-                _it(rr.recipient),
-                _it(rr.status),
-                _it(rr.reason),
-                _it(rr.attempt),
-                _it(rr.message_len),
-                _it(rr.image_count),
+                _it(r.get("id")),
+                _it(r.get("ts")),
+                _it(r.get("campaign_id")),
+                _it(r.get("batch_id")),
+                _it(r.get("channel")),
+                _it(r.get("recipient")),
+                _it(r.get("status")),
+                _it(r.get("reason")),
+                _it(r.get("attempt")),
+                _it(r.get("message_len")),
+                _it(r.get("image_count")),
             ])
+
+        # ✅ 선택행 reason 자동 표시(초기 상태에서도 동작)
+        self._auto_show_reason_preview()
 
     def export_csv(self) -> None:
         # (이 부분은 이전 버전 그대로 사용 가능. 필요하면 그대로 붙여넣어도 됨)
@@ -685,12 +789,14 @@ class LogsPage(QWidget):
         if ok != QMessageBox.Yes:
             return
 
+        # 1) DB 초기화
         try:
             self.logs_repo.reset_all()
         except Exception as e:
             QMessageBox.critical(self, "오류", f"send_logs 초기화 실패\n{e}")
             return
 
+        # 2) 리포트 파일 삭제
         deleted = 0
         failed: List[str] = []
         try:
@@ -704,14 +810,21 @@ class LogsPage(QWidget):
         except Exception as e:
             QMessageBox.warning(self, "경고", f"리포트 파일 삭제 중 오류\n{e}")
 
+        # 3) UI 상태 리셋
         self._active_source = "DB"
         self._report_path = None
         self._report_obj = None
         self._report_rows = []
         self._shown_rows = []
 
+        # 콤보/표/뷰어 완전 초기화
         self.refresh_reports()
         self.cbo_reports.setCurrentIndex(0)
+
+        self.model.setRowCount(0)
+        self.txt_log_view.setPlainText("초기화 완료. DB 로그 모드입니다.")
+
+        # DB 모드로 새로고침(빈 테이블)
         self.refresh()
 
         QMessageBox.information(
@@ -752,9 +865,19 @@ class LogsPage(QWidget):
         data = self._selected_row_values()
         if not data:
             return
+
         reason = (data.get("reason") or "").strip()
         if reason:
             self.txt_log_view.setPlainText(reason)
+            return
+
+        # ✅ reason이 비어있을 때(특히 REPORT) 기본 안내
+        if self._active_source == "REPORT":
+            self.txt_log_view.setPlainText(
+                "사유(reason)가 비어있습니다.\n"
+                "행 더블클릭 → 상세 팝업에서 전체 스냅샷 확인 가능\n"
+                "행 클릭 → 캠페인 미리보기(리포트에 이미지 bytes가 없으면 DB 재조회)\n"
+            )
 
     def show_selected_detail(self) -> None:
         data = self._selected_row_values()

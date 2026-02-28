@@ -1,4 +1,3 @@
-# src/ui/pages/groups_page.py
 from __future__ import annotations
 
 from typing import Callable, Optional
@@ -10,18 +9,19 @@ from PySide6.QtWidgets import (
     QTableView, QMessageBox, QAbstractItemView, QDialog, QComboBox, QHeaderView
 )
 
-from app.data.groups_repo import GroupsRepo, GroupRow, ContactRow
+from app.data.groups_repo import GroupsRepo, GroupRow
+from app.data.contacts_repo import ContactsRepo
+from app.stores.contacts_store import ContactsStore, ContactMem
+
 from ui.pages.group_dialog import GroupDialog
+from ui.pages.contacts_dialog import ContactDialog
+
 from ui.widgets.checkable_header import CheckableHeader
-
 from ui.utils.worker import run_bg
-
-# ✅ 앱 전역 이벤트(대상자 변경 시 그룹관리 자동 갱신)
 from ui.app_events import app_events
 
 
 class GroupsPage(QWidget):
-    # 컬럼 인덱스
     COL_NO = 0
     COL_EMP = 1
     COL_NAME = 2
@@ -30,10 +30,18 @@ class GroupsPage(QWidget):
     COL_BRANCH = 5
     COL_ID_HIDDEN = 6
 
-    def __init__(self, repo: GroupsRepo, on_status: Optional[Callable[[str], None]] = None) -> None:
+    def __init__(
+        self,
+        repo: GroupsRepo,
+        contacts_repo: ContactsRepo,
+        contacts_store: ContactsStore,
+        on_status: Optional[Callable[[str], None]] = None
+    ) -> None:
         super().__init__()
         self.setObjectName("Page")
         self.repo = repo
+        self.contacts_repo = contacts_repo
+        self.contacts_store = contacts_store
         self._on_status = on_status or (lambda _: None)
 
         self._current_group: GroupRow | None = None
@@ -52,7 +60,6 @@ class GroupsPage(QWidget):
         desc = QLabel("발송 대상자를 그룹으로 구성/관리합니다. (검색 → 선택 → 그룹 추가/제거)")
         desc.setObjectName("PageDesc")
 
-        # TOP: 그룹 선택 + CRUD
         top = QHBoxLayout()
         top.setSpacing(8)
 
@@ -70,7 +77,6 @@ class GroupsPage(QWidget):
         top.addWidget(self.btn_group_del)
         top.addStretch(1)
 
-        # MAIN: 후보 | 멤버
         main = QHBoxLayout()
         main.setSpacing(12)
 
@@ -90,18 +96,19 @@ class GroupsPage(QWidget):
         self.tbl_candidates = QTableView()
         self._setup_table(self.tbl_candidates)
 
-        # 7컬럼: [No][사번][이름][전화][대리점][지사][숨김ID]
         self.candidates_model = QStandardItemModel(0, 7, self)
         self.candidates_model.setHorizontalHeaderLabels(["No", "사번", "이름", "전화번호", "대리점명", "지사명", "ID"])
         self.tbl_candidates.setModel(self.candidates_model)
 
-        # ✅ No 헤더에 체크박스
         hdr_cand = CheckableHeader(Qt.Horizontal, self.tbl_candidates, check_col=self.COL_NO)
         self.tbl_candidates.setHorizontalHeader(hdr_cand)
         hdr_cand.toggled.connect(lambda checked: self._toggle_select_all(self.tbl_candidates, checked))
         self.tbl_candidates.selectionModel().selectionChanged.connect(
             lambda *_: self._sync_header_by_selection(self.tbl_candidates)
         )
+
+        # ✅ 후보 더블클릭 = 대상자 수정
+        self.tbl_candidates.doubleClicked.connect(self._on_candidates_double_clicked)
 
         self._apply_table_layout(self.tbl_candidates)
         self._hide_id_column(self.tbl_candidates)
@@ -137,6 +144,9 @@ class GroupsPage(QWidget):
             lambda *_: self._sync_header_by_selection(self.tbl_members)
         )
 
+        # ✅ 멤버 더블클릭 = 대상자 수정
+        self.tbl_members.doubleClicked.connect(self._on_members_double_clicked)
+
         self._apply_table_layout(self.tbl_members)
         self._hide_id_column(self.tbl_members)
 
@@ -152,9 +162,7 @@ class GroupsPage(QWidget):
         root.addLayout(top)
         root.addLayout(main, 1)
 
-        # -----------------
-        # Debounce timers (핵심)
-        # -----------------
+        # Debounce timers
         self._cand_timer = QTimer(self)
         self._cand_timer.setSingleShot(True)
         self._cand_timer.timeout.connect(lambda: self._load_candidates(self._candidate_keyword))
@@ -182,27 +190,40 @@ class GroupsPage(QWidget):
         self.mem_search.textChanged.connect(self._on_member_search_changed)
         self.btn_mem_clear.clicked.connect(lambda: self.mem_search.setText(""))
 
-        # ✅ 대상자 변경 이벤트 수신 -> 그룹관리 화면 자동 갱신
+        # ✅ 대상자 변경 이벤트 수신 -> 자동 갱신
         app_events.contacts_changed.connect(self._on_contacts_changed)  # type: ignore[arg-type]
 
         # init
-        self.reload_groups()
+        self.reload_groups(select_group_id=None)
         self._load_candidates("")
 
     # -----------------
-    # ✅ Contacts changed event handler
+    # Normalize helpers
+    # -----------------
+    @staticmethod
+    def _norm_optional(v: str | None) -> str:
+        return (v or "").strip()
+
+    @staticmethod
+    def _norm_required(v: str | None) -> str:
+        return (v or "").strip()
+
+    # -----------------
+    # UI state helpers
+    # -----------------
+    def _update_group_buttons(self) -> None:
+        has_group = self._current_group is not None
+        self.btn_group_edit.setEnabled(has_group)
+        self.btn_group_del.setEnabled(has_group)
+        self.btn_add_to_group.setEnabled(has_group)
+        self.btn_remove_from_group.setEnabled(has_group)
+
+    # -----------------
+    # Contacts changed event handler
     # -----------------
     def _on_contacts_changed(self) -> None:
-        """
-        ContactsPage에서 대상자(contacts)가 추가/수정/삭제/엑셀등록 등으로 변경되면
-        그룹관리 화면(후보/멤버/disable 상태)을 즉시 최신화한다.
-        """
         current_id = self._current_group.id if self._current_group else None
-
-        # 그룹 콤보/캐시 갱신(현재 선택 유지 시도)
         self.reload_groups(select_group_id=current_id)
-
-        # 멤버/후보 재조회
         self._load_members(current_id, self._member_keyword)
         self._load_candidates(self._candidate_keyword)
 
@@ -248,14 +269,15 @@ class GroupsPage(QWidget):
         self.cbo_groups.blockSignals(True)
         self.cbo_groups.clear()
 
+        self.cbo_groups.addItem("(선택 안 함)", None)
         self._groups_cache = self.repo.list_groups()
 
         if not self._groups_cache:
             self._current_group = None
-            self.cbo_groups.addItem("(그룹 없음)", None)
             self.cbo_groups.setCurrentIndex(0)
             self.cbo_groups.blockSignals(False)
 
+            self._update_group_buttons()
             self._load_members(None, self._member_keyword)
             self._load_candidates(self._candidate_keyword)
             return
@@ -263,34 +285,73 @@ class GroupsPage(QWidget):
         for g in self._groups_cache:
             self.cbo_groups.addItem(g.name, g.id)
 
-        target_id = select_group_id or (self._current_group.id if self._current_group else None)
-        index_to_select = 0
-        if target_id is not None:
-            for i, g in enumerate(self._groups_cache):
-                if g.id == target_id:
-                    index_to_select = i
-                    break
+        target_id = select_group_id
+        if target_id is None and self._current_group:
+            target_id = self._current_group.id
 
-        self.cbo_groups.setCurrentIndex(index_to_select)
-        self._current_group = self._groups_cache[index_to_select]
-        self.cbo_groups.blockSignals(False)
-
-        self._load_members(self._current_group.id, self._member_keyword)
-        self._load_candidates(self._candidate_keyword)
-
-    def _on_group_combo_changed(self, idx: int) -> None:
-        if idx < 0 or idx >= len(self._groups_cache):
+        if target_id is None:
             self._current_group = None
+            self.cbo_groups.setCurrentIndex(0)
+            self.cbo_groups.blockSignals(False)
+
+            self._update_group_buttons()
             self._load_members(None, self._member_keyword)
             self._load_candidates(self._candidate_keyword)
             return
 
-        self._current_group = self._groups_cache[idx]
+        found: GroupRow | None = None
+        index_to_select = 0
+        for i, g in enumerate(self._groups_cache):
+            if g.id == target_id:
+                found = g
+                index_to_select = i + 1
+                break
+
+        if not found:
+            self._current_group = None
+            self.cbo_groups.setCurrentIndex(0)
+            self.cbo_groups.blockSignals(False)
+
+            self._update_group_buttons()
+            self._load_members(None, self._member_keyword)
+            self._load_candidates(self._candidate_keyword)
+            return
+
+        self._current_group = found
+        self.cbo_groups.setCurrentIndex(index_to_select)
+        self.cbo_groups.blockSignals(False)
+
+        self._update_group_buttons()
         self._load_members(self._current_group.id, self._member_keyword)
         self._load_candidates(self._candidate_keyword)
 
+    def _on_group_combo_changed(self, idx: int) -> None:
+        group_id = self.cbo_groups.currentData()
+
+        if group_id is None:
+            self._current_group = None
+            self._update_group_buttons()
+            self._load_members(None, self._member_keyword)
+            self._load_candidates(self._candidate_keyword)
+            return
+
+        gid = int(group_id)
+        g = next((x for x in self._groups_cache if x.id == gid), None)
+        if not g:
+            self._current_group = None
+            self.cbo_groups.setCurrentIndex(0)
+            self._update_group_buttons()
+            self._load_members(None, self._member_keyword)
+            self._load_candidates(self._candidate_keyword)
+            return
+
+        self._current_group = g
+        self._update_group_buttons()
+        self._load_members(g.id, self._member_keyword)
+        self._load_candidates(self._candidate_keyword)
+
     # -----------------
-    # Group CRUD popup
+    # Group CRUD
     # -----------------
     def _create_group(self) -> None:
         dlg = GroupDialog("그룹 생성", parent=self)
@@ -357,10 +418,10 @@ class GroupsPage(QWidget):
 
         self.repo.delete_group(g.id)
         self._current_group = None
-        self.reload_groups()
+        self.reload_groups(select_group_id=None)
 
     # -----------------
-    # Search / Load (Debounced + BG)
+    # Search / Load
     # -----------------
     def _on_candidate_search_changed(self, text: str) -> None:
         self._candidate_keyword = (text or "").strip()
@@ -374,14 +435,16 @@ class GroupsPage(QWidget):
         kw = (keyword or "").strip()
 
         def job():
-            return self.repo.search_contacts(kw)
+            return self.contacts_store.search(kw)
 
-        def done(rows: list[ContactRow]):
+        def done(rows: list[ContactMem]):
             self.candidates_model.setRowCount(0)
 
-            for i, r in enumerate(rows, start=1):
-                in_group = int(r.id) in self._member_id_set
-                self.candidates_model.appendRow(self._contact_to_items(i, r, disabled=in_group))
+            shown = 0
+            for m in rows:
+                shown += 1
+                in_group = int(m.id) in self._member_id_set
+                self.candidates_model.appendRow(self._mem_to_items(shown, m, disabled=in_group))
 
             self.tbl_candidates.clearSelection()
             self._sync_header_by_selection(self.tbl_candidates)
@@ -395,12 +458,13 @@ class GroupsPage(QWidget):
         def job():
             if not gid:
                 return ([], set())
-            all_members = self.repo.list_group_members(gid)
-            id_set = {int(r.id) for r in all_members}
-            return (all_members, id_set)
+            member_ids = self.repo.list_group_member_ids(int(gid))
+            id_set = {int(x) for x in (member_ids or [])}
+            members = self.contacts_store.get_many(member_ids)
+            return (members, id_set)
 
         def done(res):
-            all_members, id_set = res
+            members, id_set = res
             self.members_model.setRowCount(0)
             self._member_id_set = set(id_set)
 
@@ -410,28 +474,111 @@ class GroupsPage(QWidget):
                 self._load_candidates(self._candidate_keyword)
                 return
 
-            def match(r: ContactRow) -> bool:
+            def match(m: ContactMem) -> bool:
                 if not kw:
                     return True
-                hay = " ".join([
-                    str(r.emp_id or ""), str(r.name or ""), str(r.phone or ""),
-                    str(r.agency or ""), str(r.branch or "")
-                ]).lower()
+                hay = " ".join([m.emp_id, m.name, m.phone, m.agency, m.branch]).lower()
                 return kw in hay
 
             shown = 0
-            for r in all_members:
-                if match(r):
+            for m in members:
+                if match(m):
                     shown += 1
-                    self.members_model.appendRow(self._contact_to_items(shown, r, disabled=False))
+                    self.members_model.appendRow(self._mem_to_items(shown, m, disabled=False))
 
             self.tbl_members.clearSelection()
             self._sync_header_by_selection(self.tbl_members)
-
-            # 멤버 set이 바뀌면 후보 disable 상태 재계산 필요
             self._load_candidates(self._candidate_keyword)
 
         run_bg(job, on_done=done, on_error=lambda tb: QMessageBox.critical(self, "오류", tb))
+
+    # -----------------
+    # Double click -> edit
+    # -----------------
+    def _on_candidates_double_clicked(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            return
+        self._open_contact_edit_from_model(self.candidates_model, index.row())
+
+    def _on_members_double_clicked(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            return
+        self._open_contact_edit_from_model(self.members_model, index.row())
+
+    def _open_contact_edit_from_model(self, model: QStandardItemModel, row: int) -> None:
+        no_item = model.item(row, self.COL_NO)
+        if no_item is None or not (no_item.flags() & Qt.ItemIsEnabled):
+            return
+
+        id_item = model.item(row, self.COL_ID_HIDDEN)
+        if id_item is None:
+            return
+
+        try:
+            contact_id = int(id_item.text())
+        except ValueError:
+            return
+
+        emp = (model.item(row, self.COL_EMP).text() if model.item(row, self.COL_EMP) else "")
+        name = (model.item(row, self.COL_NAME).text() if model.item(row, self.COL_NAME) else "")
+        phone = (model.item(row, self.COL_PHONE).text() if model.item(row, self.COL_PHONE) else "")
+        agency = (model.item(row, self.COL_AGENCY).text() if model.item(row, self.COL_AGENCY) else "")
+        branch = (model.item(row, self.COL_BRANCH).text() if model.item(row, self.COL_BRANCH) else "")
+
+        preset_obj = type("Tmp", (), {
+            "emp_id": emp or "",
+            "name": name or "",
+            "phone": phone or "",
+            "agency": agency or "",
+            "branch": branch or "",
+        })()
+
+        dlg = ContactDialog("대상자 수정", preset=preset_obj, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        data = dlg.get_contact()
+
+        new_name = self._norm_required(data.get("name"))
+        new_emp_id = self._norm_optional(data.get("emp_id"))
+        new_phone = self._norm_optional(data.get("phone"))
+        new_agency = self._norm_optional(data.get("agency"))
+        new_branch = self._norm_optional(data.get("branch"))
+
+        if not new_name:
+            QMessageBox.warning(self, "입력 오류", "이름은 필수입니다.")
+            return
+
+        try:
+            self.contacts_repo.update(
+                row_id=contact_id,
+                emp_id=new_emp_id,
+                name=new_name,
+                phone=new_phone,
+                agency=new_agency,
+                branch=new_branch,
+            )
+            self.contacts_store.update(
+                contact_id=contact_id,
+                emp_id=new_emp_id,
+                name=new_name,
+                phone=new_phone,
+                agency=new_agency,
+                branch=new_branch,
+            )
+        except ValueError as e:
+            QMessageBox.warning(self, "중복 오류", str(e))
+            return
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"대상자 저장 실패:\n{e}")
+            return
+
+        app_events.contacts_changed.emit()
+        self._on_status(f"대상자 수정 저장: {new_name} ({new_emp_id if new_emp_id else '사번없음'})")
+
+        current_id = self._current_group.id if self._current_group else None
+        self._load_members(current_id, self._member_keyword)
+        self._load_candidates(self._candidate_keyword)
 
     # -----------------
     # Add/Remove actions
@@ -481,7 +628,7 @@ class GroupsPage(QWidget):
         QMessageBox.information(self, "완료", f"그룹에서 제거했습니다: {len(ids)}건")
 
     # -----------------
-    # Header 체크박스 = 전체 행 선택/해제
+    # Header 체크박스
     # -----------------
     def _toggle_select_all(self, table: QTableView, checked: bool) -> None:
         model = table.model()
@@ -539,14 +686,14 @@ class GroupsPage(QWidget):
     # -----------------
     # Helpers
     # -----------------
-    def _contact_to_items(self, no: int, r: ContactRow, disabled: bool = False):
+    def _mem_to_items(self, no: int, m: ContactMem, disabled: bool = False):
         no_item = QStandardItem(str(no))
-        emp = QStandardItem(r.emp_id or "")
-        name = QStandardItem(r.name or "")
-        phone = QStandardItem(r.phone or "")
-        agency = QStandardItem(r.agency or "")
-        branch = QStandardItem(r.branch or "")
-        hidden_id = QStandardItem(str(r.id))
+        emp = QStandardItem(m.emp_id or "")
+        name = QStandardItem(m.name or "")
+        phone = QStandardItem(m.phone or "")
+        agency = QStandardItem(m.agency or "")
+        branch = QStandardItem(m.branch or "")
+        hidden_id = QStandardItem(str(m.id))
 
         items = [no_item, emp, name, phone, agency, branch, hidden_id]
 

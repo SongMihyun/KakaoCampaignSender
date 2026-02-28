@@ -43,6 +43,13 @@ class GroupDialog(QDialog):
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_ok.clicked.connect(self._on_ok)
 
+        # ✅ 엔터로 저장/닫기 (QLineEdit는 returnPressed 사용 가능)
+        self.ed_name.returnPressed.connect(self._on_ok)
+
+        # ✅ Enter 기본 버튼 = 저장
+        self.btn_ok.setDefault(True)
+        self.btn_ok.setAutoDefault(True)
+
         if preset:
             self.ed_name.setText(preset.get("name", ""))
             self.ed_memo.setPlainText(preset.get("memo", ""))

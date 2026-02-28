@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def _now_ts() -> str:
@@ -28,17 +28,17 @@ class ReportRecipient:
     phone: str = ""
     agency: str = ""
     branch: str = ""
-    status: str = ""        # SUCCESS / FAIL / NOT_FOUND / SKIP / TAIL_RETRY_SCHEDULED / SUCCESS(TAIL_RETRY) ...
+    status: str = ""        # SUCCESS / FAIL / NOT_FOUND / SKIP / ...
     reason: str = ""
     attempt: int = 0
 
 
 @dataclass
 class ReportItem:
-    item_type: str = ""     # TEXT / IMAGE
-    text: str = ""          # TEXT 내용
-    image_name: str = ""    # IMAGE 이름(있으면)
-    image_bytes_len: int = 0  # IMAGE 원본 bytes 길이만 기록(파일에 bytes 저장 금지)
+    item_type: str = ""       # TEXT / IMAGE
+    text: str = ""            # TEXT 내용
+    image_name: str = ""      # IMAGE 이름(있으면)
+    image_bytes_len: int = 0  # IMAGE bytes는 저장 금지, 길이만
 
 
 @dataclass
@@ -49,7 +49,14 @@ class ReportList:
     campaign_id: int = 0
     campaign_name: str = ""
     total_recipients: int = 0
+
+    # ✅ 런타임 스냅샷(“발송 시작 시점” recipients)
+    recipients_snapshot: List[Dict[str, Any]] = field(default_factory=list)
+
+    # ✅ 결과(성공/실패 등)
     recipients: List[ReportRecipient] = field(default_factory=list)
+
+    # ✅ 캠페인 스냅샷(이미지는 bytes 저장 금지)
     campaign_items: List[ReportItem] = field(default_factory=list)
 
 
@@ -69,9 +76,9 @@ class SendReport:
 
 class SendReportWriter:
     """
-    발송 1회(RUN) 단위로 리포트를 누적/저장한다.
-    - thread-safe: Worker thread에서 기록해도 안전
-    - 저장 위치: base_dir/reports/send_report_{run_id}.json
+    발송 1회(RUN) 단위 리포트 누적/저장
+    - thread-safe: Worker thread 기록 안전
+    - 저장: base_dir/reports/send_report_{run_id}.json
     """
 
     def __init__(self, *, base_dir: Path, run_id: str) -> None:
@@ -85,9 +92,7 @@ class SendReportWriter:
         self._path = self._reports_dir / f"send_report_{self._run_id}.json"
 
         self._report = SendReport(run_id=self._run_id)
-
-        # list_index -> index in report.lists
-        self._list_map: Dict[int, int] = {}
+        self._list_map: Dict[int, int] = {}  # list_index -> report.lists index
 
     @property
     def path(self) -> Path:
@@ -112,12 +117,13 @@ class SendReportWriter:
         campaign_id: int,
         campaign_name: str,
         recipients_total: int,
-        campaign_items: List[Any],
+        campaign_items: Any,
+        recipients_snapshot: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         """
         리스트 시작 시 1회 호출
-        campaign_items는 원본 객체(list of DraftItem 등)여도 됨.
-        이미지 bytes는 저장하지 않고 길이만 기록
+        - recipients_snapshot: 런타임 당시 대상자 스냅샷(로그/감사 목적)
+        - campaign_items: 원본 객체(list of DraftItem 등)여도 OK
         """
         with self._lock:
             rl = ReportList(
@@ -127,33 +133,41 @@ class SendReportWriter:
                 campaign_id=_safe_int(campaign_id),
                 campaign_name=str(campaign_name or ""),
                 total_recipients=_safe_int(recipients_total),
+                recipients_snapshot=list(recipients_snapshot or []),
                 recipients=[],
                 campaign_items=[],
             )
 
             for it in (campaign_items or []):
-                # 객체/딕트 혼용 방어
                 if isinstance(it, dict):
                     typ = str(it.get("item_type", "") or "").upper().strip()
                     if typ == "TEXT":
-                        text = str(it.get("text", "") or "").strip()
-                        rl.campaign_items.append(ReportItem(item_type="TEXT", text=text))
+                        rl.campaign_items.append(
+                            ReportItem(item_type="TEXT", text=str(it.get("text", "") or "").strip())
+                        )
                     else:
-                        image_name = str(it.get("image_name", "") or "")
                         b = it.get("image_bytes", b"") or b""
                         rl.campaign_items.append(
-                            ReportItem(item_type="IMAGE", image_name=image_name, image_bytes_len=len(b))
+                            ReportItem(
+                                item_type="IMAGE",
+                                image_name=str(it.get("image_name", "") or ""),
+                                image_bytes_len=len(b),
+                            )
                         )
                 else:
                     typ = str(getattr(it, "item_type", "") or "").upper().strip()
                     if typ == "TEXT":
-                        text = str(getattr(it, "text", "") or "").strip()
-                        rl.campaign_items.append(ReportItem(item_type="TEXT", text=text))
+                        rl.campaign_items.append(
+                            ReportItem(item_type="TEXT", text=str(getattr(it, "text", "") or "").strip())
+                        )
                     else:
-                        image_name = str(getattr(it, "image_name", "") or "")
                         b = getattr(it, "image_bytes", b"") or b""
                         rl.campaign_items.append(
-                            ReportItem(item_type="IMAGE", image_name=image_name, image_bytes_len=len(b))
+                            ReportItem(
+                                item_type="IMAGE",
+                                image_name=str(getattr(it, "image_name", "") or ""),
+                                image_bytes_len=len(b),
+                            )
                         )
 
             self._report.lists.append(rl)
@@ -206,3 +220,6 @@ class SendReportWriter:
 
         os.replace(tmp, self._path)
         return self._path
+
+
+__all__ = ["SendReportWriter"]

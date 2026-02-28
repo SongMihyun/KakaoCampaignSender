@@ -1,3 +1,5 @@
+# ✅ FILE: src/app/data/contacts_repo.py
+
 from __future__ import annotations
 
 import sqlite3
@@ -276,3 +278,42 @@ class ContactsRepo:
             conn.commit()
 
         return inserted, dup_skipped
+
+    # -----------------
+    # Single getters (for edit dialogs)
+    # -----------------
+    def get_by_id(self, contact_id: int) -> ContactRow | None:
+        """
+        ✅ 정석: PK(id)로 1건 로드
+        """
+        with self._conn() as conn:
+            r = conn.execute(
+                """
+                SELECT id, emp_id, name, phone, agency, branch
+                FROM contacts
+                WHERE id = ? LIMIT 1;
+                """,
+                (int(contact_id),),
+            ).fetchone()
+            return self._row_to_contact(r) if r else None
+
+    def get_contact_by_emp_id(self, emp_id: str) -> ContactRow | None:
+        """
+        ✅ 레거시 호환용: 기존 UI에서 호출하던 메서드
+        - emp_id는 빈값이 있을 수 있으니 빈값은 None 처리
+        """
+        eid = (emp_id or "").strip()
+        if not eid:
+            return None
+        with self._conn() as conn:
+            r = conn.execute(
+                """
+                SELECT id, emp_id, name, phone, agency, branch
+                FROM contacts
+                WHERE TRIM(emp_id) = TRIM(?)
+                  AND TRIM(emp_id) <> ''
+                ORDER BY id ASC LIMIT 1;
+                """,
+                (eid,),
+            ).fetchone()
+            return self._row_to_contact(r) if r else None

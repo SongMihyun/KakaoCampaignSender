@@ -1,3 +1,5 @@
+# ✅ FILE: src/ui/pages/contacts_dialog.py
+
 from __future__ import annotations
 
 from typing import Optional, TypedDict
@@ -59,6 +61,14 @@ class ContactDialog(QDialog):
 
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_ok.clicked.connect(self._on_ok)
+
+        # ✅ Enter/Return 누르면 저장(_on_ok) -> accept()로 닫힘
+        for le in (self.emp_id, self.name, self.phone, self.agency, self.branch):
+            le.returnPressed.connect(self._on_ok)
+
+        # ✅ Enter 기본 버튼 = 저장
+        self.btn_ok.setDefault(True)
+        self.btn_ok.setAutoDefault(True)
 
         # preset은 Contact든 임시 객체든(emp_id/name/...) 속성만 있으면 동작
         if preset:

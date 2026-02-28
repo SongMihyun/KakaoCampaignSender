@@ -1,3 +1,4 @@
+# ✅ FILE: src/app/data/groups_repo.py
 from __future__ import annotations
 
 import sqlite3
@@ -30,6 +31,7 @@ class GroupsRepo:
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = ON;")
         return conn
 
     def _init_db(self) -> None:
@@ -90,6 +92,25 @@ class GroupsRepo:
     def delete_group(self, group_id: int) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM groups WHERE id=?;", (group_id,))
+
+    def list_group_member_ids(self, group_id: int) -> list[int]:
+        gid = int(group_id)
+        with self._connect() as conn:
+            cur = conn.execute(
+                "SELECT contact_id FROM group_members WHERE group_id = ? ORDER BY contact_id ASC;",
+                (gid,),
+            )
+            rows = cur.fetchall() or []
+        out: list[int] = []
+        for r in rows:
+            try:
+                out.append(int(r["contact_id"]))
+            except Exception:
+                try:
+                    out.append(int(r[0]))
+                except Exception:
+                    pass
+        return out
 
     # -----------------
     # Members
