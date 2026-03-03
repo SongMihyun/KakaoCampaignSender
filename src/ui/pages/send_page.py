@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Callable, Optional, List, Any
+from typing import Callable, Optional, List, Any, Tuple
 
 from PySide6.QtCore import Qt, QThread, Signal, QAbstractNativeEventFilter, QModelIndex
 from PySide6.QtGui import QStandardItemModel, QStandardItem
@@ -126,7 +126,6 @@ class Recipient:
     branch: str
 
 
-# ✅ SendJob dataclass 교체
 @dataclass
 class SendJob:
     send_list_id: int
@@ -137,6 +136,7 @@ class SendJob:
     recipients: List[Recipient]
     recipients_snapshot: List[dict]   # ✅ 런타임 리포트용 스냅샷
     campaign_items: List[Any]
+
 
 # ----------------------------
 # Worker Thread
@@ -312,7 +312,7 @@ class MultiSendWorker(QThread):
                             campaign_name=str(job.campaign_name or ""),
                             recipients_total=len(job.recipients),
                             campaign_items=job.campaign_items,
-                            recipients_snapshot=list(job.recipients_snapshot or []),  # ✅ 런타임 스냅샷
+                            recipients_snapshot=list(job.recipients_snapshot or []),
                         )
                 except Exception:
                     pass
@@ -384,6 +384,7 @@ class MultiSendWorker(QThread):
                                 phone=r.phone,
                                 agency=r.agency,
                                 branch=r.branch,
+                                contact_id=r.contact_id,
                             )
                     except Exception:
                         pass
@@ -436,21 +437,7 @@ class MultiSendWorker(QThread):
 
                             # ✅ 발송
                             self._driver.send_campaign_items(name, job.campaign_items)
-
                             ok = True
-
-                            try:
-                                if self._run_logger:
-                                    self._run_logger.log_event(
-                                        "RECIPIENT_SUCCESS",
-                                        list_index=li,
-                                        title=job.title,
-                                        recipient_index=ri,
-                                        name=r.name,
-                                        attempt=used_attempt,
-                                    )
-                            except Exception:
-                                pass
 
                             # ✅ report: SUCCESS
                             try:
@@ -465,30 +452,12 @@ class MultiSendWorker(QThread):
                                     )
                             except Exception:
                                 pass
-
                             break
 
-                        # =====================================================
-                        # ✅ 핵심: 검색 결과 0건 → NOT_FOUND로 확정
-                        # =====================================================
                         except ChatNotFound as e_nf:
                             ok = False
                             last_err = e_nf
-
                             self.status.emit(f"대화방 없음(NOT_FOUND) | {job.title} | {r.name}")
-
-                            try:
-                                if self._run_logger:
-                                    self._run_logger.log_event(
-                                        "RECIPIENT_NOT_FOUND",
-                                        list_index=li,
-                                        title=job.title,
-                                        recipient_index=ri,
-                                        name=r.name,
-                                        reason=str(e_nf),
-                                    )
-                            except Exception:
-                                pass
 
                             # ✅ report: NOT_FOUND
                             try:
@@ -503,7 +472,6 @@ class MultiSendWorker(QThread):
                                     )
                             except Exception:
                                 pass
-
                             break
 
                         except Exception as e:
@@ -519,18 +487,6 @@ class MultiSendWorker(QThread):
                                     tail_retry.append(r)
 
                                 self.status.emit(f"전송 취소 감지 → 리스트 마지막에 1회 재전송 예약 | {job.title} | {r.name}")
-                                try:
-                                    if self._run_logger:
-                                        self._run_logger.log_event(
-                                            "RECIPIENT_TAIL_RETRY_SCHEDULED",
-                                            list_index=li,
-                                            title=job.title,
-                                            recipient_index=ri,
-                                            name=r.name,
-                                            reason=str(e),
-                                        )
-                                except Exception:
-                                    pass
 
                                 # ✅ report: TAIL_RETRY_SCHEDULED
                                 try:
@@ -551,22 +507,6 @@ class MultiSendWorker(QThread):
                                 break
 
                             last_err = e
-
-                            try:
-                                if self._run_logger:
-                                    self._run_logger.log_event(
-                                        "SEND_ATTEMPT_FAIL",
-                                        list_index=li,
-                                        title=job.title,
-                                        recipient_index=ri,
-                                        name=r.name,
-                                        attempt=used_attempt,
-                                        attempt_max=self._max_retry + 1,
-                                        error=str(e),
-                                    )
-                            except Exception:
-                                pass
-
                             self.status.emit(
                                 f"재시도({used_attempt}/{self._max_retry + 1}) 실패 | {job.title} | {r.name} | {e}"
                             )
@@ -588,27 +528,7 @@ class MultiSendWorker(QThread):
                     else:
                         fail += 1
 
-                        if isinstance(last_err, ChatNotFound):
-                            pass
-                        else:
-                            self.status.emit(
-                                f"최종 실패 | [{li}/{total_lists}] {job.title} | {ri}/{total} | {r.name} | {last_err}"
-                            )
-                            try:
-                                if self._run_logger:
-                                    self._run_logger.log_event(
-                                        "RECIPIENT_FINAL_FAIL",
-                                        list_index=li,
-                                        total_lists=total_lists,
-                                        title=job.title,
-                                        recipient_index=ri,
-                                        total_recipients=total,
-                                        name=r.name,
-                                        error=str(last_err),
-                                    )
-                            except Exception:
-                                pass
-
+                        if not isinstance(last_err, ChatNotFound):
                             # ✅ report: FAIL
                             try:
                                 if self._report_writer:
@@ -642,16 +562,6 @@ class MultiSendWorker(QThread):
                 # ---------------------------------------------------------
                 if tail_retry and (not self._stop):
                     self.status.emit(f"[{li}/{total_lists}] {job.title} | 말미 재전송 {len(tail_retry)}건 시작")
-                    try:
-                        if self._run_logger:
-                            self._run_logger.log_event(
-                                "TAIL_RETRY_START",
-                                list_index=li,
-                                title=job.title,
-                                count=len(tail_retry),
-                            )
-                    except Exception:
-                        pass
 
                     for rr in tail_retry:
                         if self._stop:
@@ -668,15 +578,6 @@ class MultiSendWorker(QThread):
                                 break
                             used_attempt2 = attempt2 + 1
                             try:
-                                if self._run_logger:
-                                    self._run_logger.log_event(
-                                        "TAIL_RETRY_ATTEMPT",
-                                        list_index=li,
-                                        title=job.title,
-                                        name=rr.name,
-                                        attempt=used_attempt2,
-                                        attempt_max=self._max_retry + 1,
-                                    )
                                 self._driver.send_campaign_items(rr.name, job.campaign_items)
                                 final_ok = True
                                 break
@@ -697,18 +598,6 @@ class MultiSendWorker(QThread):
 
                         if final_ok:
                             success += 1
-                            self.status.emit(f"말미 재전송 성공 | {job.title} | {rr.name}")
-                            try:
-                                if self._run_logger:
-                                    self._run_logger.log_event(
-                                        "TAIL_RETRY_SUCCESS",
-                                        list_index=li,
-                                        title=job.title,
-                                        name=rr.name,
-                                    )
-                            except Exception:
-                                pass
-
                             # ✅ report: SUCCESS(TAIL_RETRY)
                             try:
                                 if self._report_writer:
@@ -724,19 +613,6 @@ class MultiSendWorker(QThread):
                                 pass
                         else:
                             fail += 1
-                            self.status.emit(f"말미 재전송 최종 실패 | {job.title} | {rr.name} | {last_err2}")
-                            try:
-                                if self._run_logger:
-                                    self._run_logger.log_event(
-                                        "TAIL_RETRY_FINAL_FAIL",
-                                        list_index=li,
-                                        title=job.title,
-                                        name=rr.name,
-                                        error=str(last_err2),
-                                    )
-                            except Exception:
-                                pass
-
                             # ✅ report: FAIL(TAIL_RETRY)
                             try:
                                 if self._report_writer:
@@ -752,29 +628,8 @@ class MultiSendWorker(QThread):
                                 pass
 
                 list_done += 1
-                try:
-                    if self._run_logger:
-                        self._run_logger.log_event(
-                            "LIST_DONE",
-                            list_index=li,
-                            title=job.title,
-                        )
-                except Exception:
-                    pass
 
         finally:
-            try:
-                if self._run_logger:
-                    self._run_logger.log_event(
-                        "RUN_END",
-                        list_done=list_done,
-                        success=success,
-                        fail=fail,
-                        stopped=bool(self._stop),
-                    )
-            except Exception:
-                pass
-
             try:
                 if self._report_writer:
                     self._report_writer.finish(
@@ -818,14 +673,13 @@ class SendPage(QWidget):
         self.groups_repo = groups_repo
         self.campaigns_repo = campaigns_repo
         self.send_lists_repo = send_lists_repo
-        self.send_logs_repo = send_logs_repo  # (현 시점 로직에서는 직접 사용하지 않음)
+        self.send_logs_repo = send_logs_repo
         self._on_progress = on_progress or (lambda _: None)
         self._on_status = on_status or (lambda _: None)
 
         self.sender_driver: Optional[KakaoSenderDriver] = None
         self._worker: Optional[MultiSendWorker] = None
         self._run_logger: Optional[SendRunLogger] = None
-
         self._current_sending_title: str = ""
 
         self._hotkey_mgr: Optional[GlobalHotkeyManager] = None
@@ -835,7 +689,7 @@ class SendPage(QWidget):
         root.setContentsMargins(18, 18, 18, 18)
         root.setSpacing(12)
 
-        # ---- header (좌: 타이틀/설명/경고, 우: 속도 드롭다운) ----
+        # ---- header ----
         header_row = QHBoxLayout()
         header_row.setSpacing(12)
         root.addLayout(header_row)
@@ -858,7 +712,6 @@ class SendPage(QWidget):
 
         header_row.addLayout(header_left, 1)
 
-        # 우측: 속도 선택
         header_right = QHBoxLayout()
         header_right.setSpacing(8)
         header_right.setAlignment(Qt.AlignTop | Qt.AlignRight)
@@ -871,7 +724,7 @@ class SendPage(QWidget):
         self.cbo_speed.addItem("SLOW(안정)", "slow")
         self.cbo_speed.addItem("NORMAL(기본)", "normal")
         self.cbo_speed.addItem("FAST(빠름)", "fast")
-        self.cbo_speed.setCurrentIndex(1)  # 기본 NORMAL
+        self.cbo_speed.setCurrentIndex(1)
         self.cbo_speed.setToolTip("발송 자동화 속도 모드 선택\n- SLOW: 안정성 우선\n- NORMAL: 기본\n- FAST: 속도 우선")
 
         header_right.addWidget(lbl_speed)
@@ -1034,7 +887,7 @@ class SendPage(QWidget):
         # ✅ 대상자(우측 테이블) 더블클릭 → 수정 다이얼로그
         self.tbl_preview.doubleClicked.connect(self._on_preview_double_clicked)
 
-        # ✅ 외부 변경 이벤트 연결: 대상자/그룹/캠페인 변경 시, 발송 화면도 동기화
+        # ✅ 외부 변경 이벤트 연결
         try:
             app_events.campaigns_changed.connect(self._on_campaigns_changed)
         except Exception:
@@ -1056,7 +909,6 @@ class SendPage(QWidget):
         app = QApplication.instance()
         if app is None:
             return
-
         self._hotkey_mgr = GlobalHotkeyManager(app, self._on_global_hotkey)
         self._hotkey_mgr.register_f11(self.HOTKEY_ID_FORCE_STOP)
 
@@ -1207,7 +1059,7 @@ class SendPage(QWidget):
             key_group_id = int(group_id)
 
         # ✅ 참조형에서는 recipients를 DB에 저장하지 않는다.
-        # 다만 '빈 그룹' 발송리스트 생성은 UX상 막는 게 좋으니, 최신 기준으로 0명 체크만 한다.
+        # 다만 '빈 그룹' 발송리스트 생성은 UX상 막기 위해 최신 기준으로 0명 체크만 한다.
         try:
             contacts_mem = self._resolve_contacts_for_send_list_meta(
                 target_mode=target_mode,
@@ -1217,6 +1069,7 @@ class SendPage(QWidget):
             QMessageBox.critical(self, "오류", f"대상자 로드 실패\n{e}")
             return
 
+        # ✅ (핵심 버그픽스) Recipient(contact_id 필수) 포함해서 생성
         recipients, _snap = self._build_recipients_and_snapshot(contacts_mem)
         if not recipients:
             QMessageBox.information(self, "안내", "대상자가 없습니다.")
@@ -1235,7 +1088,13 @@ class SendPage(QWidget):
             return
 
         self._on_status(f"발송리스트 생성/갱신: id={send_list_id}")
-        QMessageBox.information(self, "완료", f"발송리스트 저장 완료\n- ID: {send_list_id}\n- 대상(현재 기준): {len(recipients)}명")
+        QMessageBox.information(
+            self,
+            "완료",
+            f"발송리스트 저장 완료\n- ID: {send_list_id}\n- 대상(현재 기준): {len(recipients)}명",
+        )
+
+        # ✅ 저장 후 즉시 관리 목록에 노출 + 선택 유지
         self.reload_send_lists(select_send_list_id=int(send_list_id))
 
     # ---- list ----
@@ -1268,7 +1127,6 @@ class SendPage(QWidget):
             campaign_name = str(getattr(r, "campaign_name", "") or "")
             campaign_id = int(getattr(r, "campaign_id"))
 
-            # 아래 2개는 repo 구현에 따라 없을 수 있으니 안전하게 수용
             target_mode = str(getattr(r, "target_mode", "") or "")
             group_id = getattr(r, "group_id", None)
             try:
@@ -1286,7 +1144,6 @@ class SendPage(QWidget):
                 "campaign_name": campaign_name,
                 "group_name": group_name,
                 "title": title,
-                # snapshot 재생성을 위해 메타 보관
                 "target_mode": target_mode,
                 "group_id": group_id,
             })
@@ -1298,32 +1155,6 @@ class SendPage(QWidget):
         self.lst_send_lists.blockSignals(False)
         self.lst_send_lists.setCurrentRow(selected_row_to_set)
         self._on_status("발송리스트 새로고침 완료")
-
-    def _resolve_contacts_by_meta(self, *, target_mode: str, group_id: Optional[int]) -> List[ContactMem]:
-        mode = str(target_mode or "").strip().upper()
-        if mode == "ALL" or group_id is None:
-            return list(self.contacts_store.list_all() or [])
-        # GROUP
-        member_ids = self.groups_repo.list_group_member_ids(int(group_id))
-        return list(self.contacts_store.get_many(member_ids) or [])
-
-    def _build_recipient_snapshot_for_report(self, contacts_mem: List[ContactMem]) -> List[dict]:
-        """
-        ✅ 런타임 리포트(로그)용 스냅샷
-        - 디비 저장은 안 함
-        - 파일(JSON) 리포트에만 남김
-        """
-        out: List[dict] = []
-        for m in (contacts_mem or []):
-            out.append({
-                "contact_id": int(getattr(m, "id", 0) or 0),
-                "emp_id": str(getattr(m, "emp_id", "") or ""),
-                "name": str(getattr(m, "name", "") or ""),
-                "phone": str(getattr(m, "phone", "") or ""),
-                "agency": str(getattr(m, "agency", "") or ""),
-                "branch": str(getattr(m, "branch", "") or ""),
-            })
-        return out
 
     # ---- preview ----
     def _on_send_list_selected(self, row: int) -> None:
@@ -1339,14 +1170,12 @@ class SendPage(QWidget):
 
         send_list_id = data.get("send_list_id")
         title = str(data.get("title", "") or "")
-
         if send_list_id is None:
             return
 
-        # ✅ 참조형: 메타를 기반으로 '항상 최신' 대상자를 계산
         try:
             meta = self.send_lists_repo.get_send_list_meta(int(send_list_id))
-        except Exception as e:
+        except Exception:
             meta = None
 
         if not meta:
@@ -1367,7 +1196,6 @@ class SendPage(QWidget):
 
         self.preview_model.setRowCount(0)
 
-        last_contact_id = 0
         shown = 0
         for m in (contacts_mem or []):
             raw_name = str(m.name or "")
@@ -1377,7 +1205,6 @@ class SendPage(QWidget):
 
             shown += 1
             cid_int = int(getattr(m, "id", 0) or 0)
-            last_contact_id = cid_int
 
             it_no = QStandardItem(str(shown))
             it_no.setData(cid_int, self.ROLE_CONTACT_ID)
@@ -1392,9 +1219,8 @@ class SendPage(QWidget):
             ])
 
         self.lbl_footer.setText(f"대상(현재 기준): {shown}명 / 발송리스트: {title}")
-        print("PREVIEW last contact_id =", last_contact_id)
 
-    # ✅ 우측 테이블 더블클릭 → 대상자 수정 → 전체(대상자/그룹/발송) 동기화
+    # ✅ 우측 테이블 더블클릭 → 대상자 수정 → 전체 동기화
     def _on_preview_double_clicked(self, index: QModelIndex) -> None:
         try:
             if not index.isValid():
@@ -1415,7 +1241,6 @@ class SendPage(QWidget):
                 QMessageBox.information(self, "안내", "원본 대상자 ID(contact_id)를 확인할 수 없습니다.")
                 return
 
-            # ✅ preset: DB에서 contact_id로 정식 로드
             preset = None
             try:
                 row_obj = self.contacts_repo.get_by_id(int(contact_id))
@@ -1430,7 +1255,6 @@ class SendPage(QWidget):
             except Exception:
                 preset = None
 
-            # (fallback) DB 로드 실패 시: 현재 테이블 값으로 preset 구성
             if preset is None:
                 emp = self.preview_model.item(row, 1).text() if self.preview_model.item(row, 1) else ""
                 name = self.preview_model.item(row, 2).text() if self.preview_model.item(row, 2) else ""
@@ -1444,6 +1268,7 @@ class SendPage(QWidget):
                     "agency": agency or "",
                     "branch": branch or "",
                 })()
+
             try:
                 from ui.pages.contacts_dialog import ContactDialog
             except Exception:
@@ -1455,7 +1280,7 @@ class SendPage(QWidget):
             if not ok:
                 return
 
-            form = dlg.get_contact()  # {'emp_id','name','phone','agency','branch'}
+            form = dlg.get_contact()
 
             new_emp_id = (form.get("emp_id") or "").strip()
             new_name = (form.get("name") or "").strip()
@@ -1467,7 +1292,6 @@ class SendPage(QWidget):
                 QMessageBox.warning(self, "입력 오류", "이름은 필수입니다.")
                 return
 
-            # ✅ 1) 원본 contacts 업데이트
             try:
                 self.contacts_repo.update(
                     row_id=int(contact_id),
@@ -1484,7 +1308,7 @@ class SendPage(QWidget):
                 QMessageBox.critical(self, "오류", f"대상자 저장 실패\n{e}")
                 return
 
-            # ✅ 1-1) (중요) contacts_store 캐시도 즉시 갱신
+            # (중요) contacts_store 캐시도 즉시 갱신(있으면)
             try:
                 self.contacts_store.update(
                     contact_id=int(contact_id),
@@ -1497,53 +1321,12 @@ class SendPage(QWidget):
             except Exception:
                 pass
 
-            # ✅ 2) store 갱신 + UI 갱신 + 이벤트
             self._sync_after_contact_change(contact_id=int(contact_id))
 
         except Exception as e:
             QMessageBox.critical(self, "오류", f"대상자 수정 처리 실패\n{e}")
 
-    def _save_contact_fallback(self, updated: Any) -> None:
-        """
-        ContactDialog가 저장을 수행하지 않는 프로젝트에서도 동작하도록,
-        repo의 대표 메서드를 탐색하여 업데이트를 시도한다.
-        """
-        try:
-            cid = int(getattr(updated, "id", 0) or 0)
-            payload = {
-                "id": cid,
-                "emp_id": str(getattr(updated, "emp_id", "") or ""),
-                "name": str(getattr(updated, "name", "") or ""),
-                "phone": str(getattr(updated, "phone", "") or ""),
-                "agency": str(getattr(updated, "agency", "") or ""),
-                "branch": str(getattr(updated, "branch", "") or ""),
-            }
-
-            # 우선순위: update_contact / update / upsert_contact / save_contact
-            if hasattr(self.contacts_repo, "update_contact"):
-                self.contacts_repo.update_contact(**payload)  # type: ignore
-                return
-            if hasattr(self.contacts_repo, "update"):
-                self.contacts_repo.update(**payload)  # type: ignore
-                return
-            if hasattr(self.contacts_repo, "upsert_contact"):
-                self.contacts_repo.upsert_contact(**payload)  # type: ignore
-                return
-            if hasattr(self.contacts_repo, "save_contact"):
-                self.contacts_repo.save_contact(**payload)  # type: ignore
-                return
-        except Exception:
-            # 저장 실패 시에도 refresh는 진행(다이얼로그 저장형일 가능성)
-            pass
-
     def _sync_after_contact_change(self, *, contact_id: int) -> None:
-        """
-        ✅ 참조형: 대상자 수정 시 스냅샷 갱신 불필요
-        - contacts_store 갱신
-        - 현재 선택 발송리스트 프리뷰 리로드
-        - 이벤트 emit(다른 페이지도 갱신)
-        """
-        # 1) contacts_store refresh (가능하면)
         try:
             if hasattr(self.contacts_store, "reload"):
                 self.contacts_store.reload()  # type: ignore
@@ -1552,12 +1335,10 @@ class SendPage(QWidget):
         except Exception:
             pass
 
-        # 2) UI refresh
         cur_sid = self._current_send_list_id()
         self.reload_send_lists(select_send_list_id=cur_sid)
         self._refresh_current_preview()
 
-        # 3) 글로벌 이벤트 emit
         try:
             app_events.contacts_changed.emit()  # type: ignore
         except Exception:
@@ -1568,7 +1349,6 @@ class SendPage(QWidget):
             pass
 
         self._on_status("대상자 수정 반영됨 (참조형: 즉시 최신 반영)")
-        # ✅ 현재 선택된 프리뷰 즉시 재로딩(사용자 체감 개선)
         self._refresh_current_preview()
 
     def _refresh_current_preview(self) -> None:
@@ -1576,7 +1356,6 @@ class SendPage(QWidget):
         if row < 0:
             return
         self._on_send_list_selected(row)
-
 
     # ---- delete ----
     def _delete_selected_send_list(self) -> None:
@@ -1637,7 +1416,7 @@ class SendPage(QWidget):
         cur_sid = self._current_send_list_id()
         self.reload_send_lists(select_send_list_id=cur_sid)
 
-    # ---- double click preview (campaign preview) ----
+    # ---- list double click (campaign preview) ----
     def _on_send_list_double_clicked(self, it: QListWidgetItem) -> None:
         data = it.data(Qt.UserRole)
         if not isinstance(data, dict):
@@ -1683,7 +1462,6 @@ class SendPage(QWidget):
             if send_list_id is None or campaign_id is None:
                 continue
 
-            # ✅ 참조형: meta로 recipients 계산
             meta = self.send_lists_repo.get_send_list_meta(int(send_list_id))
             if not meta:
                 continue
@@ -1694,7 +1472,6 @@ class SendPage(QWidget):
             )
 
             recipients, recipients_snapshot = self._build_recipients_and_snapshot(contacts_mem)
-
             items = self.campaigns_repo.get_campaign_items(int(campaign_id))
 
             jobs.append(SendJob(
@@ -1704,7 +1481,7 @@ class SendPage(QWidget):
                 campaign_id=int(campaign_id),
                 campaign_name=campaign_name,
                 recipients=recipients,
-                recipients_snapshot=recipients_snapshot,  # ✅ 리포트용
+                recipients_snapshot=recipients_snapshot,
                 campaign_items=items,
             ))
 
@@ -1758,7 +1535,7 @@ class SendPage(QWidget):
 
         self.sender_driver = KakaoPcDriver(
             int(hwnd),
-            speed_mode=speed_mode,  # ✅ UI 선택값 반영
+            speed_mode=speed_mode,
             block_input=False,
             use_alt_tab_confirm=False,
             alt_tab_max_steps=0,
@@ -1879,14 +1656,12 @@ class SendPage(QWidget):
 
     # ---- events ----
     def _on_campaigns_changed(self) -> None:
-        # 발송 중에는 UI 변경이 리스크 -> 발송 중이면 스킵
         if self._worker and self._worker.isRunning():
             return
 
-        cur = self.cbo_campaigns.currentData()  # 현재 선택 캠페인 id 유지 목적
-        self.reload_sources()  # 그룹/캠페인 콤보 갱신
+        cur = self.cbo_campaigns.currentData()
+        self.reload_sources()
 
-        # 가능하면 기존 선택 유지
         if cur is not None:
             for i in range(self.cbo_campaigns.count()):
                 if self.cbo_campaigns.itemData(i) == cur:
@@ -1898,7 +1673,6 @@ class SendPage(QWidget):
     def _on_contacts_changed(self) -> None:
         if self._worker and self._worker.isRunning():
             return
-        # 대상자 변경 → 현재 프리뷰 및 발송리스트 스냅샷/표시 동기화
         cur_sid = self._current_send_list_id()
         self.reload_send_lists(select_send_list_id=cur_sid)
         self._refresh_current_preview()
@@ -1906,41 +1680,41 @@ class SendPage(QWidget):
     def _on_groups_changed(self) -> None:
         if self._worker and self._worker.isRunning():
             return
-        # 그룹 변경 → 그룹 콤보 갱신 + 발송리스트 스냅샷 동기화 + 프리뷰 갱신
         cur_sid = self._current_send_list_id()
         self.reload_sources()
         self.reload_send_lists(select_send_list_id=cur_sid)
         self._refresh_current_preview()
 
+    # ---- resolve recipients (참조형) ----
     def _resolve_contacts_for_send_list_meta(self, *, target_mode: str, group_id: Optional[int]) -> List[ContactMem]:
-        """
-        ✅ 참조형: send_list의 메타(target_mode/group_id)로부터 '항상 최신' recipients를 계산한다.
-        """
         tm = str(target_mode or "").upper().strip()
         if tm == "ALL" or group_id is None:
             return list(self.contacts_store.list_all() or [])
         member_ids = self.groups_repo.list_group_member_ids(int(group_id))
         return list(self.contacts_store.get_many(member_ids) or [])
 
-    def _build_recipients_and_snapshot(self, contacts_mem: List[ContactMem]) -> tuple[List[Recipient], List[dict]]:
+    def _build_recipients_and_snapshot(self, contacts_mem: List[ContactMem]) -> Tuple[List[Recipient], List[dict]]:
         """
         ✅ Worker 입력(Recipient) + 리포트 스냅샷(dict) 동시 생성
+        (핵심) Recipient에는 contact_id가 필수라서 반드시 채워야 함
         """
         recipients: List[Recipient] = []
         snap: List[dict] = []
 
         for m in (contacts_mem or []):
-            raw_name = str(m.name or "")
+            raw_name = str(getattr(m, "name", "") or "")
             name = raw_name.strip().replace("\u200b", "").replace("\ufeff", "")
             if not name:
                 continue
 
-            emp_id = str(m.emp_id or "").strip()
-            phone = str(m.phone or "").strip()
-            agency = str(m.agency or "").strip()
-            branch = str(m.branch or "").strip()
+            contact_id = int(getattr(m, "id", 0) or 0)
+            emp_id = str(getattr(m, "emp_id", "") or "").strip()
+            phone = str(getattr(m, "phone", "") or "").strip()
+            agency = str(getattr(m, "agency", "") or "").strip()
+            branch = str(getattr(m, "branch", "") or "").strip()
 
             recipients.append(Recipient(
+                contact_id=contact_id,     # ✅ FIX: 누락되면 TypeError 발생
                 emp_id=emp_id,
                 name=name,
                 phone=phone,
@@ -1949,7 +1723,7 @@ class SendPage(QWidget):
             ))
 
             snap.append({
-                "contact_id": int(getattr(m, "id", 0) or 0),
+                "contact_id": contact_id,
                 "emp_id": emp_id,
                 "name": name,
                 "phone": phone,
