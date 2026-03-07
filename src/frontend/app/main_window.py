@@ -329,6 +329,13 @@ class MainWindow(QMainWindow):
 
     def _refresh_pages_after_contacts_sync(self) -> None:
         try:
+            if hasattr(self, "contacts_page") and self.contacts_page:
+                if hasattr(self.contacts_page, "reload"):
+                    self.contacts_page.reload()
+        except Exception:
+            pass
+
+        try:
             if hasattr(self, "groups_page") and self.groups_page:
                 if hasattr(self.groups_page, "refresh"):
                     self.groups_page.refresh()
