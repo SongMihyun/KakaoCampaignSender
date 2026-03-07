@@ -167,7 +167,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: windows-build-check-${{ github.ref_name }}-${{ github.run_number }}
+          name: windows-build-check-${{ github.run_id }}
           path: |
             dist/app/**
             dist/installer/**
