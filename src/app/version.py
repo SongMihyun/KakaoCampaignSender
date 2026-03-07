@@ -1,4 +1,4 @@
-# src/app/version.py
+﻿# src/app/version.py
 from __future__ import annotations
 
 __app_name__ = "KakaoCampaignSender"   # 내부 식별자(유지 권장)

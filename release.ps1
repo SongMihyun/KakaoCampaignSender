@@ -1,3 +1,6 @@
+# Git tag 기반 릴리즈 커밋/태그 생성 스크립트
+# 전제: KakaoSender.spec, installer/*.iss, workflow 파일이 repo에 tracked 상태여야 함
+
 Param(
   [Parameter(Mandatory=$true)]
   [string]$Version,                 # 예: 0.1.18 (v 없이)
