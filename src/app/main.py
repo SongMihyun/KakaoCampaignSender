@@ -62,7 +62,7 @@ def main() -> None:
 
     # ✅ 1.5) 로그인(통과해야만 앱 실행)
     try:
-        from ui.dialogs.login_dialog import LoginDialog
+        from frontend.dialogs.login_dialog import LoginDialog
         ok = LoginDialog.run_login()
         if not ok:
             # 로그인 취소/실패로 종료
@@ -74,7 +74,7 @@ def main() -> None:
     # ✅ 2) 스플래시(로딩 표시) 즉시 노출
     splash = None
     try:
-        from app.ui.splash import make_splash
+        from frontend.app.splash import make_splash
 
         splash = make_splash()
         splash.show()
@@ -99,7 +99,7 @@ def main() -> None:
     _splash_msg("업데이트 확인 중…")
     try:
         from app.version import __version__, LATEST_JSON_URL
-        from app.updater import check_and_prepare_update, set_pending_update
+        from frontend.app.splash import check_and_prepare_update, set_pending_update
 
         plan = check_and_prepare_update(LATEST_JSON_URL, __version__)
         if plan.available:
@@ -112,7 +112,7 @@ def main() -> None:
     # ✅ 4) DB 초기화
     _splash_msg("데이터베이스 초기화 중…")
     try:
-        from app.data.db_bootstrap import ensure_db_initialized
+        from backend.database.db_bootstrap import ensure_db_initialized
 
         ensure_db_initialized()
     except Exception as e:
@@ -120,7 +120,7 @@ def main() -> None:
 
     # ✅ 5) UI 로딩 (무거운 import는 여기서)
     _splash_msg("UI 로딩 중…")
-    from ui.main_window import MainWindow  # 현재 사용 중 경로 그대로
+    from frontend.app.main_window import MainWindow  # 현재 사용 중 경로 그대로
 
     win = MainWindow()
     win.show()

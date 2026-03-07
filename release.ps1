@@ -1,3 +1,10 @@
+# release.ps1
+# Git tag 기반 릴리즈 커밋/태그 생성 스크립트
+# 전제:
+# - main push 시 build-check.yml 이 먼저 실행됨
+# - 같은 커밋에 semver tag(vX.Y.Z)가 존재하면
+#   build-check 성공 후 release.yml 이 workflow_run 으로 릴리즈 수행
+
 Param(
   [Parameter(Mandatory=$true)]
   [string]$Version,                 # 예: 0.1.18 (v 없이)
@@ -17,25 +24,22 @@ function Run([string]$cmd) {
   Invoke-Expression $cmd
 }
 
-# --- 0) 입력 검증 ---
 if ($Version -notmatch '^\d+\.\d+\.\d+$') {
   throw "Version must be like 0.1.18 (v 없이). 입력값: $Version"
 }
 $tag = "v$Version"
 
-# --- 1) git repo 확인 ---
 Run "git rev-parse --is-inside-work-tree > `$null"
 
-# --- 2) 최신화 ---
 Run "git fetch $Remote --tags"
 Run "git checkout $Branch"
 Run "git pull $Remote $Branch"
 
-# --- 3) 릴리즈 필수 파일(태그 커밋에 포함돼야 함) 사전 점검 ---
 $mustFiles = @(
   "KakaoSender.spec",
   "installer/KakaoCampaignSender.iss",
   "installer/KakaoSender.ico",
+  ".github/workflows/build-check.yml",
   ".github/workflows/release.yml"
 )
 
@@ -45,14 +49,12 @@ foreach ($f in $mustFiles) {
   if (-not $tracked) { throw "File is not tracked by git (git add 필요): $f" }
 }
 
-# --- 4) 스테이지 ---
 Run "git add -A"
 
 if ([string]::IsNullOrWhiteSpace($Message)) {
   $Message = "release: $tag"
 }
 
-# --- 5) 커밋(변경 없어도 릴리즈 커밋을 남김) ---
 $staged = (git diff --cached --name-only)
 if ($staged) {
   Run "git commit -m `"$Message`""
@@ -61,10 +63,8 @@ if ($staged) {
   Run "git commit --allow-empty -m `"$Message`""
 }
 
-# --- 6) 브랜치 push ---
 Run "git push $Remote $Branch"
 
-# --- 7) 태그 처리 ---
 $existing = (git tag -l $tag)
 if ($existing) {
   if ($ForceTag) {
@@ -80,4 +80,5 @@ Run "git tag -a $tag -m `"$tag`""
 Run "git push $Remote $tag"
 
 Write-Host ""
-Write-Host "✅ DONE: pushed $tag (and $Branch). Actions will run on tag push." -ForegroundColor Green
+Write-Host "✅ DONE: pushed $tag (and $Branch)." -ForegroundColor Green
+Write-Host "   build-check on main must succeed first; then release workflow will run via workflow_run." -ForegroundColor Green

@@ -1,4 +1,4 @@
-# src/app/kakao_launch.py
+﻿# src/app/kakao_launch.py
 from __future__ import annotations
 
 import os

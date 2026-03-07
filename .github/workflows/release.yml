@@ -1,16 +1,25 @@
-# .github/workflows/release.yml
 name: Windows Release Build
 
 on:
-  push:
-    tags:
-      - "v*.*.*"
+  workflow_run:
+    workflows: ["Windows Build Check"]
+    types:
+      - completed
 
 permissions:
   contents: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
 
 jobs:
-  build:
+  release:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main'
     runs-on: windows-latest
 
     defaults:
@@ -18,77 +27,119 @@ jobs:
         shell: pwsh
 
     steps:
-      - name: Checkout
+      - name: Checkout target SHA
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+
+      - name: Resolve semver tag on HEAD
+        id: taginfo
+        run: |
+          git fetch --force --tags origin
+
+          $sha = "${{ github.event.workflow_run.head_sha }}"
+          $tags = git tag --points-at $sha | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' }
+
+          if (-not $tags) {
+            "has_tag=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+            Write-Host "No semver tag on HEAD SHA: $sha"
+            exit 0
+          }
+
+          $tag = ($tags | Select-Object -First 1).Trim()
+          $ver = $tag.TrimStart('v')
+
+          "has_tag=true"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "tag=$tag"      | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "version=$ver"  | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+          Write-Host "Resolved tag => $tag"
+          Write-Host "Resolved version => $ver"
+
+      - name: Stop when tag is absent
+        if: steps.taginfo.outputs.has_tag != 'true'
+        run: |
+          Write-Host "No release tag found on this successful main build-check commit. Skipping release."
 
       - name: Setup Python
+        if: steps.taginfo.outputs.has_tag == 'true'
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
       - name: Install Poetry
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
+          python -m pip install --upgrade pip
+          python -m pip install pipx
           pipx install poetry
           poetry --version
 
       - name: Validate poetry project
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
           poetry check
+          poetry check --lock
 
       - name: Install dependencies
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
-          poetry install --no-interaction
+          poetry install --no-interaction --no-root
 
-      - name: Extract version from tag
-        id: get_version
+      - name: Verify version token exists
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
-          $tag = "${{ github.ref_name }}"
-          $ver = $tag.TrimStart("v")
-          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-          Write-Host "TAG VERSION => $ver"
-
-      # ✅ tag 버전을 version.py에 주입 (__VERSION__ 토큰 치환)
-      - name: Inject version into src/app/version.py
-        run: |
-          $ver  = "${{ steps.get_version.outputs.version }}"
           $path = "src/app/version.py"
           if (-not (Test-Path $path)) { throw "version.py not found: $path" }
 
           $raw = Get-Content $path -Raw
+          if ($raw -notmatch '"__VERSION__"') {
+            throw '__VERSION__ token not found in src/app/version.py'
+          }
+
+          Write-Host "OK: __VERSION__ token exists in $path"
+
+      - name: Inject release version
+        if: steps.taginfo.outputs.has_tag == 'true'
+        run: |
+          $ver  = "${{ steps.taginfo.outputs.version }}"
+          $path = "src/app/version.py"
+
+          $raw = Get-Content $path -Raw
           $raw = $raw -replace '"__VERSION__"', ('"' + $ver + '"')
 
-          # UTF-8 no BOM 저장
-          [System.IO.File]::WriteAllText($path, $raw, (New-Object System.Text.UTF8Encoding($false)))
+          [System.IO.File]::WriteAllText(
+            $path,
+            $raw,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
 
           Write-Host "Injected version.py => $ver"
-          Get-Content $path | Select-Object -First 60
 
       - name: Clean dist/build
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
           if (Test-Path "dist")  { Remove-Item "dist"  -Recurse -Force }
           if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
 
       - name: Verify spec exists
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
           if (-not (Test-Path "KakaoSender.spec")) {
             throw "KakaoSender.spec not found at repo root."
           }
 
-      - name: Build EXE (PyInstaller - spec only)
+      - name: Build EXE
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
           poetry run pyinstaller -y --clean `
             --distpath dist/app `
             --workpath build/pyinstaller `
             KakaoSender.spec
 
-      # ✅ dist 전체 트리 출력(문제 추적용)
-      - name: Debug - show dist tree
-        run: |
-          Write-Host "----- dist tree -----"
-          if (Test-Path dist) { Get-ChildItem -Recurse dist | Select-Object FullName }
-          else { Write-Host "dist not found" }
-
-      - name: Verify build artifacts
+      - name: Verify EXE output
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
           $exePath = "dist/app/KakaoCampaignSender/KakaoCampaignSender.exe"
           if (-not (Test-Path $exePath)) {
@@ -99,6 +150,7 @@ jobs:
           Write-Host "OK: $exePath"
 
       - name: Install Inno Setup
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
           choco install innosetup -y
           if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
@@ -106,37 +158,24 @@ jobs:
           }
 
       - name: Verify installer inputs
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
           if (-not (Test-Path "installer/KakaoCampaignSender.iss")) { throw "installer/KakaoCampaignSender.iss not found." }
           if (-not (Test-Path "installer/KakaoSender.ico")) { throw "installer/KakaoSender.ico not found." }
-          Get-ChildItem installer | Select-Object FullName,Length
 
-      # ✅ Inno에 OutputDir + MyAppDistDir 절대경로로 주입 (CI에서 가장 안정적)
-      - name: Compile Installer
+      - name: Compile installer
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
-          $ver    = "${{ steps.get_version.outputs.version }}"
+          $ver    = "${{ steps.taginfo.outputs.version }}"
           $outDir = Join-Path $pwd "dist\installer"
           $appDir = Join-Path $pwd "dist\app\KakaoCampaignSender"
           $ico    = Join-Path $pwd "installer\KakaoSender.ico"
           $iss    = Join-Path $pwd "installer\KakaoCampaignSender.iss"
+          $ISCC   = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
-          if (-not (Test-Path $outDir)) { 
-            New-Item -ItemType Directory -Force -Path $outDir | Out-Null 
+          if (-not (Test-Path $outDir)) {
+            New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           }
-
-          if (-not (Test-Path $appDir)) { 
-            throw "MyAppDistDir missing: $appDir" 
-          }
-
-          if (-not (Test-Path $ico)) { 
-            throw "Icon missing: $ico" 
-          }
-
-          if (-not (Test-Path $iss)) { 
-            throw "ISS file missing: $iss" 
-          }
-
-          $ISCC = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 
           $args = @(
             "/DMyAppVersion=$ver",
@@ -146,25 +185,27 @@ jobs:
             $iss
           )
 
-          Write-Host "Running ISCC with arguments:"
-          $args | ForEach-Object { Write-Host "  $_" }
-
           Start-Process -FilePath $ISCC -ArgumentList $args -Wait -NoNewWindow
+
       - name: Verify installer output
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
-          $ver = "${{ steps.get_version.outputs.version }}"
+          $ver = "${{ steps.taginfo.outputs.version }}"
           $pattern = "KakaoCampaignSenderSetup_$ver.exe"
           $installer = Get-ChildItem "dist/installer" -Filter $pattern -ErrorAction SilentlyContinue | Select-Object -First 1
+
           if (-not $installer) {
             Write-Host "----- dist/installer tree -----"
             if (Test-Path "dist/installer") { Get-ChildItem -Recurse "dist/installer" | Select-Object FullName }
             throw "Installer not found: dist/installer/$pattern"
           }
+
           Write-Host "OK: $($installer.FullName)"
 
       - name: Generate sha256 + latest.json
+        if: steps.taginfo.outputs.has_tag == 'true'
         run: |
-          $ver = "${{ steps.get_version.outputs.version }}"
+          $ver = "${{ steps.taginfo.outputs.version }}"
           $installer = Get-ChildItem "dist/installer" -Filter "KakaoCampaignSenderSetup_$ver.exe" | Select-Object -First 1
           if (-not $installer) { throw "Installer not found for latest.json" }
 
@@ -181,9 +222,22 @@ jobs:
 
           ($obj | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 "dist/installer/latest.json"
 
-      - name: Create Release
+      - name: Upload release artifacts
+        if: steps.taginfo.outputs.has_tag == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-release-${{ steps.taginfo.outputs.version }}
+          path: |
+            dist/installer/*.exe
+            dist/installer/latest.json
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: steps.taginfo.outputs.has_tag == 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.taginfo.outputs.tag }}
+          target_commitish: ${{ github.event.workflow_run.head_sha }}
           files: |
             dist/installer/*.exe
             dist/installer/latest.json
