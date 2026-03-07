@@ -1,3 +1,4 @@
+# FILE: src/backend/domains/contacts/service.py
 from __future__ import annotations
 
 from backend.domains.contacts.dto import ContactCreateDTO, ContactUpdateDTO
@@ -18,6 +19,12 @@ class ContactsService:
         rows = self.repo.search_contacts(keyword or "")
         return [self._to_model(r) for r in rows]
 
+    def get_contact_by_id(self, row_id: int) -> Contact | None:
+        row = self.repo.get_by_id(int(row_id))
+        if not row:
+            return None
+        return self._to_model(row)
+
     def reload_store_from_db(self) -> int:
         rows = self.repo.search_contacts("")
         self.store.load_rows(rows)
@@ -33,14 +40,18 @@ class ContactsService:
             branch=dto.branch,
         )
         self.store.upsert(
-            type("ContactMemLike", (), {
-                "id": int(row_id),
-                "emp_id": dto.emp_id,
-                "name": dto.name,
-                "phone": dto.phone,
-                "agency": dto.agency,
-                "branch": dto.branch,
-            })()
+            type(
+                "ContactMemLike",
+                (),
+                {
+                    "id": int(row_id),
+                    "emp_id": dto.emp_id,
+                    "name": dto.name,
+                    "phone": dto.phone,
+                    "agency": dto.agency,
+                    "branch": dto.branch,
+                },
+            )()
         )
         return int(row_id)
 
@@ -67,11 +78,13 @@ class ContactsService:
         ids = [int(x) for x in ids or []]
         if not ids:
             return
+
         if hasattr(self.repo, "delete_many"):
             self.repo.delete_many(ids)
         else:
             for cid in ids:
                 self.repo.delete(int(cid))
+
         self.store.delete_many(ids)
 
     @staticmethod

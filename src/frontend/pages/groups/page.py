@@ -1,3 +1,4 @@
+# FILE: src/frontend/pages/groups/page.py
 from __future__ import annotations
 
 from typing import Callable, Optional
@@ -5,16 +6,26 @@ from typing import Callable, Optional
 from PySide6.QtCore import Qt, QItemSelection, QItemSelectionModel, QModelIndex, QTimer
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton,
-    QTableView, QMessageBox, QAbstractItemView, QDialog, QComboBox, QHeaderView
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QTableView,
+    QMessageBox,
+    QAbstractItemView,
+    QDialog,
+    QComboBox,
+    QHeaderView,
 )
 
+from backend.domains.groups.dto import GroupCreateDTO, GroupUpdateDTO
 from backend.domains.groups.service import GroupsService
 from backend.stores.contacts_store import ContactsStore, ContactMem
 
 from frontend.pages.groups.dialog import GroupDialog
 from frontend.pages.contacts.dialog import ContactDialog
-
 from frontend.widgets.checkable_header import CheckableHeader
 from frontend.utils.worker import run_bg
 from frontend.app.app_events import app_events
@@ -33,10 +44,11 @@ class GroupsPage(QWidget):
         self,
         service: GroupsService,
         contacts_store: ContactsStore,
-        on_status: Optional[Callable[[str], None]] = None
+        on_status: Optional[Callable[[str], None]] = None,
     ) -> None:
         super().__init__()
         self.setObjectName("Page")
+
         self.service = service
         self.contacts_store = contacts_store
         self._on_status = on_status or (lambda _: None)
@@ -93,7 +105,9 @@ class GroupsPage(QWidget):
         self._setup_table(self.tbl_candidates)
 
         self.candidates_model = QStandardItemModel(0, 7, self)
-        self.candidates_model.setHorizontalHeaderLabels(["No", "사번", "이름", "전화번호", "대리점명", "지사명", "ID"])
+        self.candidates_model.setHorizontalHeaderLabels(
+            ["No", "사번", "이름", "전화번호", "대리점명", "지사명", "ID"]
+        )
         self.tbl_candidates.setModel(self.candidates_model)
 
         hdr_cand = CheckableHeader(Qt.Horizontal, self.tbl_candidates, check_col=self.COL_NO)
@@ -102,7 +116,6 @@ class GroupsPage(QWidget):
         self.tbl_candidates.selectionModel().selectionChanged.connect(
             lambda *_: self._sync_header_by_selection(self.tbl_candidates)
         )
-
         self.tbl_candidates.doubleClicked.connect(self._on_candidates_double_clicked)
 
         self._apply_table_layout(self.tbl_candidates)
@@ -128,7 +141,9 @@ class GroupsPage(QWidget):
         self._setup_table(self.tbl_members)
 
         self.members_model = QStandardItemModel(0, 7, self)
-        self.members_model.setHorizontalHeaderLabels(["No", "사번", "이름", "전화번호", "대리점명", "지사명", "ID"])
+        self.members_model.setHorizontalHeaderLabels(
+            ["No", "사번", "이름", "전화번호", "대리점명", "지사명", "ID"]
+        )
         self.tbl_members.setModel(self.members_model)
 
         hdr_mem = CheckableHeader(Qt.Horizontal, self.tbl_members, check_col=self.COL_NO)
@@ -137,7 +152,6 @@ class GroupsPage(QWidget):
         self.tbl_members.selectionModel().selectionChanged.connect(
             lambda *_: self._sync_header_by_selection(self.tbl_members)
         )
-
         self.tbl_members.doubleClicked.connect(self._on_members_double_clicked)
 
         self._apply_table_layout(self.tbl_members)
@@ -161,10 +175,12 @@ class GroupsPage(QWidget):
 
         self._mem_timer = QTimer(self)
         self._mem_timer.setSingleShot(True)
-        self._mem_timer.timeout.connect(lambda: self._load_members(
-            self._current_group.id if self._current_group else None,
-            self._member_keyword
-        ))
+        self._mem_timer.timeout.connect(
+            lambda: self._load_members(
+                self._current_group.id if self._current_group else None,
+                self._member_keyword,
+            )
+        )
 
         self.cbo_groups.currentIndexChanged.connect(self._on_group_combo_changed)
 
@@ -326,20 +342,23 @@ class GroupsPage(QWidget):
             return
 
         data = dlg.get_data()
-        name = (data.get("name") or "").strip()
-        memo = (data.get("memo") or "").strip()
+        dto = GroupCreateDTO(
+            name=(data.get("name") or "").strip(),
+            memo=(data.get("memo") or "").strip(),
+        )
 
-        if not name:
+        if not dto.name:
             QMessageBox.warning(self, "오류", "그룹명을 입력하세요.")
             return
 
         try:
-            new_id = self.service.create_group(type("Tmp", (), {"name": name, "memo": memo})())
+            new_id = self.service.create_group(dto)
         except ValueError as e:
             QMessageBox.warning(self, "중복 오류", str(e))
             return
 
         self.reload_groups(select_group_id=new_id)
+        self._on_status(f"그룹 생성 완료: {dto.name}")
 
     def _edit_group(self) -> None:
         g = self._current_group
@@ -352,20 +371,24 @@ class GroupsPage(QWidget):
             return
 
         data = dlg.get_data()
-        name = (data.get("name") or "").strip()
-        memo = (data.get("memo") or "").strip()
+        dto = GroupUpdateDTO(
+            group_id=g.id,
+            name=(data.get("name") or "").strip(),
+            memo=(data.get("memo") or "").strip(),
+        )
 
-        if not name:
+        if not dto.name:
             QMessageBox.warning(self, "오류", "그룹명은 필수입니다.")
             return
 
         try:
-            self.service.update_group(type("Tmp", (), {"group_id": g.id, "name": name, "memo": memo})())
+            self.service.update_group(dto)
         except ValueError as e:
             QMessageBox.warning(self, "오류", str(e))
             return
 
         self.reload_groups(select_group_id=g.id)
+        self._on_status(f"그룹 수정 완료: {dto.name}")
 
     def _delete_group(self) -> None:
         g = self._current_group
@@ -374,9 +397,10 @@ class GroupsPage(QWidget):
             return
 
         ok = QMessageBox.question(
-            self, "삭제 확인",
+            self,
+            "삭제 확인",
             f"그룹 '{g.name}'을(를) 삭제하시겠습니까?\n(멤버 매핑도 함께 삭제됩니다)",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.Yes | QMessageBox.No,
         )
         if ok != QMessageBox.Yes:
             return
@@ -384,6 +408,7 @@ class GroupsPage(QWidget):
         self.service.delete_group(g.id)
         self._current_group = None
         self.reload_groups(select_group_id=None)
+        self._on_status(f"그룹 삭제 완료: {g.name}")
 
     def _on_candidate_search_changed(self, text: str) -> None:
         self._candidate_keyword = (text or "").strip()
@@ -397,7 +422,10 @@ class GroupsPage(QWidget):
         kw = (keyword or "").strip()
 
         def job():
-            return self.contacts_store.search(kw)
+            return self.service.search_candidate_contacts(
+                kw,
+                exclude_contact_ids=self._member_id_set,
+            )
 
         def done(rows: list[ContactMem]):
             self.candidates_model.setRowCount(0)
@@ -405,8 +433,7 @@ class GroupsPage(QWidget):
             shown = 0
             for m in rows:
                 shown += 1
-                in_group = int(m.id) in self._member_id_set
-                self.candidates_model.appendRow(self._mem_to_items(shown, m, disabled=in_group))
+                self.candidates_model.appendRow(self._mem_to_items(shown, m, disabled=False))
 
             self.tbl_candidates.clearSelection()
             self._sync_header_by_selection(self.tbl_candidates)
@@ -415,15 +442,15 @@ class GroupsPage(QWidget):
 
     def _load_members(self, group_id: int | None, keyword: str) -> None:
         gid = group_id
-        kw = (keyword or "").strip().lower()
+        kw = (keyword or "").strip()
 
         def job():
             if not gid:
                 return ([], set())
-            member_ids = self.service.list_member_ids(int(gid))
-            id_set = {int(x) for x in (member_ids or [])}
-            members = self.contacts_store.get_many(member_ids)
-            return (members, id_set)
+            members = self.service.get_member_contacts(int(gid), kw)
+            member_ids = {int(m.id) for m in members}
+            all_member_ids = set(self.service.list_member_ids(int(gid)))
+            return (members, all_member_ids if kw else member_ids)
 
         def done(res):
             members, id_set = res
@@ -436,17 +463,10 @@ class GroupsPage(QWidget):
                 self._load_candidates(self._candidate_keyword)
                 return
 
-            def match(m: ContactMem) -> bool:
-                if not kw:
-                    return True
-                hay = " ".join([m.emp_id, m.name, m.phone, m.agency, m.branch]).lower()
-                return kw in hay
-
             shown = 0
             for m in members:
-                if match(m):
-                    shown += 1
-                    self.members_model.appendRow(self._mem_to_items(shown, m, disabled=False))
+                shown += 1
+                self.members_model.appendRow(self._mem_to_items(shown, m, disabled=False))
 
             self.tbl_members.clearSelection()
             self._sync_header_by_selection(self.tbl_members)
@@ -478,19 +498,23 @@ class GroupsPage(QWidget):
         except ValueError:
             return
 
-        emp = (model.item(row, self.COL_EMP).text() if model.item(row, self.COL_EMP) else "")
-        name = (model.item(row, self.COL_NAME).text() if model.item(row, self.COL_NAME) else "")
-        phone = (model.item(row, self.COL_PHONE).text() if model.item(row, self.COL_PHONE) else "")
-        agency = (model.item(row, self.COL_AGENCY).text() if model.item(row, self.COL_AGENCY) else "")
-        branch = (model.item(row, self.COL_BRANCH).text() if model.item(row, self.COL_BRANCH) else "")
+        emp = model.item(row, self.COL_EMP).text() if model.item(row, self.COL_EMP) else ""
+        name = model.item(row, self.COL_NAME).text() if model.item(row, self.COL_NAME) else ""
+        phone = model.item(row, self.COL_PHONE).text() if model.item(row, self.COL_PHONE) else ""
+        agency = model.item(row, self.COL_AGENCY).text() if model.item(row, self.COL_AGENCY) else ""
+        branch = model.item(row, self.COL_BRANCH).text() if model.item(row, self.COL_BRANCH) else ""
 
-        preset_obj = type("Tmp", (), {
-            "emp_id": emp or "",
-            "name": name or "",
-            "phone": phone or "",
-            "agency": agency or "",
-            "branch": branch or "",
-        })()
+        preset_obj = type(
+            "Tmp",
+            (),
+            {
+                "emp_id": emp or "",
+                "name": name or "",
+                "phone": phone or "",
+                "agency": agency or "",
+                "branch": branch or "",
+            },
+        )()
 
         dlg = ContactDialog("대상자 수정", preset=preset_obj, parent=self)
         if dlg.exec() != QDialog.Accepted:
@@ -508,15 +532,7 @@ class GroupsPage(QWidget):
             return
 
         try:
-            self.service.contacts_repo.update(
-                row_id=contact_id,
-                emp_id=new_emp_id,
-                name=new_name,
-                phone=new_phone,
-                agency=new_agency,
-                branch=new_branch,
-            )
-            self.contacts_store.update(
+            self.service.update_contact(
                 contact_id=contact_id,
                 emp_id=new_emp_id,
                 name=new_name,
@@ -557,6 +573,7 @@ class GroupsPage(QWidget):
         if skipped:
             msg += f" / 중복 스킵 {skipped}건"
         QMessageBox.information(self, "완료", msg)
+        self._on_status(msg)
 
     def _remove_selected_members(self) -> None:
         g = self._current_group
@@ -570,17 +587,21 @@ class GroupsPage(QWidget):
             return
 
         ok = QMessageBox.question(
-            self, "제거 확인",
+            self,
+            "제거 확인",
             f"{len(ids)}명을 그룹에서 제거하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No
+            QMessageBox.Yes | QMessageBox.No,
         )
         if ok != QMessageBox.Yes:
             return
 
-        self.service.remove_members(g.id, ids)
+        removed = self.service.remove_members(g.id, ids)
         self._load_members(g.id, self._member_keyword)
         self._load_candidates(self._candidate_keyword)
-        QMessageBox.information(self, "완료", f"그룹에서 제거했습니다: {len(ids)}건")
+
+        msg = f"그룹에서 제거했습니다: {removed}건"
+        QMessageBox.information(self, "완료", msg)
+        self._on_status(msg)
 
     def _toggle_select_all(self, table: QTableView, checked: bool) -> None:
         model = table.model()
@@ -668,4 +689,5 @@ class GroupsPage(QWidget):
                 ids.append(int(id_item.text()))
             except ValueError:
                 pass
+
         return sorted(set(ids))
