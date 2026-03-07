@@ -1,4 +1,5 @@
-﻿from __future__ import annotations
+﻿# FILE: src/frontend/pages/logs/page.py
+from __future__ import annotations
 
 import csv
 from datetime import datetime
@@ -8,9 +9,19 @@ from typing import Optional, List, Callable, Dict, Any
 from PySide6.QtCore import Qt, QModelIndex
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton,
-    QTableView, QAbstractItemView, QComboBox, QLineEdit,
-    QFileDialog, QMessageBox, QTextEdit, QSplitter
+    QWidget,
+    QVBoxLayout,
+    QLabel,
+    QHBoxLayout,
+    QPushButton,
+    QTableView,
+    QAbstractItemView,
+    QComboBox,
+    QLineEdit,
+    QFileDialog,
+    QMessageBox,
+    QTextEdit,
+    QSplitter,
 )
 
 from app.paths import user_data_dir
@@ -18,26 +29,36 @@ from frontend.pages.campaigns.preview_dialog import CampaignPreviewDialog
 
 
 class LogsPage(QWidget):
+    HEADERS = [
+        "ID",
+        "시간",
+        "캠페인ID",
+        "배치ID",
+        "채널",
+        "수신자",
+        "상태",
+        "사유",
+        "시도",
+        "메시지길이",
+        "이미지수",
+    ]
+
     def __init__(
         self,
         *,
         logs_service,
-        report_reader,
         campaigns_service=None,
-        on_reset_all: Optional[Callable[[], None]] = None
+        on_reset_all: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__()
         self.setObjectName("Page")
 
         self.logs_service = logs_service
-        self.report_reader = report_reader
         self.campaigns_service = campaigns_service
         self._on_reset_all = on_reset_all
 
         self._active_source: str = "DB"
-
         self._report_path: Optional[Path] = None
-        self._report_obj: Optional[Dict[str, Any]] = None
         self._report_rows: List[Dict[str, Any]] = []
         self._shown_rows: List[Dict[str, Any]] = []
 
@@ -110,11 +131,8 @@ class LogsPage(QWidget):
         self.tbl.verticalHeader().setVisible(False)
         self.tbl.setSortingEnabled(False)
 
-        self.model = QStandardItemModel(0, 11, self)
-        self.model.setHorizontalHeaderLabels([
-            "ID", "시간", "캠페인ID", "배치ID", "채널", "수신자",
-            "상태", "사유", "시도", "메시지길이", "이미지수"
-        ])
+        self.model = QStandardItemModel(0, len(self.HEADERS), self)
+        self.model.setHorizontalHeaderLabels(self.HEADERS)
         self.tbl.setModel(self.model)
 
         self.tbl.setColumnWidth(0, 60)
@@ -215,122 +233,118 @@ class LogsPage(QWidget):
         d.mkdir(parents=True, exist_ok=True)
         return d
 
+    def _current_status(self) -> Optional[str]:
+        value = self.cbo_status.currentData()
+        return str(value) if value else None
+
+    def _current_keyword(self) -> str:
+        return (self.txt_keyword.text() or "").strip()
+
     def refresh_reports(self) -> None:
         self.cbo_reports.blockSignals(True)
         self.cbo_reports.clear()
         self.cbo_reports.addItem("(리포트 선택: 선택 시 표에 상세 표시)", None)
 
-        d = self._reports_dir()
-        files = sorted(d.glob("send_report_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
-        for p in files[:500]:
+        files = sorted(
+            self._reports_dir().glob("send_report_*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+
+        for path in files[:500]:
             try:
-                ts = datetime.fromtimestamp(p.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
-                label = f"{p.name}  ({ts})"
+                ts = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                label = f"{path.name}  ({ts})"
             except Exception:
-                label = p.name
-            self.cbo_reports.addItem(label, str(p))
+                label = path.name
+            self.cbo_reports.addItem(label, str(path))
 
         self.cbo_reports.blockSignals(False)
 
     def open_selected_report(self) -> None:
         self.cbo_reports.blockSignals(True)
         try:
-            path = self.cbo_reports.currentData()
+            raw_path = self.cbo_reports.currentData()
         finally:
             self.cbo_reports.blockSignals(False)
 
-        if not path:
-            self._active_source = "DB"
-            self._report_path = None
-            self._report_obj = None
-            self._report_rows = []
-            self._shown_rows = []
-            self.txt_log_view.setPlainText("DB 로그 모드로 전환되었습니다.")
+        if not raw_path:
+            self._switch_to_db_mode()
             self.refresh()
             return
 
-        p = Path(str(path))
-        if not p.exists():
+        path = Path(str(raw_path))
+        if not path.exists():
             QMessageBox.information(self, "안내", "리포트 파일이 존재하지 않습니다.")
             return
 
         try:
-            obj = self.report_reader.load_json(p)
+            report_rows = self.logs_service.load_report_rows(path)
         except Exception as e:
-            QMessageBox.critical(self, "오류", f"리포트 로드 실패\n{p}\n\n{e}")
+            QMessageBox.critical(self, "오류", f"리포트 로드 실패\n{path}\n\n{e}")
             return
 
         self._active_source = "REPORT"
-        self._report_path = p
-        self._report_obj = obj
-        self._report_rows = self.report_reader.build_rows(obj)
+        self._report_path = path
+        self._report_rows = report_rows
 
         self.txt_log_view.setPlainText(
-            f"[SEND REPORT]\n- file: {str(p)}\n\n"
+            f"[SEND REPORT]\n- file: {str(path)}\n\n"
             "✅ 표는 리포트 상세로 전환되었습니다.\n"
             "✅ 표 행 클릭 → 보낸 캠페인 미리보기(팝업)\n"
         )
 
         self.refresh()
 
-        self.txt_log_view.setPlainText(
-            f"[SEND REPORT]\n- file: {str(p)}\n\n"
-            "✅ 표는 리포트 상세로 전환되었습니다.\n"
-            "✅ 표 행 클릭 → 보낸 캠페인 미리보기(팝업)\n"
+    def _switch_to_db_mode(self) -> None:
+        self._active_source = "DB"
+        self._report_path = None
+        self._report_rows = []
+        self._shown_rows = []
+        self.txt_log_view.setPlainText("DB 로그 모드로 전환되었습니다.")
+
+    def _get_filtered_report_rows(self) -> List[Dict[str, Any]]:
+        return self.logs_service.filter_report_rows(
+            self._report_rows,
+            status=self._current_status(),
+            keyword=self._current_keyword(),
         )
 
-    def _apply_filters_to_rows(self, rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        status = self.cbo_status.currentData()
-        keyword = (self.txt_keyword.text() or "").strip().lower()
-
-        out: List[Dict[str, Any]] = []
-        for r in rows:
-            st = str(r.get("status", "") or "").upper()
-
-            if status:
-                if not st.startswith(str(status).upper()):
-                    continue
-
-            if keyword:
-                hay = " ".join([
-                    str(r.get("channel", "") or ""),
-                    str(r.get("recipient", "") or ""),
-                    str(r.get("reason", "") or ""),
-                    str(r.get("_list_title", "") or ""),
-                    str(r.get("_campaign_name", "") or ""),
-                    str(r.get("_group_name", "") or ""),
-                ]).lower()
-                if keyword not in hay:
-                    continue
-
-            out.append(r)
-        return out
+    def _get_db_rows(self, *, limit: int, offset: int = 0) -> List[Dict[str, Any]]:
+        return self.logs_service.list_log_rows(
+            status=self._current_status(),
+            keyword=self._current_keyword(),
+            limit=limit,
+            offset=offset,
+        )
 
     def _render_rows_to_table(self, rows: List[Dict[str, Any]]) -> None:
         self.model.setRowCount(0)
         self._shown_rows = list(rows)
 
-        def _it(v: object) -> QStandardItem:
-            x = QStandardItem("" if v is None else str(v))
-            x.setEditable(False)
-            return x
-
-        for r in rows:
-            self.model.appendRow([
-                _it(r.get("id", "")),
-                _it(r.get("ts", "")),
-                _it(r.get("campaign_id", "")),
-                _it(r.get("batch_id", "")),
-                _it(r.get("channel", "")),
-                _it(r.get("recipient", "")),
-                _it(r.get("status", "")),
-                _it(r.get("reason", "")),
-                _it(r.get("attempt", "")),
-                _it(r.get("message_len", "")),
-                _it(r.get("image_count", "")),
-            ])
+        for row in rows:
+            self.model.appendRow(
+                [
+                    self._item(row.get("id", "")),
+                    self._item(row.get("ts", "")),
+                    self._item(row.get("campaign_id", "")),
+                    self._item(row.get("batch_id", "")),
+                    self._item(row.get("channel", "")),
+                    self._item(row.get("recipient", "")),
+                    self._item(row.get("status", "")),
+                    self._item(row.get("reason", "")),
+                    self._item(row.get("attempt", "")),
+                    self._item(row.get("message_len", "")),
+                    self._item(row.get("image_count", "")),
+                ]
+            )
 
         self._auto_show_reason_preview()
+
+    def _item(self, value: object) -> QStandardItem:
+        item = QStandardItem("" if value is None else str(value))
+        item.setEditable(False)
+        return item
 
     def _on_table_clicked(self, index: QModelIndex) -> None:
         if self._active_source != "REPORT":
@@ -340,69 +354,71 @@ class LogsPage(QWidget):
     def _on_table_double_clicked(self, index: QModelIndex) -> None:
         if not index.isValid():
             return
-        row = index.row()
 
-        detail: dict = {}
+        row = index.row()
+        detail: Dict[str, Any] = {}
+
         if self._active_source == "REPORT":
             if 0 <= row < len(self._shown_rows):
-                r = dict(self._shown_rows[row])
-                list_meta = r.get("_list_meta") if isinstance(r.get("_list_meta"), dict) else {}
+                report_row = dict(self._shown_rows[row])
+                list_meta = report_row.get("_list_meta") if isinstance(report_row.get("_list_meta"), dict) else {}
                 detail = {
-                    "ts": r.get("ts", ""),
-                    "channel": r.get("channel", ""),
-                    "recipient": r.get("recipient", ""),
-                    "status": r.get("status", ""),
-                    "reason": r.get("reason", ""),
-                    "attempt": r.get("attempt", ""),
-                    "message_len": r.get("message_len", ""),
-                    "image_count": r.get("image_count", ""),
-                    "campaign_id": r.get("campaign_id", ""),
-                    "campaign_name": r.get("_campaign_name", ""),
-                    "campaign_title": f"{r.get('_group_name', '')} + {r.get('_campaign_name', '')}".strip(" +"),
+                    "ts": report_row.get("ts", ""),
+                    "channel": report_row.get("channel", ""),
+                    "recipient": report_row.get("recipient", ""),
+                    "status": report_row.get("status", ""),
+                    "reason": report_row.get("reason", ""),
+                    "attempt": report_row.get("attempt", ""),
+                    "message_len": report_row.get("message_len", ""),
+                    "image_count": report_row.get("image_count", ""),
+                    "campaign_id": report_row.get("campaign_id", ""),
+                    "campaign_name": report_row.get("_campaign_name", ""),
+                    "campaign_title": f"{report_row.get('_group_name', '')} + {report_row.get('_campaign_name', '')}".strip(" +"),
                     "campaign_items": (list_meta.get("campaign_items") or []),
                 }
         else:
-            data = self._selected_row_values()
-            if not data:
+            selected = self._selected_row_values()
+            if not selected:
                 return
             detail = {
-                "ts": data.get("ts", ""),
-                "channel": data.get("channel", ""),
-                "recipient": data.get("recipient", ""),
-                "status": data.get("status", ""),
-                "reason": data.get("reason", ""),
-                "attempt": data.get("attempt", ""),
-                "message_len": data.get("message_len", ""),
-                "image_count": data.get("image_count", ""),
-                "campaign_id": data.get("campaign_id", ""),
+                "ts": selected.get("ts", ""),
+                "channel": selected.get("channel", ""),
+                "recipient": selected.get("recipient", ""),
+                "status": selected.get("status", ""),
+                "reason": selected.get("reason", ""),
+                "attempt": selected.get("attempt", ""),
+                "message_len": selected.get("message_len", ""),
+                "image_count": selected.get("image_count", ""),
+                "campaign_id": selected.get("campaign_id", ""),
                 "campaign_name": "(DB 로그) 캠페인명 미기록",
-                "campaign_title": str(data.get("channel", "") or "캠페인"),
+                "campaign_title": str(selected.get("channel", "") or "캠페인"),
             }
 
         from frontend.pages.logs.detail_dialog import LogDetailDialog
+
         dlg = LogDetailDialog(
             title="발송 상세",
             detail=detail,
-            campaigns_repo=(self.campaigns_service.repo if self.campaigns_service else None),
+            campaigns_service=self.campaigns_service,
             parent=self,
         )
         dlg.exec()
 
     def _items_need_bytes(self, items: List[Any]) -> bool:
-        for it in items:
-            if isinstance(it, dict):
-                if str(it.get("item_type", "")).upper() != "IMAGE":
+        for item in items:
+            if isinstance(item, dict):
+                if str(item.get("item_type", "")).upper() != "IMAGE":
                     continue
-                b = it.get("image_bytes", None)
-                if isinstance(b, (bytes, bytearray)) and len(b) > 0:
+                image_bytes = item.get("image_bytes", None)
+                if isinstance(image_bytes, (bytes, bytearray)) and len(image_bytes) > 0:
                     continue
                 return True
 
-            typ = str(getattr(it, "item_type", "") or "").upper()
-            if typ != "IMAGE":
+            item_type = str(getattr(item, "item_type", "") or "").upper()
+            if item_type != "IMAGE":
                 continue
-            b2 = getattr(it, "image_bytes", None)
-            if isinstance(b2, (bytes, bytearray)) and len(b2) > 0:
+            image_bytes = getattr(item, "image_bytes", None)
+            if isinstance(image_bytes, (bytes, bytearray)) and len(image_bytes) > 0:
                 continue
             return True
 
@@ -412,8 +428,8 @@ class LogsPage(QWidget):
         if row < 0 or row >= len(self._shown_rows):
             return
 
-        r = self._shown_rows[row]
-        list_meta = r.get("_list_meta")
+        report_row = self._shown_rows[row]
+        list_meta = report_row.get("_list_meta")
         if not isinstance(list_meta, dict):
             QMessageBox.information(self, "안내", "캠페인 정보가 없습니다.")
             return
@@ -446,137 +462,74 @@ class LogsPage(QWidget):
                 return
 
     def refresh(self) -> None:
-        if self._active_source == "REPORT":
-            rows = self._apply_filters_to_rows(self._report_rows)
-            self._render_rows_to_table(rows)
-            return
-
-        status = self.cbo_status.currentData()
-        keyword = (self.txt_keyword.text() or "").strip()
-
         try:
-            rows = self.logs_service.list_logs(
-                status=str(status) if status else None,
-                keyword=keyword,
-                limit=2000,
-                offset=0,
-            )
+            if self._active_source == "REPORT":
+                rows = self._get_filtered_report_rows()
+            else:
+                rows = self._get_db_rows(limit=2000, offset=0)
         except Exception as e:
             QMessageBox.critical(self, "오류", f"로그 로드 실패\n{e}")
             return
 
-        self.model.setRowCount(0)
-        self._shown_rows = []
-        for rr in (rows or []):
-            self._shown_rows.append({
-                "id": rr.id,
-                "ts": rr.ts,
-                "campaign_id": rr.campaign_id,
-                "batch_id": rr.batch_id,
-                "channel": rr.channel,
-                "recipient": rr.recipient,
-                "status": rr.status,
-                "reason": rr.reason,
-                "attempt": rr.attempt,
-                "message_len": rr.message_len,
-                "image_count": rr.image_count,
-            })
-
-        def _it(v: object) -> QStandardItem:
-            x = QStandardItem("" if v is None else str(v))
-            x.setEditable(False)
-            return x
-
-        for r in self._shown_rows:
-            self.model.appendRow([
-                _it(r.get("id")),
-                _it(r.get("ts")),
-                _it(r.get("campaign_id")),
-                _it(r.get("batch_id")),
-                _it(r.get("channel")),
-                _it(r.get("recipient")),
-                _it(r.get("status")),
-                _it(r.get("reason")),
-                _it(r.get("attempt")),
-                _it(r.get("message_len")),
-                _it(r.get("image_count")),
-            ])
-
-        self._auto_show_reason_preview()
+        self._render_rows_to_table(rows)
 
     def export_csv(self) -> None:
         if self._active_source == "REPORT":
-            rows = self._apply_filters_to_rows(self._report_rows)
-            file_path, _ = QFileDialog.getSaveFileName(
-                self,
-                "CSV 저장(리포트)",
-                str(Path.home() / "send_report_rows.csv"),
-                "CSV Files (*.csv)"
-            )
-            if not file_path:
-                return
+            rows = self._get_filtered_report_rows()
+            default_path = Path.home() / "send_report_rows.csv"
+            dialog_title = "CSV 저장(리포트)"
+        else:
             try:
-                with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
-                    w = csv.writer(f)
-                    w.writerow([
-                        "id", "ts", "campaign_id", "batch_id", "channel", "recipient",
-                        "status", "reason", "attempt", "message_len", "image_count"
-                    ])
-                    for r in rows:
-                        w.writerow([
-                            r.get("id", ""),
-                            r.get("ts", ""),
-                            r.get("campaign_id", ""),
-                            r.get("batch_id", ""),
-                            r.get("channel", ""),
-                            r.get("recipient", ""),
-                            r.get("status", ""),
-                            r.get("reason", ""),
-                            r.get("attempt", 0),
-                            r.get("message_len", 0),
-                            r.get("image_count", 0),
-                        ])
+                rows = self._get_db_rows(limit=50000, offset=0)
             except Exception as e:
-                QMessageBox.critical(self, "오류", f"CSV 저장 실패\n{e}")
+                QMessageBox.critical(self, "오류", f"CSV 내보내기용 로그 로드 실패\n{e}")
                 return
-            QMessageBox.information(self, "완료", f"CSV 저장 완료\n{file_path}")
-            return
-
-        status = self.cbo_status.currentData()
-        keyword = (self.txt_keyword.text() or "").strip()
-
-        try:
-            rows = self.logs_service.list_logs(
-                status=str(status) if status else None,
-                keyword=keyword,
-                limit=50000,
-                offset=0,
-            )
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"CSV 내보내기용 로그 로드 실패\n{e}")
-            return
+            default_path = Path.home() / "send_logs.csv"
+            dialog_title = "CSV 저장"
 
         file_path, _ = QFileDialog.getSaveFileName(
             self,
-            "CSV 저장",
-            str(Path.home() / "send_logs.csv"),
-            "CSV Files (*.csv)"
+            dialog_title,
+            str(default_path),
+            "CSV Files (*.csv)",
         )
         if not file_path:
             return
 
         try:
             with open(file_path, "w", newline="", encoding="utf-8-sig") as f:
-                w = csv.writer(f)
-                w.writerow([
-                    "id", "ts", "campaign_id", "batch_id", "channel", "recipient",
-                    "status", "reason", "attempt", "message_len", "image_count"
-                ])
-                for r in rows:
-                    w.writerow([
-                        r.id, r.ts, r.campaign_id, r.batch_id, r.channel, r.recipient,
-                        r.status, r.reason, r.attempt, r.message_len, r.image_count
-                    ])
+                writer = csv.writer(f)
+                writer.writerow(
+                    [
+                        "id",
+                        "ts",
+                        "campaign_id",
+                        "batch_id",
+                        "channel",
+                        "recipient",
+                        "status",
+                        "reason",
+                        "attempt",
+                        "message_len",
+                        "image_count",
+                    ]
+                )
+                for row in rows:
+                    writer.writerow(
+                        [
+                            row.get("id", ""),
+                            row.get("ts", ""),
+                            row.get("campaign_id", ""),
+                            row.get("batch_id", ""),
+                            row.get("channel", ""),
+                            row.get("recipient", ""),
+                            row.get("status", ""),
+                            row.get("reason", ""),
+                            row.get("attempt", 0),
+                            row.get("message_len", 0),
+                            row.get("image_count", 0),
+                        ]
+                    )
         except Exception as e:
             QMessageBox.critical(self, "오류", f"CSV 저장 실패\n{e}")
             return
@@ -585,15 +538,15 @@ class LogsPage(QWidget):
 
     def show_retry_targets(self) -> None:
         if self._active_source == "REPORT":
-            rows = self._apply_filters_to_rows(self._report_rows)
-            fails = [r for r in rows if str(r.get("status", "")).upper().startswith("FAIL")]
-            if not fails:
+            rows = self._get_filtered_report_rows()
+            targets = self.logs_service.get_retry_targets_from_rows(
+                rows,
+                fail_prefix="FAIL",
+            )
+            if not targets:
                 QMessageBox.information(self, "안내", "리포트 기준 FAIL 대상이 없습니다.")
                 return
 
-            targets: List[str] = []
-            for r in fails:
-                targets.append(f"{r.get('recipient','')} | {r.get('reason','')}")
             preview = "\n".join(targets[:80])
             if len(targets) > 80:
                 preview += f"\n… (+{len(targets) - 80}명)"
@@ -638,26 +591,20 @@ class LogsPage(QWidget):
 
         deleted = 0
         failed: List[str] = []
+
         try:
-            d = self._reports_dir()
-            for p in list(d.glob("send_report_*.json")):
+            for path in list(self._reports_dir().glob("send_report_*.json")):
                 try:
-                    p.unlink(missing_ok=True)
+                    path.unlink(missing_ok=True)
                     deleted += 1
                 except Exception:
-                    failed.append(p.name)
+                    failed.append(path.name)
         except Exception as e:
             QMessageBox.warning(self, "경고", f"리포트 파일 삭제 중 오류\n{e}")
 
-        self._active_source = "DB"
-        self._report_path = None
-        self._report_obj = None
-        self._report_rows = []
-        self._shown_rows = []
-
+        self._switch_to_db_mode()
         self.refresh_reports()
         self.cbo_reports.setCurrentIndex(0)
-
         self.model.setRowCount(0)
         self.txt_log_view.setPlainText("초기화 완료. DB 로그 모드입니다.")
         self.refresh()
@@ -673,11 +620,12 @@ class LogsPage(QWidget):
         idx = self.tbl.currentIndex()
         if not idx.isValid():
             return None
+
         row = idx.row()
 
         def g(col: int) -> str:
-            it = self.model.item(row, col)
-            return "" if it is None else (it.text() or "")
+            item = self.model.item(row, col)
+            return "" if item is None else (item.text() or "")
 
         return {
             "id": g(0),
@@ -738,7 +686,7 @@ class LogsPage(QWidget):
             self,
             "로그 파일 열기",
             str(user_data_dir()),
-            "Log Files (*.log *.txt *.jsonl *.json *.csv);;All Files (*)"
+            "Log Files (*.log *.txt *.jsonl *.json *.csv);;All Files (*)",
         )
         if not file_path:
             return
@@ -747,6 +695,7 @@ class LogsPage(QWidget):
     def open_wipe_log(self) -> None:
         try:
             import tempfile
+
             temp_dir = Path(tempfile.gettempdir())
             name = (user_data_dir().name or "app")
             wipe_log = temp_dir / f"{name}_wipe.log"

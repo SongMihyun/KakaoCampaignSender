@@ -1,47 +1,45 @@
+# FILE: src/frontend/app/main_window.py
 from __future__ import annotations
 
-import sys
-import subprocess
 import os
+import subprocess
+import sys
 
 from PySide6.QtWidgets import (
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
-    QStackedWidget,
-    QMessageBox,
     QApplication,
+    QMainWindow,
+    QMessageBox,
+    QStackedWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from app.paths import contacts_db_path
-from backend.domains.contacts.repository import ContactsRepo
-from backend.domains.groups.repository import GroupsRepo
+from app.version import __display_name__
+from backend.core.lifecycle.reset_app import schedule_delete_all_local_data
 from backend.domains.campaigns.repository import CampaignsRepo
-from backend.domains.send_lists.repository import SendListsRepo
-from backend.domains.logs.repository import SendLogsRepo
-
-from backend.domains.contacts.service import ContactsService
-from backend.domains.groups.service import GroupsService
 from backend.domains.campaigns.service import CampaignsService
-from backend.domains.send_lists.service import SendListsService
+from backend.domains.contacts.repository import ContactsRepo
+from backend.domains.contacts.service import ContactsService
+from backend.domains.groups.repository import GroupsRepo
+from backend.domains.groups.service import GroupsService
+from backend.domains.logs.repository import SendLogsRepo
 from backend.domains.logs.service import LogsService
+from backend.domains.reports.reader import SendReportReader
+from backend.domains.send_lists.repository import SendListsRepo
+from backend.domains.send_lists.service import SendListsService
 from backend.domains.sending.job_builder import SendJobBuilder
 from backend.domains.sending.service import SendingService
-from backend.domains.reports.reader import SendReportReader
-
 from backend.stores.contacts_store import ContactsStore
-from backend.core.lifecycle.reset_app import schedule_delete_all_local_data
-from app.version import __display_name__
 
 from frontend.layout.header import Header
 from frontend.layout.navigation import Navigation
 from frontend.layout.statusbar import StatusBar
-
+from frontend.pages.campaigns.page import CampaignPage
 from frontend.pages.contacts.page import ContactsPage
 from frontend.pages.groups.page import GroupsPage
-from frontend.pages.campaigns.page import CampaignPage
-from frontend.pages.sending.page import SendPage
 from frontend.pages.logs.page import LogsPage
+from frontend.pages.sending.page import SendPage
 
 
 class MainWindow(QMainWindow):
@@ -70,37 +68,39 @@ class MainWindow(QMainWindow):
 
         db_path = contacts_db_path()
 
+        # repositories
         self.contacts_repo = ContactsRepo(db_path)
         self.groups_repo = GroupsRepo(db_path)
         self.campaigns_repo = CampaignsRepo(db_path)
         self.send_lists_repo = SendListsRepo(db_path)
-
         self.send_logs_repo = SendLogsRepo(db_path)
         self.send_logs_repo.ensure_tables()
 
+        # stores
         self.contacts_store = ContactsStore()
 
+        # services
         self.contacts_service = ContactsService(
             repo=self.contacts_repo,
             store=self.contacts_store,
         )
-
         self.groups_service = GroupsService(
             repo=self.groups_repo,
             contacts_repo=self.contacts_repo,
             contacts_store=self.contacts_store,
         )
-
         self.campaigns_service = CampaignsService(
             repo=self.campaigns_repo,
         )
-
         self.send_lists_service = SendListsService(
             repo=self.send_lists_repo,
         )
 
+        self.report_reader = SendReportReader()
+
         self.logs_service = LogsService(
             repo=self.send_logs_repo,
+            report_reader=self.report_reader,
         )
 
         self.send_job_builder = SendJobBuilder(
@@ -109,14 +109,12 @@ class MainWindow(QMainWindow):
             contacts_store=self.contacts_store,
             campaigns_service=self.campaigns_service,
         )
-
         self.sending_service = SendingService(
             job_builder=self.send_job_builder,
         )
 
-        self.report_reader = SendReportReader()
-
         from frontend.app.app_events import app_events
+
         app_events.contacts_changed.connect(self._on_contacts_changed_global)  # type: ignore[attr-defined]
 
         try:
@@ -127,6 +125,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 self.contacts_store.clear()
 
+        # pages
         self.contacts_page = ContactsPage(
             service=self.contacts_service,
             contacts_store=self.contacts_store,
@@ -147,9 +146,7 @@ class MainWindow(QMainWindow):
         self.send_page = SendPage(
             contacts_service=self.contacts_service,
             contacts_store=self.contacts_store,
-            groups_repo=self.groups_repo,
             campaigns_service=self.campaigns_service,
-            send_lists_service=self.send_lists_service,
             sending_service=self.sending_service,
             send_logs_repo=self.send_logs_repo,
             on_progress=self.status.set_progress,
@@ -158,7 +155,6 @@ class MainWindow(QMainWindow):
 
         self.logs_page = LogsPage(
             logs_service=self.logs_service,
-            report_reader=self.report_reader,
             campaigns_service=self.campaigns_service,
             on_reset_all=self.reset_application,
         )
@@ -188,8 +184,9 @@ class MainWindow(QMainWindow):
             pass
 
         try:
-            from backend.updates.updater_legacy import launch_installer_if_pending
-            launch_installer_if_pending()
+            from backend.updates.updater import finalize_update_on_app_close
+
+            finalize_update_on_app_close()
         except Exception:
             pass
 
@@ -213,7 +210,8 @@ class MainWindow(QMainWindow):
             pass
 
     def _apply_style(self) -> None:
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QMainWindow { background: #f6f7fb; }
 
             QWidget#Card {
@@ -281,7 +279,8 @@ class MainWindow(QMainWindow):
             QToolButton#HeaderMenuBtn:hover {
                 background: #f3f4f6;
             }
-        """)
+            """
+        )
 
     def _load_contacts_store_from_db(self) -> int:
         all_rows = self.contacts_repo.search_contacts("")
@@ -291,6 +290,7 @@ class MainWindow(QMainWindow):
     def _on_contacts_changed_global(self) -> None:
         if not hasattr(self, "_contacts_sync_timer"):
             from PySide6.QtCore import QTimer
+
             self._contacts_sync_timer = QTimer(self)  # type: ignore[attr-defined]
             self._contacts_sync_timer.setSingleShot(True)  # type: ignore[attr-defined]
             self._contacts_sync_timer.timeout.connect(self._do_contacts_store_sync_bg)  # type: ignore[attr-defined]
