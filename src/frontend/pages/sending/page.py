@@ -26,7 +26,6 @@ from PySide6.QtWidgets import (
 
 from app.paths import user_data_dir
 
-from backend.domains.contacts.dto import ContactUpdateDTO
 from backend.domains.contacts.service import ContactsService
 from backend.domains.campaigns.service import CampaignsService
 from backend.domains.reports.writer import SendReportWriter
@@ -35,6 +34,7 @@ from backend.domains.sending.service import SendingService
 
 from frontend.app.app_events import app_events
 from frontend.pages.campaigns.preview_dialog import CampaignPreviewDialog
+from frontend.utils.contact_edit import edit_contact_by_id
 
 from backend.core.logging.send_run_logger import SendRunLogger
 from backend.integrations.kakaotalk.driver import KakaoPcDriver, KakaoSenderDriver
@@ -156,9 +156,9 @@ class SendPage(QWidget):
         self._hotkey_mgr: Optional[GlobalHotkeyManager] = None
         self._init_global_hotkey()
 
-        # 성능 개선 1차
         self._preview_cache: dict[int, tuple[list[dict], str]] = {}
         self._send_lists_reload_pending_select_id: Optional[int] = None
+        self._last_preview_send_list_id: Optional[int] = None
 
         self._sources_reload_timer = QTimer(self)
         self._sources_reload_timer.setSingleShot(True)
@@ -484,8 +484,17 @@ class SendPage(QWidget):
     def _clear_preview_cache(self) -> None:
         self._preview_cache.clear()
 
+    def _invalidate_preview_cache(self, send_list_id: Optional[int] = None) -> None:
+        if send_list_id is None:
+            self._preview_cache.clear()
+            return
+        self._preview_cache.pop(int(send_list_id), None)
+
     def _schedule_reload_sources(self, delay_ms: int = 120) -> None:
         self._sources_reload_timer.start(max(0, int(delay_ms)))
+
+    def _schedule_refresh_current_preview(self, delay_ms: int = 80) -> None:
+        self._preview_refresh_timer.start(max(0, int(delay_ms)))
 
     def reload_sources(self) -> None:
         self.cbo_groups.blockSignals(True)
@@ -519,6 +528,8 @@ class SendPage(QWidget):
         self._send_lists_reload_timer.start(120)
 
     def _flush_reload_send_lists(self) -> None:
+        current_selected_id = self._current_send_list_id()
+
         self.lst_send_lists.blockSignals(True)
         self.lst_send_lists.clear()
 
@@ -537,12 +548,14 @@ class SendPage(QWidget):
             self.lst_send_lists.blockSignals(False)
             self.preview_model.setRowCount(0)
             self.lbl_footer.setText("선택된 발송리스트가 없습니다.")
+            self._last_preview_send_list_id = None
+            self._send_lists_reload_pending_select_id = None
             return
 
         selected_row_to_set = 0
         select_send_list_id = self._send_lists_reload_pending_select_id
         if select_send_list_id is None:
-            select_send_list_id = self._current_send_list_id()
+            select_send_list_id = current_selected_id
 
         for idx, r in enumerate(rows, start=1):
             send_list_id = int(getattr(r, "id"))
@@ -618,7 +631,7 @@ class SendPage(QWidget):
             QMessageBox.critical(self, "오류", f"발송리스트 저장 실패\n{e}")
             return
 
-        self._clear_preview_cache()
+        self._invalidate_preview_cache(int(send_list_id))
         self._on_status(f"발송리스트 생성/갱신: id={send_list_id}")
         QMessageBox.information(
             self,
@@ -631,19 +644,27 @@ class SendPage(QWidget):
     def _on_send_list_selected(self, row: int) -> None:
         item = self.lst_send_lists.item(row)
         if not item:
+            self.preview_model.setRowCount(0)
+            self.lbl_footer.setText("선택된 발송리스트가 없습니다.")
+            self._last_preview_send_list_id = None
             return
 
         data = item.data(Qt.UserRole)
         if not isinstance(data, dict):
             self.preview_model.setRowCount(0)
             self.lbl_footer.setText("선택된 발송리스트가 없습니다.")
+            self._last_preview_send_list_id = None
             return
 
         send_list_id = data.get("send_list_id")
         if send_list_id is None:
+            self.preview_model.setRowCount(0)
+            self.lbl_footer.setText("선택된 발송리스트가 없습니다.")
+            self._last_preview_send_list_id = None
             return
 
         send_list_id = int(send_list_id)
+        self._last_preview_send_list_id = send_list_id
         cached = self._preview_cache.get(send_list_id)
 
         if cached is None:
@@ -661,144 +682,112 @@ class SendPage(QWidget):
         self._render_preview_rows(rows)
         self.lbl_footer.setText(f"대상(현재 기준): {len(rows)}명 / 발송리스트: {title}")
 
+    def _make_preview_row_items(self, row_data: dict) -> list[QStandardItem]:
+        item_no = QStandardItem(str(row_data["no"]))
+        item_no.setData(int(row_data["contact_id"]), self.ROLE_CONTACT_ID)
+
+        row_items = [
+            item_no,
+            QStandardItem(str(row_data["emp_id"] or "")),
+            QStandardItem(str(row_data["name"] or "")),
+            QStandardItem(str(row_data["phone"] or "")),
+            QStandardItem(str(row_data["agency"] or "")),
+            QStandardItem(str(row_data["branch"] or "")),
+        ]
+        for item in row_items:
+            item.setEditable(False)
+        return row_items
+
     def _render_preview_rows(self, rows: list[dict]) -> None:
+        current_index = self.tbl_preview.currentIndex()
+        current_contact_id: Optional[int] = None
+
+        if current_index.isValid():
+            item_no = self.preview_model.item(current_index.row(), 0)
+            if item_no is not None:
+                try:
+                    raw_contact_id = item_no.data(self.ROLE_CONTACT_ID)
+                    current_contact_id = int(raw_contact_id) if raw_contact_id is not None else None
+                except Exception:
+                    current_contact_id = None
+
+        self.tbl_preview.setUpdatesEnabled(False)
         self.tbl_preview.setSortingEnabled(False)
-        self.preview_model.setRowCount(0)
 
-        items_to_append: list[list[QStandardItem]] = []
-        for row_data in rows:
-            item_no = QStandardItem(str(row_data["no"]))
-            item_no.setData(int(row_data["contact_id"]), self.ROLE_CONTACT_ID)
-            for item in (
-                item_no,
-                QStandardItem(str(row_data["emp_id"] or "")),
-                QStandardItem(str(row_data["name"] or "")),
-                QStandardItem(str(row_data["phone"] or "")),
-                QStandardItem(str(row_data["agency"] or "")),
-                QStandardItem(str(row_data["branch"] or "")),
-            ):
-                item.setEditable(False)
-            items_to_append.append(
-                [
-                    item_no,
-                    QStandardItem(str(row_data["emp_id"] or "")),
-                    QStandardItem(str(row_data["name"] or "")),
-                    QStandardItem(str(row_data["phone"] or "")),
-                    QStandardItem(str(row_data["agency"] or "")),
-                    QStandardItem(str(row_data["branch"] or "")),
-                ]
-            )
+        try:
+            self.preview_model.removeRows(0, self.preview_model.rowCount())
 
-        for row_items in items_to_append:
-            for item in row_items:
-                item.setEditable(False)
-            self.preview_model.appendRow(row_items)
+            built_rows = [self._make_preview_row_items(row_data) for row_data in rows]
+            for row_items in built_rows:
+                self.preview_model.appendRow(row_items)
 
-        self.tbl_preview.setSortingEnabled(True)
+            if current_contact_id is not None:
+                for row_idx in range(self.preview_model.rowCount()):
+                    item_no = self.preview_model.item(row_idx, 0)
+                    if item_no is None:
+                        continue
+                    try:
+                        row_contact_id = item_no.data(self.ROLE_CONTACT_ID)
+                        row_contact_id = int(row_contact_id) if row_contact_id is not None else None
+                    except Exception:
+                        row_contact_id = None
+
+                    if row_contact_id == current_contact_id:
+                        self.tbl_preview.selectRow(row_idx)
+                        break
+        finally:
+            self.tbl_preview.setSortingEnabled(False)
+            self.tbl_preview.setUpdatesEnabled(True)
 
     def _on_preview_double_clicked(self, index: QModelIndex) -> None:
+        if not index.isValid():
+            return
+
+        row = index.row()
+        item_no = self.preview_model.item(row, 0)
+        if item_no is None:
+            return
+
+        contact_id = item_no.data(self.ROLE_CONTACT_ID)
         try:
-            if not index.isValid():
-                return
+            contact_id = int(contact_id) if contact_id is not None else 0
+        except Exception:
+            contact_id = 0
 
-            row = index.row()
-            item_no = self.preview_model.item(row, 0)
-            if item_no is None:
-                return
+        fallback_preset = self._build_contact_preset_from_preview_row(row)
 
-            contact_id = item_no.data(self.ROLE_CONTACT_ID)
-            try:
-                contact_id = int(contact_id) if contact_id is not None else 0
-            except Exception:
-                contact_id = 0
+        ok = edit_contact_by_id(
+            self,
+            contacts_service=self.contacts_service,
+            contact_id=contact_id,
+            fallback_preset=fallback_preset,
+            emit_event=True,
+        )
+        if not ok:
+            return
 
-            if contact_id <= 0:
-                QMessageBox.information(self, "안내", "원본 대상자 ID(contact_id)를 확인할 수 없습니다.")
-                return
-
-            preset = self.contacts_service.get_contact_by_id(int(contact_id))
-            if preset is None:
-                preset = self._build_contact_preset_from_preview_row(row)
-
-            from frontend.pages.contacts.dialog import ContactDialog
-
-            dlg = ContactDialog("대상자 수정", preset=preset, parent=self)
-            ok = bool(dlg.exec())
-            if not ok:
-                return
-
-            form = dlg.get_contact()
-            new_emp_id = (form.get("emp_id") or "").strip()
-            new_name = (form.get("name") or "").strip()
-            new_phone = (form.get("phone") or "").strip()
-            new_agency = (form.get("agency") or "").strip()
-            new_branch = (form.get("branch") or "").strip()
-
-            if not new_name:
-                QMessageBox.warning(self, "입력 오류", "이름은 필수입니다.")
-                return
-
-            try:
-                self.contacts_service.update_contact(
-                    ContactUpdateDTO(
-                        row_id=int(contact_id),
-                        emp_id=new_emp_id,
-                        name=new_name,
-                        phone=new_phone,
-                        agency=new_agency,
-                        branch=new_branch,
-                    )
-                )
-            except ValueError as e:
-                QMessageBox.warning(self, "중복 오류", str(e))
-                return
-            except Exception as e:
-                QMessageBox.critical(self, "오류", f"대상자 저장 실패\n{e}")
-                return
-
-            self._sync_after_contact_change()
-
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"대상자 수정 처리 실패\n{e}")
+        self._sync_after_contact_change()
+        self._on_status("대상자 수정 반영됨 (참조형: 즉시 최신 반영)")
 
     def _build_contact_preset_from_preview_row(self, row: int):
-        emp = self.preview_model.item(row, 1).text() if self.preview_model.item(row, 1) else ""
-        name = self.preview_model.item(row, 2).text() if self.preview_model.item(row, 2) else ""
-        phone = self.preview_model.item(row, 3).text() if self.preview_model.item(row, 3) else ""
-        agency = self.preview_model.item(row, 4).text() if self.preview_model.item(row, 4) else ""
-        branch = self.preview_model.item(row, 5).text() if self.preview_model.item(row, 5) else ""
-
-        return type(
-            "Tmp",
-            (),
-            {
-                "emp_id": emp or "",
-                "name": name or "",
-                "phone": phone or "",
-                "agency": agency or "",
-                "branch": branch or "",
-            },
-        )()
+        return {
+            "emp_id": self.preview_model.item(row, 1).text() if self.preview_model.item(row, 1) else "",
+            "name": self.preview_model.item(row, 2).text() if self.preview_model.item(row, 2) else "",
+            "phone": self.preview_model.item(row, 3).text() if self.preview_model.item(row, 3) else "",
+            "agency": self.preview_model.item(row, 4).text() if self.preview_model.item(row, 4) else "",
+            "branch": self.preview_model.item(row, 5).text() if self.preview_model.item(row, 5) else "",
+        }
 
     def _sync_after_contact_change(self) -> None:
         cur_sid = self._current_send_list_id()
-        self._clear_preview_cache()
+        self._invalidate_preview_cache(cur_sid)
         self.reload_send_lists(select_send_list_id=cur_sid)
         self._schedule_refresh_current_preview()
 
         try:
-            app_events.contacts_changed.emit()
-        except Exception:
-            pass
-        try:
             app_events.groups_changed.emit()
         except Exception:
             pass
-
-        self._on_status("대상자 수정 반영됨 (참조형: 즉시 최신 반영)")
-
-    def _schedule_refresh_current_preview(self, delay_ms: int = 80) -> None:
-        self._preview_refresh_timer.start(max(0, int(delay_ms)))
 
     def _refresh_current_preview(self) -> None:
         row = self.lst_send_lists.currentRow()
@@ -833,7 +822,7 @@ class SendPage(QWidget):
             QMessageBox.critical(self, "오류", f"삭제 실패\n{e}")
             return
 
-        self._clear_preview_cache()
+        self._invalidate_preview_cache(int(send_list_id))
         self._on_status(f"발송리스트 삭제: id={send_list_id}")
         self.reload_send_lists()
 
@@ -1052,20 +1041,32 @@ class SendPage(QWidget):
         self._refresh_visible_numbers_only()
 
     def _on_campaigns_changed(self) -> None:
+        cur_sid = self._current_send_list_id()
         self._clear_preview_cache()
         self._schedule_reload_sources()
-        self.reload_send_lists(select_send_list_id=self._current_send_list_id())
+        self.reload_send_lists(select_send_list_id=cur_sid)
+        self._schedule_refresh_current_preview()
 
     def _on_contacts_changed(self) -> None:
-        self._clear_preview_cache()
+        cur_sid = self._current_send_list_id()
+        self._invalidate_preview_cache(cur_sid)
         self._schedule_refresh_current_preview()
 
     def _on_groups_changed(self) -> None:
+        cur_sid = self._current_send_list_id()
         self._clear_preview_cache()
         self._schedule_reload_sources()
+        self.reload_send_lists(select_send_list_id=cur_sid)
         self._schedule_refresh_current_preview()
 
     def cleanup(self) -> None:
+        try:
+            self._sources_reload_timer.stop()
+            self._send_lists_reload_timer.stop()
+            self._preview_refresh_timer.stop()
+        except Exception:
+            pass
+
         try:
             if self._worker and self._worker.isRunning():
                 self._worker.request_stop()

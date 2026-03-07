@@ -1,0 +1,282 @@
+# FILE: .github/workflows/pr-smart-summary.yml
+name: PR Smart Summary
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+      - ready_for_review
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: pr-smart-summary-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  update-pr-summary:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Build PR summary / release notes / squash suggestion
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issue_number = pr.number;
+
+            const AUTO_START = '<!-- AUTO-GENERATED:PR-SUMMARY:START -->';
+            const AUTO_END = '<!-- AUTO-GENERATED:PR-SUMMARY:END -->';
+
+            const headRef = pr.head.ref;
+            const baseRef = pr.base.ref;
+            const labels = (pr.labels || []).map(x => x.name);
+
+            // release 판단은 제목 자동 변경이 아니라 본문 섹션 생성에만 사용
+            const isDevelopToMain = headRef === 'develop' && baseRef === 'main';
+            const isReleaseBranchToMain = /^release[\/-]/.test(headRef) && baseRef === 'main';
+            const hasReleaseLabel = labels.includes('release');
+            const isReleasePr = isDevelopToMain || isReleaseBranchToMain || hasReleaseLabel;
+
+            const headingMap = {
+              feat: '✨ 기능 추가',
+              fix: '🐞 버그 수정',
+              refactor: '🛠 구조 개선',
+              perf: '⚡ 성능 개선',
+              docs: '📝 문서',
+              test: '✅ 테스트',
+              chore: '🔧 유지보수',
+              build: '🏗 빌드',
+              ci: '🤖 CI/CD',
+              style: '🎨 스타일',
+              revert: '↩️ 롤백',
+              other: '📦 기타',
+            };
+
+            const typeOrder = [
+              'feat', 'fix', 'refactor', 'perf', 'docs',
+              'test', 'chore', 'build', 'ci', 'style',
+              'revert', 'other'
+            ];
+
+            function parseCommitSubject(subject) {
+              const s = String(subject || '').trim();
+              const m = s.match(/^([a-zA-Z]+)(\(([^)]+)\))?:\s+(.+)$/);
+              if (!m) {
+                return {
+                  raw: s,
+                  type: 'other',
+                  scope: '',
+                  subject: s,
+                };
+              }
+              return {
+                raw: s,
+                type: m[1].toLowerCase(),
+                scope: (m[3] || '').trim(),
+                subject: (m[4] || '').trim(),
+              };
+            }
+
+            function koreanTypeName(type) {
+              return headingMap[type] || headingMap.other;
+            }
+
+            function buildGroupedSections(parsedCommits) {
+              const groups = {};
+              for (const type of typeOrder) groups[type] = [];
+
+              for (const c of parsedCommits) {
+                const type = groups[c.type] ? c.type : 'other';
+                groups[type].push(c);
+              }
+
+              const lines = [];
+              for (const type of typeOrder) {
+                const items = groups[type];
+                if (!items.length) continue;
+
+                lines.push(`### ${koreanTypeName(type)}`);
+                for (const item of items) {
+                  if (item.scope) {
+                    lines.push(`- **${item.scope}**: ${item.subject}`);
+                  } else {
+                    lines.push(`- ${item.subject}`);
+                  }
+                }
+                lines.push('');
+              }
+              return lines.join('\n').trim();
+            }
+
+            function buildScopeSummary(parsedCommits) {
+              const scopeCount = new Map();
+              for (const c of parsedCommits) {
+                const scope = c.scope || '(scope 없음)';
+                scopeCount.set(scope, (scopeCount.get(scope) || 0) + 1);
+              }
+
+              const sorted = [...scopeCount.entries()].sort((a, b) => b[1] - a[1]);
+              if (!sorted.length) return '- 없음';
+
+              return sorted
+                .slice(0, 10)
+                .map(([scope, count]) => `- ${scope}: ${count}건`)
+                .join('\n');
+            }
+
+            function inferReleaseTitle(parsedCommits) {
+              const counts = {};
+              for (const c of parsedCommits) {
+                counts[c.type] = (counts[c.type] || 0) + 1;
+              }
+
+              if ((counts.feat || 0) > 0) return '주요 기능 추가 및 구조 개선 반영';
+              if ((counts.fix || 0) > 0) return '안정화 수정사항 반영';
+              if ((counts.refactor || 0) > 0) return '구조 개선사항 반영';
+              return 'develop 변경사항 반영';
+            }
+
+            function buildReleaseNotesDraft(parsedCommits) {
+              const lines = [];
+              lines.push('## 🚀 릴리즈 노트 초안');
+              lines.push('');
+              lines.push(`- 기준 브랜치: \`${headRef}\` → \`${baseRef}\``);
+              lines.push(`- 반영 커밋 수: **${parsedCommits.length}건**`);
+              lines.push('');
+
+              const grouped = buildGroupedSections(parsedCommits);
+              if (grouped) {
+                lines.push(grouped);
+                lines.push('');
+              }
+
+              lines.push('## 📌 영향 범위');
+              lines.push('');
+              lines.push(buildScopeSummary(parsedCommits));
+              lines.push('');
+
+              return lines.join('\n').trim();
+            }
+
+            function buildSquashSuggestion(parsedCommits) {
+              const title = isReleasePr
+                ? `chore(release): ${inferReleaseTitle(parsedCommits)}`
+                : pr.title;
+
+              const bodyLines = [];
+              bodyLines.push('## 포함 변경');
+              bodyLines.push('');
+              bodyLines.push(`- PR: #${pr.number}`);
+              bodyLines.push(`- 브랜치: \`${headRef}\` → \`${baseRef}\``);
+              bodyLines.push(`- 커밋 수: ${parsedCommits.length}건`);
+              bodyLines.push('');
+
+              const grouped = buildGroupedSections(parsedCommits);
+              if (grouped) {
+                bodyLines.push(grouped);
+              }
+
+              return {
+                title,
+                body: bodyLines.join('\n').trim(),
+              };
+            }
+
+            function mergeManualBody(existingBody, generatedBody) {
+              const body = String(existingBody || '');
+              const startIdx = body.indexOf(AUTO_START);
+              const endIdx = body.indexOf(AUTO_END);
+
+              let manualPrefix = body;
+              let manualSuffix = '';
+
+              if (startIdx !== -1 && endIdx !== -1 && endIdx > startIdx) {
+                manualPrefix = body.slice(0, startIdx).trimEnd();
+                manualSuffix = body.slice(endIdx + AUTO_END.length).trimStart();
+              }
+
+              const autoBlock = `${AUTO_START}\n${generatedBody}\n${AUTO_END}`;
+
+              const parts = [];
+              if (manualPrefix) parts.push(manualPrefix);
+              parts.push(autoBlock);
+              if (manualSuffix) parts.push(manualSuffix);
+
+              return parts.join('\n\n').trim() + '\n';
+            }
+
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              {
+                owner,
+                repo,
+                pull_number: issue_number,
+                per_page: 100,
+              }
+            );
+
+            const parsedCommits = commits.map(c => parseCommitSubject(c.commit.message.split('\n')[0]));
+
+            const counts = parsedCommits.reduce((acc, item) => {
+              acc[item.type] = (acc[item.type] || 0) + 1;
+              return acc;
+            }, {});
+
+            const summaryLines = [];
+            summaryLines.push('## 📦 PR 자동 요약');
+            summaryLines.push('');
+            summaryLines.push(`- 대상: \`${headRef}\` → \`${baseRef}\``);
+            summaryLines.push(`- 커밋 수: **${parsedCommits.length}건**`);
+            summaryLines.push(`- 유형 분포: feat ${counts.feat || 0} / fix ${counts.fix || 0} / refactor ${counts.refactor || 0} / perf ${counts.perf || 0} / chore ${counts.chore || 0}`);
+            summaryLines.push('');
+
+            summaryLines.push('## 🧩 커밋 분류');
+            summaryLines.push('');
+            summaryLines.push(buildGroupedSections(parsedCommits));
+            summaryLines.push('');
+
+            if (isReleasePr) {
+              summaryLines.push(buildReleaseNotesDraft(parsedCommits));
+              summaryLines.push('');
+            }
+
+            const squash = buildSquashSuggestion(parsedCommits);
+            summaryLines.push('## 🧱 Squash Merge 제안');
+            summaryLines.push('');
+            summaryLines.push('**제목**');
+            summaryLines.push('');
+            summaryLines.push('```text');
+            summaryLines.push(squash.title);
+            summaryLines.push('```');
+            summaryLines.push('');
+            summaryLines.push('**본문**');
+            summaryLines.push('');
+            summaryLines.push('```text');
+            summaryLines.push(squash.body);
+            summaryLines.push('```');
+            summaryLines.push('');
+
+            summaryLines.push('## 📝 수동 메모');
+            summaryLines.push('');
+            summaryLines.push('- 필요한 검증 항목이나 배포 메모를 여기에 추가하세요.');
+            summaryLines.push('');
+
+            const generatedBody = summaryLines.join('\n').trim();
+            const nextBody = mergeManualBody(pr.body, generatedBody);
+
+            // 제목은 자동 수정하지 않음
+            await github.rest.pulls.update({
+              owner,
+              repo,
+              pull_number: issue_number,
+              body: nextBody,
+            });
