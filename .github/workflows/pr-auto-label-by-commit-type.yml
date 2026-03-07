@@ -1,0 +1,133 @@
+# FILE: .github/workflows/pr-auto-label-by-commit-type.yml
+name: PR Auto Label by Commit Type
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Apply labels from conventional commit types
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+
+            const allowedTypes = new Set([
+              "feat",
+              "fix",
+              "refactor",
+              "perf",
+              "docs",
+              "test",
+              "chore",
+              "build",
+              "ci",
+              "style",
+              "revert",
+            ]);
+
+            function parseType(subject) {
+              const s = String(subject || "").trim();
+              const m = s.match(/^([a-zA-Z]+)(\(([^)]+)\))?:\s+(.+)$/);
+              if (!m) return null;
+              const type = m[1].toLowerCase();
+              return allowedTypes.has(type) ? type : null;
+            }
+
+            async function ensureLabelExists(name) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner,
+                  repo,
+                  name,
+                });
+              } catch (error) {
+                if (error.status === 404) {
+                  const colorMap = {
+                    feat: "0E8A16",
+                    fix: "D73A4A",
+                    refactor: "5319E7",
+                    perf: "1D76DB",
+                    docs: "0075CA",
+                    test: "FBCA04",
+                    chore: "BFDADC",
+                    build: "C2E0C6",
+                    ci: "D4C5F9",
+                    style: "F9D0C4",
+                    revert: "000000",
+                  };
+
+                  const descriptionMap = {
+                    feat: "Conventional commit type: feature",
+                    fix: "Conventional commit type: fix",
+                    refactor: "Conventional commit type: refactor",
+                    perf: "Conventional commit type: performance",
+                    docs: "Conventional commit type: docs",
+                    test: "Conventional commit type: test",
+                    chore: "Conventional commit type: chore",
+                    build: "Conventional commit type: build",
+                    ci: "Conventional commit type: ci",
+                    style: "Conventional commit type: style",
+                    revert: "Conventional commit type: revert",
+                  };
+
+                  await github.rest.issues.createLabel({
+                    owner,
+                    repo,
+                    name,
+                    color: colorMap[name] || "BFDADC",
+                    description: descriptionMap[name] || "Conventional commit type",
+                  });
+                  return;
+                }
+                throw error;
+              }
+            }
+
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              {
+                owner,
+                repo,
+                pull_number,
+                per_page: 100,
+              }
+            );
+
+            const detected = new Set();
+
+            for (const commit of commits) {
+              const subject = String(commit.commit.message || "").split("\n")[0];
+              const type = parseType(subject);
+              if (type) detected.add(type);
+            }
+
+            const labelsToAdd = [...detected];
+
+            if (labelsToAdd.length === 0) {
+              core.info("No conventional commit type labels detected.");
+              return;
+            }
+
+            for (const label of labelsToAdd) {
+              await ensureLabelExists(label);
+            }
+
+            await github.rest.issues.addLabels({
+              owner,
+              repo,
+              issue_number: pull_number,
+              labels: labelsToAdd,
+            });
+
+            core.info(`Added labels: ${labelsToAdd.join(", ")}`);
