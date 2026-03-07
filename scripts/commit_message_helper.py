@@ -72,15 +72,98 @@ TYPE_RULES: list[tuple[str, str]] = [
 ]
 
 SUBJECT_HINT_RULES: list[tuple[str, str]] = [
-    (".githooks/prepare-commit-msg", "stabilize prepare-commit-msg hook execution"),
-    ("scripts/commit_message_helper.py", "improve interactive commit message helper"),
-    ("scripts/git_editor_wrapper.py", "skip editor when commit message is already generated"),
-    ("scripts/install_git_hooks.ps1", "stabilize git hook installation on windows"),
-    (".gitattributes", "enforce lf for git hook scripts"),
-    ("src/frontend/pages/contacts/", "unify contact edit flow"),
-    ("src/frontend/pages/groups/", "centralize group contact edit handling"),
-    ("src/frontend/pages/sending/", "centralize send preview contact edit handling"),
-    ("src/backend/updates/", "finalize update flow cleanup"),
+    (".githooks/prepare-commit-msg", "prepare-commit-msg 훅 실행 안정화"),
+    ("scripts/commit_message_helper.py", "인터랙티브 커밋 메시지 헬퍼 개선"),
+    ("scripts/git_editor_wrapper.py", "커밋 메시지 생성 시 에디터 실행 생략"),
+    ("scripts/install_git_hooks.ps1", "윈도우용 git hook 설치 스크립트 안정화"),
+    (".gitattributes", "git hook 스크립트 LF 규칙 고정"),
+    ("src/frontend/pages/contacts/", "대상자 페이지 수정 흐름 정리"),
+    ("src/frontend/pages/groups/", "그룹 멤버 수정 흐름 정리"),
+    ("src/frontend/pages/sending/", "발송 미리보기 수정 흐름 정리"),
+    ("src/frontend/utils/contact_edit.py", "공통 대상자 수정 유틸 정리"),
+    ("src/backend/updates/", "업데이트 종료 후처리 흐름 정리"),
+    ("src/frontend/app/main_window.py", "메인 윈도우 조립 및 종료 흐름 정리"),
+]
+
+COMBINATION_SUBJECT_RULES: list[dict[str, object]] = [
+    {
+        "all_of": [
+            ".githooks/prepare-commit-msg",
+            "scripts/commit_message_helper.py",
+            "scripts/git_editor_wrapper.py",
+        ],
+        "subject": "인터랙티브 git 커밋 헬퍼 흐름 안정화",
+    },
+    {
+        "all_of": [
+            ".githooks/prepare-commit-msg",
+            "scripts/commit_message_helper.py",
+            "scripts/install_git_hooks.ps1",
+        ],
+        "subject": "git hook 기반 커밋 메시지 흐름 정리",
+    },
+    {
+        "all_of": [
+            ".githooks/prepare-commit-msg",
+            "scripts/commit_message_helper.py",
+            "scripts/git_editor_wrapper.py",
+            "scripts/install_git_hooks.ps1",
+            ".gitattributes",
+        ],
+        "subject": "인터랙티브 커밋 메시지 헬퍼 설정 마무리",
+    },
+    {
+        "all_of": [
+            "src/frontend/utils/contact_edit.py",
+            "src/frontend/pages/contacts/",
+            "src/frontend/pages/groups/",
+            "src/frontend/pages/sending/",
+        ],
+        "subject": "대상자 수정 흐름을 공통 모듈로 통합",
+    },
+    {
+        "all_of": [
+            "src/frontend/utils/contact_edit.py",
+            "src/frontend/pages/contacts/",
+        ],
+        "subject": "대상자 페이지에 공통 수정 흐름 적용",
+    },
+    {
+        "all_of": [
+            "src/frontend/utils/contact_edit.py",
+            "src/frontend/pages/groups/",
+        ],
+        "subject": "그룹 멤버 화면에 공통 수정 흐름 적용",
+    },
+    {
+        "all_of": [
+            "src/frontend/utils/contact_edit.py",
+            "src/frontend/pages/sending/",
+        ],
+        "subject": "발송 미리보기에 공통 수정 흐름 적용",
+    },
+    {
+        "all_of": [
+            "src/backend/updates/updater.py",
+            "src/frontend/app/main_window.py",
+        ],
+        "subject": "앱 종료 시 업데이트 연동 흐름 마무리",
+    },
+    {
+        "all_of": [
+            "src/frontend/pages/contacts/",
+            "src/frontend/utils/contact_edit.py",
+        ],
+        "subject": "대상자 수정창 진입 경로를 공통 유틸로 통일",
+    },
+    {
+        "all_of": [
+            "src/frontend/pages/contacts/",
+            "src/frontend/pages/groups/",
+            "src/frontend/pages/sending/",
+        ],
+        "subject": "페이지별 대상자 수정 UX를 동일 흐름으로 정리",
+    },
 ]
 
 
@@ -134,6 +217,10 @@ def read_existing_message(path: Path) -> str:
         return ""
 
 
+def any_path_matches(files: list[str], prefix: str) -> bool:
+    return any(file_path.startswith(prefix) for file_path in files)
+
+
 def infer_scope_candidates(files: list[str]) -> list[str]:
     score: dict[str, int] = {}
 
@@ -177,51 +264,126 @@ def infer_type_candidate(files: list[str]) -> str | None:
     return ranked[0][0]
 
 
-def infer_subject_candidates(files: list[str], commit_type: str, scope: str) -> list[str]:
-    score: dict[str, int] = {}
+def infer_combination_subject_candidates(files: list[str]) -> list[str]:
+    results: list[tuple[int, str]] = []
 
+    for rule in COMBINATION_SUBJECT_RULES:
+        prefixes = rule.get("all_of", [])
+        subject = str(rule.get("subject", "")).strip()
+        if not prefixes or not subject:
+            continue
+
+        if all(any_path_matches(files, str(prefix)) for prefix in prefixes):
+            weight = sum(len(str(prefix)) for prefix in prefixes)
+            results.append((weight, subject))
+
+    results.sort(key=lambda x: (-x[0], x[1]))
+    ordered: list[str] = []
+    for _, subject in results:
+        if subject not in ordered:
+            ordered.append(subject)
+    return ordered
+
+
+def korean_scope_name(scope: str) -> str:
+    mapping = {
+        "contacts": "대상자",
+        "groups": "그룹",
+        "campaigns": "캠페인",
+        "sending": "발송",
+        "logs": "로그",
+        "reports": "리포트",
+        "updates": "업데이트",
+        "frontend": "프론트엔드",
+        "backend": "백엔드",
+        "ui": "UI",
+        "excel": "엑셀",
+        "windows": "윈도우",
+        "core": "코어",
+        "db": "DB",
+        "app": "앱",
+        "infra": "인프라",
+    }
+    return mapping.get(scope, scope)
+
+
+def generic_subjects(commit_type: str, scope: str) -> list[str]:
+    scope_ko = korean_scope_name(scope)
+
+    mapping: dict[str, list[str]] = {
+        "feat": [
+            f"{scope_ko} 기능 추가",
+            f"{scope_ko} 기능 확장",
+            f"{scope_ko} 처리 지원 추가",
+        ],
+        "fix": [
+            f"{scope_ko} 동작 오류 수정",
+            f"{scope_ko} 예외 케이스 수정",
+            f"{scope_ko} 처리 버그 수정",
+        ],
+        "refactor": [
+            f"{scope_ko} 구조 정리",
+            f"{scope_ko} 흐름 정리",
+            f"{scope_ko} 로직 정리",
+        ],
+        "perf": [
+            f"{scope_ko} 성능 개선",
+            f"{scope_ko} 처리 속도 개선",
+            f"{scope_ko} 응답성 개선",
+        ],
+        "docs": [
+            f"{scope_ko} 문서 업데이트",
+            f"{scope_ko} 사용 방법 문서화",
+        ],
+        "test": [
+            f"{scope_ko} 테스트 추가",
+            f"{scope_ko} 테스트 범위 보강",
+        ],
+        "chore": [
+            f"{scope_ko} 설정 정리",
+            f"{scope_ko} 유지보수 작업 반영",
+            f"{scope_ko} 구성 업데이트",
+        ],
+        "build": [
+            f"{scope_ko} 빌드 설정 업데이트",
+        ],
+        "ci": [
+            f"{scope_ko} CI 설정 업데이트",
+        ],
+        "style": [
+            f"{scope_ko} 포맷 정리",
+        ],
+        "revert": [
+            f"{scope_ko} 변경 롤백",
+        ],
+    }
+
+    return mapping.get(commit_type, [f"{scope_ko} 변경 반영"])
+
+
+def infer_subject_candidates(files: list[str], commit_type: str, scope: str) -> list[str]:
+    ordered: list[str] = []
+
+    for subject in infer_combination_subject_candidates(files):
+        if subject not in ordered:
+            ordered.append(subject)
+
+    score: dict[str, int] = {}
     for file_path in files:
         for prefix, subject in SUBJECT_HINT_RULES:
             if file_path.startswith(prefix):
                 score[subject] = score.get(subject, 0) + len(prefix)
 
-    if not score:
-        generic = {
-            "feat": f"add {scope} improvements",
-            "fix": f"fix {scope} issues",
-            "refactor": f"refine {scope} structure",
-            "perf": f"optimize {scope} performance",
-            "docs": f"update {scope} documentation",
-            "test": f"add {scope} tests",
-            "chore": f"maintain {scope} setup",
-            "build": f"update {scope} build setup",
-            "ci": f"update {scope} ci workflow",
-            "style": f"clean up {scope} formatting",
-            "revert": f"revert {scope} changes",
-        }
-        return [generic.get(commit_type, f"update {scope}")]
-
     ranked = sorted(score.items(), key=lambda x: (-x[1], x[0]))
-    ordered = [subject for subject, _ in ranked]
+    for subject, _ in ranked:
+        if subject not in ordered:
+            ordered.append(subject)
 
-    generic = {
-        "feat": f"add {scope} improvements",
-        "fix": f"fix {scope} issues",
-        "refactor": f"refine {scope} structure",
-        "perf": f"optimize {scope} performance",
-        "docs": f"update {scope} documentation",
-        "test": f"add {scope} tests",
-        "chore": f"maintain {scope} setup",
-        "build": f"update {scope} build setup",
-        "ci": f"update {scope} ci workflow",
-        "style": f"clean up {scope} formatting",
-        "revert": f"revert {scope} changes",
-    }
-    fallback = generic.get(commit_type, f"update {scope}")
-    if fallback not in ordered:
-        ordered.append(fallback)
+    for subject in generic_subjects(commit_type, scope):
+        if subject not in ordered:
+            ordered.append(subject)
 
-    return ordered[:5]
+    return ordered[:7]
 
 
 def ask_choice(title: str, items: list[tuple[str, str]], default_key: str | None = None) -> str:
@@ -229,7 +391,7 @@ def ask_choice(title: str, items: list[tuple[str, str]], default_key: str | None
         print()
         print(title)
         for i, (key, desc) in enumerate(items, start=1):
-            suffix = "  [recommended]" if default_key == key else ""
+            suffix = "  [추천]" if default_key == key else ""
             print(f"  {i}. {key:<10} - {desc}{suffix}")
 
         prompt = "번호를 선택하세요"
@@ -273,7 +435,7 @@ def ask_scope(recommended: list[str]) -> str:
             print(f"추천 scope: {', '.join(recommended[:3])}")
 
         for i, scope in enumerate(menu, start=1):
-            suffix = "  [recommended]" if scope in recommended[:3] else ""
+            suffix = "  [추천]" if scope in recommended[:3] else ""
             print(f"  {i}. {scope}{suffix}")
         print(f"  {len(menu) + 1}. custom")
 
@@ -306,7 +468,7 @@ def ask_subject(candidates: list[str]) -> str:
         print()
         print("subject를 선택하거나 직접 입력하세요")
         for i, candidate in enumerate(candidates, start=1):
-            suffix = "  [recommended]" if i == 1 else ""
+            suffix = "  [추천]" if i == 1 else ""
             print(f"  {i}. {candidate}{suffix}")
         print(f"  {len(candidates) + 1}. custom")
 
@@ -323,7 +485,7 @@ def ask_subject(candidates: list[str]) -> str:
             if 1 <= idx <= len(candidates):
                 return candidates[idx - 1]
             if idx == len(candidates) + 1:
-                custom = input("subject 입력 (영문 권장, 소문자 시작): ").strip()
+                custom = input("subject 입력: ").strip()
                 custom = " ".join(custom.split())
 
                 if not custom:
