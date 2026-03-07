@@ -20,13 +20,14 @@ from PySide6.QtWidgets import (
     QHeaderView,
 )
 
+from backend.domains.contacts.service import ContactsService
 from backend.domains.groups.dto import GroupCreateDTO, GroupUpdateDTO
 from backend.domains.groups.service import GroupsService
 from backend.stores.contacts_store import ContactsStore, ContactMem
 
 from frontend.pages.groups.dialog import GroupDialog
-from frontend.pages.contacts.dialog import ContactDialog
 from frontend.widgets.checkable_header import CheckableHeader
+from frontend.utils.contact_edit import edit_contact_by_id
 from frontend.utils.worker import run_bg
 from frontend.app.app_events import app_events
 
@@ -43,6 +44,7 @@ class GroupsPage(QWidget):
     def __init__(
         self,
         service: GroupsService,
+        contacts_service: ContactsService,
         contacts_store: ContactsStore,
         on_status: Optional[Callable[[str], None]] = None,
     ) -> None:
@@ -50,6 +52,7 @@ class GroupsPage(QWidget):
         self.setObjectName("Page")
 
         self.service = service
+        self.contacts_service = contacts_service
         self.contacts_store = contacts_store
         self._on_status = on_status or (lambda _: None)
 
@@ -498,61 +501,26 @@ class GroupsPage(QWidget):
         except ValueError:
             return
 
-        emp = model.item(row, self.COL_EMP).text() if model.item(row, self.COL_EMP) else ""
-        name = model.item(row, self.COL_NAME).text() if model.item(row, self.COL_NAME) else ""
-        phone = model.item(row, self.COL_PHONE).text() if model.item(row, self.COL_PHONE) else ""
-        agency = model.item(row, self.COL_AGENCY).text() if model.item(row, self.COL_AGENCY) else ""
-        branch = model.item(row, self.COL_BRANCH).text() if model.item(row, self.COL_BRANCH) else ""
+        fallback_preset = {
+            "emp_id": model.item(row, self.COL_EMP).text() if model.item(row, self.COL_EMP) else "",
+            "name": model.item(row, self.COL_NAME).text() if model.item(row, self.COL_NAME) else "",
+            "phone": model.item(row, self.COL_PHONE).text() if model.item(row, self.COL_PHONE) else "",
+            "agency": model.item(row, self.COL_AGENCY).text() if model.item(row, self.COL_AGENCY) else "",
+            "branch": model.item(row, self.COL_BRANCH).text() if model.item(row, self.COL_BRANCH) else "",
+        }
 
-        preset_obj = type(
-            "Tmp",
-            (),
-            {
-                "emp_id": emp or "",
-                "name": name or "",
-                "phone": phone or "",
-                "agency": agency or "",
-                "branch": branch or "",
-            },
-        )()
-
-        dlg = ContactDialog("대상자 수정", preset=preset_obj, parent=self)
-        if dlg.exec() != QDialog.Accepted:
+        ok = edit_contact_by_id(
+            self,
+            contacts_service=self.contacts_service,
+            contact_id=contact_id,
+            fallback_preset=fallback_preset,
+        )
+        if not ok:
             return
 
-        data = dlg.get_contact()
-        new_name = (data.get("name") or "").strip()
-        new_emp_id = (data.get("emp_id") or "").strip()
-        new_phone = (data.get("phone") or "").strip()
-        new_agency = (data.get("agency") or "").strip()
-        new_branch = (data.get("branch") or "").strip()
-
-        if not new_name:
-            QMessageBox.warning(self, "입력 오류", "이름은 필수입니다.")
-            return
-
-        try:
-            self.service.update_contact(
-                contact_id=contact_id,
-                emp_id=new_emp_id,
-                name=new_name,
-                phone=new_phone,
-                agency=new_agency,
-                branch=new_branch,
-            )
-        except ValueError as e:
-            QMessageBox.warning(self, "중복 오류", str(e))
-            return
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"대상자 저장 실패:\n{e}")
-            return
-
-        app_events.contacts_changed.emit()
-        self._on_status(f"대상자 수정 저장: {new_name} ({new_emp_id if new_emp_id else '사번없음'})")
-
-        current_id = self._current_group.id if self._current_group else None
-        self._load_members(current_id, self._member_keyword)
-        self._load_candidates(self._candidate_keyword)
+        name = (fallback_preset.get("name") or "").strip()
+        emp_id = (fallback_preset.get("emp_id") or "").strip()
+        self._on_status(f"대상자 수정 저장: {name} ({emp_id if emp_id else '사번없음'})")
 
     def _add_selected_candidates(self) -> None:
         g = self._current_group

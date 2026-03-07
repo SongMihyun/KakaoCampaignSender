@@ -1,18 +1,19 @@
+# FILE: src/frontend/pages/contacts/page.py
 from __future__ import annotations
 
 from typing import Callable, Optional, List
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QLineEdit,
-    QTableView, QMessageBox, QDialog
+    QTableView, QMessageBox, QDialog, QAbstractItemView
 )
-from PySide6.QtCore import Qt, QTimer, QModelIndex
+from PySide6.QtCore import Qt, QTimer
 
 from backend.stores.contacts_store import ContactsStore
 from frontend.pages.contacts.table_model import ContactsTableModel, Contact
 from frontend.pages.contacts.dialog import ContactDialog
 from backend.domains.contacts.service import ContactsService
-from backend.domains.contacts.dto import ContactCreateDTO, ContactUpdateDTO
+from backend.domains.contacts.dto import ContactCreateDTO
 from backend.integrations.excel.contacts_importer import import_contacts_xlsx
 from backend.integrations.excel.contacts_exporter import export_contacts_xlsx, create_template_xlsx
 from frontend.pages.contacts.import_preview_dialog import ImportPreviewDialog
@@ -20,6 +21,7 @@ from frontend.pages.contacts.import_preview_dialog import ImportPreviewDialog
 from frontend.widgets.checkable_header import CheckableHeader
 from frontend.widgets.contacts_sort_proxy import ContactsSortProxyModel
 from frontend.utils.worker import run_bg
+from frontend.utils.contact_edit import edit_contact_by_id
 from backend.integrations.windows.win_file_picker import pick_open_file, pick_save_file, Filter
 from frontend.app.app_events import app_events
 
@@ -73,13 +75,14 @@ class ContactsPage(QWidget):
         btn_row.addWidget(self.btn_reload)
         btn_row.addStretch(1)
 
-        from PySide6.QtWidgets import QAbstractItemView
         self.table = QTableView()
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableView.SelectRows)
         self.table.setSelectionMode(QTableView.ExtendedSelection)
         self.table.setSortingEnabled(True)
-        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.EditKeyPressed)
+
+        # 인라인 편집 제거
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
 
         self.model = ContactsTableModel(rows=[])
         self.proxy = ContactsSortProxyModel(self)
@@ -106,7 +109,6 @@ class ContactsPage(QWidget):
 
         self.model.dataChanged.connect(lambda *_: self._sync_header_checkbox())
         self.model.layoutChanged.connect(lambda *_: self._sync_header_checkbox())
-        self.model.dataChanged.connect(self._on_source_model_data_changed)
 
         self.table.sortByColumn(1, Qt.AscendingOrder)
 
@@ -192,56 +194,6 @@ class ContactsPage(QWidget):
             rows.append(src.row())
         return sorted(set(rows))
 
-    def _on_source_model_data_changed(self, top_left: QModelIndex, bottom_right: QModelIndex, roles=None) -> None:
-        if not top_left.isValid():
-            return
-
-        for row in range(top_left.row(), bottom_right.row() + 1):
-            for col in range(top_left.column(), bottom_right.column() + 1):
-                if col != 2:
-                    continue
-
-                c = self.model.contact_at(row)
-
-                emp_id = (c.emp_id or "").strip()
-                name = (c.name or "").strip()
-                phone = (c.phone or "").strip()
-                agency = (c.agency or "").strip()
-                branch = (c.branch or "").strip()
-
-                if not name:
-                    QMessageBox.warning(self, "입력 오류", "이름은 필수입니다.")
-                    self.reload()
-                    return
-
-                try:
-                    self.service.update_contact(
-                        ContactUpdateDTO(
-                            row_id=int(c.id),
-                            emp_id=emp_id,
-                            name=name,
-                            phone=phone,
-                            agency=agency,
-                            branch=branch,
-                        )
-                    )
-                except ValueError as e:
-                    QMessageBox.warning(self, "중복 오류", str(e))
-                    self.reload()
-                    return
-                except Exception as e:
-                    QMessageBox.critical(self, "오류", f"사번 저장 실패:\n{e}")
-                    self.reload()
-                    return
-
-                self._suppress_contacts_event = True
-                try:
-                    app_events.contacts_changed.emit()
-                finally:
-                    self._suppress_contacts_event = False
-
-                self._on_status(f"사번 변경 저장: {c.name} ({emp_id})")
-
     def _add(self) -> None:
         dlg = ContactDialog("대상자 추가", parent=self)
         if dlg.exec() != QDialog.Accepted:
@@ -297,60 +249,16 @@ class ContactsPage(QWidget):
         row = rows[0]
         preset = self.model.contact_at(row)
 
-        dlg = ContactDialog(
-            "대상자 수정",
-            preset=type("Tmp", (), {
-                "emp_id": preset.emp_id,
-                "name": preset.name,
-                "phone": preset.phone,
-                "agency": preset.agency,
-                "branch": preset.branch
-            })(),
-            parent=self
+        ok = edit_contact_by_id(
+            self,
+            contacts_service=self.service,
+            contact_id=int(preset.id),
         )
-
-        if dlg.exec() != QDialog.Accepted:
+        if not ok:
             return
 
-        data = dlg.get_contact()
-        name = (data.get("name") or "").strip()
-        emp_id = (data.get("emp_id") or "").strip()
-        phone = (data.get("phone") or "").strip()
-        agency = (data.get("agency") or "").strip()
-        branch = (data.get("branch") or "").strip()
-
-        if not name:
-            QMessageBox.warning(self, "입력 오류", "이름은 필수입니다.")
-            return
-
-        try:
-            self.service.update_contact(
-                ContactUpdateDTO(
-                    row_id=int(preset.id),
-                    emp_id=emp_id,
-                    name=name,
-                    phone=phone,
-                    agency=agency,
-                    branch=branch,
-                )
-            )
-        except ValueError as e:
-            QMessageBox.warning(self, "중복 오류", str(e))
-            return
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"수정 실패:\n{e}")
-            return
-
-        self.reload()
-
-        self._suppress_contacts_event = True
-        try:
-            app_events.contacts_changed.emit()
-        finally:
-            self._suppress_contacts_event = False
-
-        emp_disp = emp_id if emp_id else "(사번없음)"
-        self._on_status(f"수정 완료: {name} ({emp_disp})")
+        emp_disp = (preset.emp_id or "").strip() or "(사번없음)"
+        self._on_status(f"수정 완료: {preset.name} ({emp_disp})")
 
     def _delete_checked(self) -> None:
         ids = self.model.checked_ids()
@@ -577,11 +485,13 @@ class ContactsPage(QWidget):
             return
 
         c = self.model.contact_at(src.row())
-        emp_id = (c.emp_id or "").strip()
-
-        if not emp_id:
-            QMessageBox.information(self, "안내", "사번(emp_id)이 없어 수정할 대상을 특정할 수 없습니다.\n사번을 먼저 입력해주세요.")
+        ok = edit_contact_by_id(
+            self,
+            contacts_service=self.service,
+            contact_id=int(c.id),
+        )
+        if not ok:
             return
 
-        from frontend.utils.contact_edit import edit_contact_by_emp_id
-        edit_contact_by_emp_id(self, contacts_repo=self.service.repo, emp_id=emp_id)
+        emp_disp = (c.emp_id or "").strip() or "(사번없음)"
+        self._on_status(f"수정 완료: {c.name} ({emp_disp})")
