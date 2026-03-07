@@ -1,0 +1,175 @@
+name: Windows Build Check
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+    branches:
+      - develop
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-check-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-check:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pipx
+          pipx install poetry
+          poetry --version
+
+      - name: Validate poetry project
+        run: |
+          poetry check
+          poetry check --lock
+
+      - name: Install dependencies
+        run: |
+          poetry install --no-interaction
+
+      - name: Verify version token exists
+        run: |
+          $path = "src/app/version.py"
+          if (-not (Test-Path $path)) { throw "version.py not found: $path" }
+
+          $raw = Get-Content $path -Raw
+          if ($raw -notmatch '"__VERSION__"') {
+            throw '__VERSION__ token not found in src/app/version.py'
+          }
+
+          Write-Host "OK: __VERSION__ token exists in $path"
+
+      - name: Inject CI version
+        run: |
+          $path = "src/app/version.py"
+          $branch = "${{ github.ref_name }}"
+          $sha    = "${{ github.sha }}".Substring(0,7)
+          $ver    = "0.0.0-ci-$branch-$sha"
+
+          $raw = Get-Content $path -Raw
+          $raw = $raw -replace '"__VERSION__"', ('"' + $ver + '"')
+
+          [System.IO.File]::WriteAllText(
+            $path,
+            $raw,
+            (New-Object System.Text.UTF8Encoding($false))
+          )
+
+          Write-Host "Injected CI version => $ver"
+
+      - name: Run tests if present
+        run: |
+          if (Test-Path "tests") {
+            Write-Host "tests/ found -> running pytest"
+            poetry run pytest -q
+          } else {
+            Write-Host "tests/ not found -> running smoke import check"
+            poetry run python -c "import importlib; importlib.import_module('src.app.version'); print('smoke-ok')"
+          }
+
+      - name: Clean dist/build
+        run: |
+          if (Test-Path "dist")  { Remove-Item "dist"  -Recurse -Force }
+          if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
+
+      - name: Verify spec exists
+        run: |
+          if (-not (Test-Path "KakaoSender.spec")) {
+            throw "KakaoSender.spec not found at repo root."
+          }
+
+      - name: Build EXE
+        run: |
+          poetry run pyinstaller -y --clean `
+            --distpath dist/app `
+            --workpath build/pyinstaller `
+            KakaoSender.spec
+
+      - name: Verify EXE output
+        run: |
+          $exePath = "dist/app/KakaoCampaignSender/KakaoCampaignSender.exe"
+          if (-not (Test-Path $exePath)) {
+            Write-Host "----- dist/app tree -----"
+            if (Test-Path "dist/app") { Get-ChildItem -Recurse "dist/app" | Select-Object FullName }
+            throw "Expected EXE not found: $exePath"
+          }
+          Write-Host "OK: $exePath"
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            throw "ISCC.exe not found after install."
+          }
+
+      - name: Verify installer inputs
+        run: |
+          if (-not (Test-Path "installer/KakaoCampaignSender.iss")) { throw "installer/KakaoCampaignSender.iss not found." }
+          if (-not (Test-Path "installer/KakaoSender.ico")) { throw "installer/KakaoSender.ico not found." }
+
+      - name: Compile installer
+        run: |
+          $outDir = Join-Path $pwd "dist\installer"
+          $appDir = Join-Path $pwd "dist\app\KakaoCampaignSender"
+          $ico    = Join-Path $pwd "installer\KakaoSender.ico"
+          $iss    = Join-Path $pwd "installer\KakaoCampaignSender.iss"
+          $ISCC   = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+
+          if (-not (Test-Path $outDir)) {
+            New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          }
+
+          $args = @(
+            "/DMyAppVersion=0.0.0-ci",
+            "/DOutputDir=$outDir",
+            "/DMyAppDistDir=$appDir",
+            "/DMyAppIconSource=$ico",
+            $iss
+          )
+
+          Start-Process -FilePath $ISCC -ArgumentList $args -Wait -NoNewWindow
+
+      - name: Verify installer output
+        run: |
+          $installer = Get-ChildItem "dist/installer" -Filter "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) {
+            Write-Host "----- dist/installer tree -----"
+            if (Test-Path "dist/installer") { Get-ChildItem -Recurse "dist/installer" | Select-Object FullName }
+            throw "Installer output not found in dist/installer"
+          }
+          Write-Host "OK: $($installer.FullName)"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-check-${{ github.ref_name }}-${{ github.run_number }}
+          path: |
+            dist/app/**
+            dist/installer/**
+          if-no-files-found: error
