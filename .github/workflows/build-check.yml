@@ -51,7 +51,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          poetry install --no-interaction
+          poetry install --no-interaction --no-root
 
       - name: Verify version token exists
         run: |
@@ -85,12 +85,11 @@ jobs:
 
       - name: Run tests if present
         run: |
+          $env:PYTHONPATH = (Resolve-Path "src").Path
           if (Test-Path "tests") {
-            Write-Host "tests/ found -> running pytest"
             poetry run pytest -q
           } else {
-            Write-Host "tests/ not found -> running smoke import check"
-            poetry run python -c "import importlib; importlib.import_module('src.app.version'); print('smoke-ok')"
+            poetry run python -c "import app.version; print('smoke-ok')"
           }
 
       - name: Clean dist/build

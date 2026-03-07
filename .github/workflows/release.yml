@@ -85,7 +85,7 @@ jobs:
       - name: Install dependencies
         if: steps.taginfo.outputs.has_tag == 'true'
         run: |
-          poetry install --no-interaction
+          poetry install --no-interaction --no-root
 
       - name: Verify version token exists
         if: steps.taginfo.outputs.has_tag == 'true'
