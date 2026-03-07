@@ -3,11 +3,18 @@ name: PR Auto Label by Commit Meta
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
+    types:
+      - opened
+      - synchronize
+      - reopened
 
 permissions:
   contents: read
   pull-requests: write
+
+concurrency:
+  group: pr-auto-label-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   label-pr:
@@ -188,12 +195,8 @@ jobs:
               const firstLine = String(commit.commit.message || "").split("\n")[0];
               const parsed = parseCommitMeta(firstLine);
 
-              if (parsed.type) {
-                detectedTypes.add(parsed.type);
-              }
-              if (parsed.scope) {
-                detectedScopes.add(parsed.scope);
-              }
+              if (parsed.type) detectedTypes.add(parsed.type);
+              if (parsed.scope) detectedScopes.add(parsed.scope);
             }
 
             const labelsToApply = [...detectedTypes, ...detectedScopes];

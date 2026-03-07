@@ -3,11 +3,21 @@ name: PR Smart Summary
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - labeled
+      - unlabeled
+      - ready_for_review
 
 permissions:
   contents: read
   pull-requests: write
+
+concurrency:
+  group: pr-smart-summary-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
 
 jobs:
   update-pr-summary:
@@ -30,9 +40,11 @@ jobs:
             const baseRef = pr.base.ref;
             const labels = (pr.labels || []).map(x => x.name);
 
+            // release 판단은 제목 자동 변경이 아니라 본문 섹션 생성에만 사용
             const isDevelopToMain = headRef === 'develop' && baseRef === 'main';
             const isReleaseBranchToMain = /^release[\/-]/.test(headRef) && baseRef === 'main';
-            const isReleasePr = isDevelopToMain || isReleaseBranchToMain || labels.includes('release');
+            const hasReleaseLabel = labels.includes('release');
+            const isReleasePr = isDevelopToMain || isReleaseBranchToMain || hasReleaseLabel;
 
             const headingMap = {
               feat: '✨ 기능 추가',
@@ -261,14 +273,10 @@ jobs:
             const generatedBody = summaryLines.join('\n').trim();
             const nextBody = mergeManualBody(pr.body, generatedBody);
 
-            const nextTitle = isReleasePr
-              ? `[main 반영] ${inferReleaseTitle(parsedCommits)}`
-              : pr.title;
-
+            // 제목은 자동 수정하지 않음
             await github.rest.pulls.update({
               owner,
               repo,
               pull_number: issue_number,
-              title: nextTitle,
               body: nextBody,
             });
