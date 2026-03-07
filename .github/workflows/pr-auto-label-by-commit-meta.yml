@@ -1,0 +1,251 @@
+# FILE: .github/workflows/pr-auto-label-by-commit-meta.yml
+name: PR Auto Label by Commit Meta
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label-pr:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Apply labels from conventional commit type and scope
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = context.payload.pull_request.number;
+
+            const allowedTypes = new Set([
+              "feat",
+              "fix",
+              "refactor",
+              "perf",
+              "docs",
+              "test",
+              "chore",
+              "build",
+              "ci",
+              "style",
+              "revert",
+            ]);
+
+            const allowedScopes = new Set([
+              "contacts",
+              "groups",
+              "campaigns",
+              "sending",
+              "logs",
+              "reports",
+              "updates",
+              "frontend",
+              "backend",
+              "ui",
+              "excel",
+              "windows",
+              "core",
+              "db",
+              "app",
+              "infra",
+            ]);
+
+            const managedLabels = new Set([
+              ...allowedTypes,
+              ...allowedScopes,
+            ]);
+
+            function parseCommitMeta(subject) {
+              const s = String(subject || "").trim();
+              const m = s.match(/^([a-zA-Z]+)(\(([^)]+)\))?:\s+(.+)$/);
+              if (!m) {
+                return {
+                  type: null,
+                  scope: null,
+                  subject: s,
+                };
+              }
+
+              const type = m[1] ? m[1].toLowerCase() : null;
+              const rawScope = m[3] ? m[3].trim().toLowerCase() : null;
+
+              return {
+                type: allowedTypes.has(type) ? type : null,
+                scope: rawScope && allowedScopes.has(rawScope) ? rawScope : null,
+                subject: m[4] ? m[4].trim() : s,
+              };
+            }
+
+            function getLabelColor(name) {
+              const colorMap = {
+                feat: "0E8A16",
+                fix: "D73A4A",
+                refactor: "5319E7",
+                perf: "1D76DB",
+                docs: "0075CA",
+                test: "FBCA04",
+                chore: "BFDADC",
+                build: "C2E0C6",
+                ci: "D4C5F9",
+                style: "F9D0C4",
+                revert: "000000",
+                contacts: "C5DEF5",
+                groups: "C5DEF5",
+                campaigns: "C5DEF5",
+                sending: "C5DEF5",
+                logs: "C5DEF5",
+                reports: "C5DEF5",
+                updates: "C5DEF5",
+                frontend: "BFD4F2",
+                backend: "BFD4F2",
+                ui: "BFD4F2",
+                excel: "BFD4F2",
+                windows: "BFD4F2",
+                core: "BFD4F2",
+                db: "BFD4F2",
+                app: "BFD4F2",
+                infra: "BFD4F2",
+              };
+
+              return colorMap[name] || "BFDADC";
+            }
+
+            function getLabelDescription(name) {
+              const descMap = {
+                feat: "Conventional commit type: feature",
+                fix: "Conventional commit type: fix",
+                refactor: "Conventional commit type: refactor",
+                perf: "Conventional commit type: performance",
+                docs: "Conventional commit type: docs",
+                test: "Conventional commit type: test",
+                chore: "Conventional commit type: chore",
+                build: "Conventional commit type: build",
+                ci: "Conventional commit type: ci",
+                style: "Conventional commit type: style",
+                revert: "Conventional commit type: revert",
+                contacts: "Conventional commit scope: contacts",
+                groups: "Conventional commit scope: groups",
+                campaigns: "Conventional commit scope: campaigns",
+                sending: "Conventional commit scope: sending",
+                logs: "Conventional commit scope: logs",
+                reports: "Conventional commit scope: reports",
+                updates: "Conventional commit scope: updates",
+                frontend: "Conventional commit scope: frontend",
+                backend: "Conventional commit scope: backend",
+                ui: "Conventional commit scope: ui",
+                excel: "Conventional commit scope: excel",
+                windows: "Conventional commit scope: windows",
+                core: "Conventional commit scope: core",
+                db: "Conventional commit scope: db",
+                app: "Conventional commit scope: app",
+                infra: "Conventional commit scope: infra",
+              };
+
+              return descMap[name] || "Auto-managed conventional commit label";
+            }
+
+            async function ensureLabelExists(name) {
+              try {
+                await github.rest.issues.getLabel({
+                  owner,
+                  repo,
+                  name,
+                });
+              } catch (error) {
+                if (error.status === 404) {
+                  await github.rest.issues.createLabel({
+                    owner,
+                    repo,
+                    name,
+                    color: getLabelColor(name),
+                    description: getLabelDescription(name),
+                  });
+                  return;
+                }
+                throw error;
+              }
+            }
+
+            const commits = await github.paginate(
+              github.rest.pulls.listCommits,
+              {
+                owner,
+                repo,
+                pull_number,
+                per_page: 100,
+              }
+            );
+
+            const detectedTypes = new Set();
+            const detectedScopes = new Set();
+
+            for (const commit of commits) {
+              const firstLine = String(commit.commit.message || "").split("\n")[0];
+              const parsed = parseCommitMeta(firstLine);
+
+              if (parsed.type) {
+                detectedTypes.add(parsed.type);
+              }
+              if (parsed.scope) {
+                detectedScopes.add(parsed.scope);
+              }
+            }
+
+            const labelsToApply = [...detectedTypes, ...detectedScopes];
+
+            const currentLabels = await github.paginate(
+              github.rest.issues.listLabelsOnIssue,
+              {
+                owner,
+                repo,
+                issue_number: pull_number,
+                per_page: 100,
+              }
+            );
+
+            const currentNames = new Set(currentLabels.map(l => l.name));
+
+            const labelsToRemove = [...currentNames].filter(
+              name => managedLabels.has(name) && !labelsToApply.includes(name)
+            );
+
+            for (const name of labelsToRemove) {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number: pull_number,
+                name,
+              });
+              core.info(`Removed stale label: ${name}`);
+            }
+
+            if (labelsToApply.length === 0) {
+              core.info("No conventional commit type/scope labels detected.");
+              return;
+            }
+
+            for (const label of labelsToApply) {
+              await ensureLabelExists(label);
+            }
+
+            const labelsToAdd = labelsToApply.filter(name => !currentNames.has(name));
+
+            if (labelsToAdd.length > 0) {
+              await github.rest.issues.addLabels({
+                owner,
+                repo,
+                issue_number: pull_number,
+                labels: labelsToAdd,
+              });
+              core.info(`Added labels: ${labelsToAdd.join(", ")}`);
+            } else {
+              core.info("No new labels to add.");
+            }
+
+            core.info(`Detected types: ${[...detectedTypes].join(", ") || "(none)"}`);
+            core.info(`Detected scopes: ${[...detectedScopes].join(", ") || "(none)"}`);

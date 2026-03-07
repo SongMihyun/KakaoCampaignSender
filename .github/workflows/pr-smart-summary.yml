@@ -240,13 +240,13 @@ jobs:
             const squash = buildSquashSuggestion(parsedCommits);
             summaryLines.push('## 🧱 Squash Merge 제안');
             summaryLines.push('');
-            summaryLines.push(`**제목**`);
+            summaryLines.push('**제목**');
             summaryLines.push('');
             summaryLines.push('```text');
             summaryLines.push(squash.title);
             summaryLines.push('```');
             summaryLines.push('');
-            summaryLines.push(`**본문**`);
+            summaryLines.push('**본문**');
             summaryLines.push('');
             summaryLines.push('```text');
             summaryLines.push(squash.body);
@@ -261,8 +261,6 @@ jobs:
             const generatedBody = summaryLines.join('\n').trim();
             const nextBody = mergeManualBody(pr.body, generatedBody);
 
-            // release PR은 PR 제목도 자동 요약으로 맞춰서
-            // squash merge default title(PR_TITLE 사용 시)에 바로 활용되게 한다.
             const nextTitle = isReleasePr
               ? `[main 반영] ${inferReleaseTitle(parsedCommits)}`
               : pr.title;
