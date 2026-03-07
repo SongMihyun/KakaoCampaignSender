@@ -35,6 +35,7 @@ SCOPES: list[str] = [
     "core",
     "db",
     "app",
+    "infra",
 ]
 
 SCOPE_RULES: list[tuple[str, str]] = [
@@ -58,20 +59,33 @@ SCOPE_RULES: list[tuple[str, str]] = [
     ("src/frontend/", "frontend"),
     ("src/backend/", "backend"),
     ("src/app/", "app"),
+    ("scripts/", "infra"),
+    (".githooks/", "infra"),
+    (".github/", "ci"),
+]
+
+TYPE_RULES: list[tuple[str, str]] = [
+    ("docs/", "docs"),
+    (".github/", "ci"),
+    ("scripts/", "chore"),
+    (".githooks/", "chore"),
+]
+
+SUBJECT_HINT_RULES: list[tuple[str, str]] = [
+    (".githooks/prepare-commit-msg", "stabilize prepare-commit-msg hook execution"),
+    ("scripts/commit_message_helper.py", "improve interactive commit message helper"),
+    ("scripts/git_editor_wrapper.py", "skip editor when commit message is already generated"),
+    ("scripts/install_git_hooks.ps1", "stabilize git hook installation on windows"),
+    (".gitattributes", "enforce lf for git hook scripts"),
+    ("src/frontend/pages/contacts/", "unify contact edit flow"),
+    ("src/frontend/pages/groups/", "centralize group contact edit handling"),
+    ("src/frontend/pages/sending/", "centralize send preview contact edit handling"),
+    ("src/backend/updates/", "finalize update flow cleanup"),
 ]
 
 
 def is_interactive() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
-
-
-def read_existing_message(path: Path) -> str:
-    if not path.exists():
-        return ""
-    try:
-        return path.read_text(encoding="utf-8").strip()
-    except Exception:
-        return ""
 
 
 def run_git(args: list[str]) -> str:
@@ -97,6 +111,29 @@ def get_staged_files() -> list[str]:
     return [line.strip().replace("\\", "/") for line in out.splitlines() if line.strip()]
 
 
+def is_effective_commit_message_text(text: str) -> bool:
+    if not text:
+        return False
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        return True
+    return False
+
+
+def read_existing_message(path: Path) -> str:
+    if not path.exists():
+        return ""
+    try:
+        return path.read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
 def infer_scope_candidates(files: list[str]) -> list[str]:
     score: dict[str, int] = {}
 
@@ -112,14 +149,102 @@ def infer_scope_candidates(files: list[str]) -> list[str]:
     return [scope for scope, _ in ranked]
 
 
-def ask_choice(title: str, items: list[tuple[str, str]]) -> str:
+def infer_type_candidate(files: list[str]) -> str | None:
+    score: dict[str, int] = {}
+
+    for file_path in files:
+        matched = False
+        for prefix, commit_type in TYPE_RULES:
+            if file_path.startswith(prefix):
+                score[commit_type] = score.get(commit_type, 0) + len(prefix)
+                matched = True
+        if matched:
+            continue
+
+        if "test" in file_path.lower():
+            score["test"] = score.get("test", 0) + 3
+        elif "perf" in file_path.lower():
+            score["perf"] = score.get("perf", 0) + 3
+        elif file_path.endswith(".md"):
+            score["docs"] = score.get("docs", 0) + 2
+        else:
+            score["refactor"] = score.get("refactor", 0) + 1
+
+    if not score:
+        return None
+
+    ranked = sorted(score.items(), key=lambda x: (-x[1], x[0]))
+    return ranked[0][0]
+
+
+def infer_subject_candidates(files: list[str], commit_type: str, scope: str) -> list[str]:
+    score: dict[str, int] = {}
+
+    for file_path in files:
+        for prefix, subject in SUBJECT_HINT_RULES:
+            if file_path.startswith(prefix):
+                score[subject] = score.get(subject, 0) + len(prefix)
+
+    if not score:
+        generic = {
+            "feat": f"add {scope} improvements",
+            "fix": f"fix {scope} issues",
+            "refactor": f"refine {scope} structure",
+            "perf": f"optimize {scope} performance",
+            "docs": f"update {scope} documentation",
+            "test": f"add {scope} tests",
+            "chore": f"maintain {scope} setup",
+            "build": f"update {scope} build setup",
+            "ci": f"update {scope} ci workflow",
+            "style": f"clean up {scope} formatting",
+            "revert": f"revert {scope} changes",
+        }
+        return [generic.get(commit_type, f"update {scope}")]
+
+    ranked = sorted(score.items(), key=lambda x: (-x[1], x[0]))
+    ordered = [subject for subject, _ in ranked]
+
+    generic = {
+        "feat": f"add {scope} improvements",
+        "fix": f"fix {scope} issues",
+        "refactor": f"refine {scope} structure",
+        "perf": f"optimize {scope} performance",
+        "docs": f"update {scope} documentation",
+        "test": f"add {scope} tests",
+        "chore": f"maintain {scope} setup",
+        "build": f"update {scope} build setup",
+        "ci": f"update {scope} ci workflow",
+        "style": f"clean up {scope} formatting",
+        "revert": f"revert {scope} changes",
+    }
+    fallback = generic.get(commit_type, f"update {scope}")
+    if fallback not in ordered:
+        ordered.append(fallback)
+
+    return ordered[:5]
+
+
+def ask_choice(title: str, items: list[tuple[str, str]], default_key: str | None = None) -> str:
     while True:
         print()
         print(title)
         for i, (key, desc) in enumerate(items, start=1):
-            print(f"  {i}. {key:<10} - {desc}")
+            suffix = "  [recommended]" if default_key == key else ""
+            print(f"  {i}. {key:<10} - {desc}{suffix}")
 
-        raw = input("번호를 선택하세요: ").strip()
+        prompt = "번호를 선택하세요"
+        if default_key:
+            prompt += " (엔터=추천값)"
+        prompt += ": "
+
+        try:
+            raw = input(prompt).strip()
+        except EOFError:
+            return default_key or items[0][0]
+
+        if not raw and default_key:
+            return default_key
+
         try:
             idx = int(raw)
             if 1 <= idx <= len(items):
@@ -152,7 +277,10 @@ def ask_scope(recommended: list[str]) -> str:
             print(f"  {i}. {scope}{suffix}")
         print(f"  {len(menu) + 1}. custom")
 
-        raw = input("번호를 선택하세요 (엔터=첫 추천값): ").strip()
+        try:
+            raw = input("번호를 선택하세요 (엔터=첫 추천값): ").strip()
+        except EOFError:
+            return recommended[0] if recommended else menu[0]
 
         if not raw and recommended:
             return recommended[0]
@@ -165,30 +293,57 @@ def ask_scope(recommended: list[str]) -> str:
                 custom = input("custom scope 입력: ").strip().lower()
                 if custom:
                     return custom
+        except EOFError:
+            return recommended[0] if recommended else menu[0]
         except Exception:
             pass
 
         print("잘못된 입력입니다. 다시 선택하세요.")
 
 
-def ask_subject() -> str:
+def ask_subject(candidates: list[str]) -> str:
     while True:
         print()
-        subject = input("subject 입력 (영문 권장, 소문자 시작): ").strip()
-        subject = " ".join(subject.split())
+        print("subject를 선택하거나 직접 입력하세요")
+        for i, candidate in enumerate(candidates, start=1):
+            suffix = "  [recommended]" if i == 1 else ""
+            print(f"  {i}. {candidate}{suffix}")
+        print(f"  {len(candidates) + 1}. custom")
 
-        if not subject:
-            print("subject는 비어 있을 수 없습니다.")
-            continue
+        try:
+            raw = input("번호를 선택하세요 (엔터=첫 추천값): ").strip()
+        except EOFError:
+            return candidates[0]
 
-        if subject.endswith("."):
-            subject = subject[:-1].rstrip()
+        if not raw:
+            return candidates[0]
 
-        if len(subject) > 72:
-            print("subject가 너무 깁니다. 72자 이내 권장입니다.")
-            continue
+        try:
+            idx = int(raw)
+            if 1 <= idx <= len(candidates):
+                return candidates[idx - 1]
+            if idx == len(candidates) + 1:
+                custom = input("subject 입력 (영문 권장, 소문자 시작): ").strip()
+                custom = " ".join(custom.split())
 
-        return subject
+                if not custom:
+                    print("subject는 비어 있을 수 없습니다.")
+                    continue
+
+                if custom.endswith("."):
+                    custom = custom[:-1].rstrip()
+
+                if len(custom) > 72:
+                    print("subject가 너무 깁니다. 72자 이내 권장입니다.")
+                    continue
+
+                return custom
+        except EOFError:
+            return candidates[0]
+        except Exception:
+            pass
+
+        print("잘못된 입력입니다. 다시 선택하세요.")
 
 
 def ask_body() -> str:
@@ -196,7 +351,10 @@ def ask_body() -> str:
     print("body를 입력할까요?")
     print("  1. 없음")
     print("  2. 직접 입력")
-    raw = input("선택: ").strip()
+    try:
+        raw = input("선택 (엔터=없음): ").strip()
+    except EOFError:
+        return ""
 
     if raw != "2":
         return ""
@@ -207,7 +365,11 @@ def ask_body() -> str:
     blank_count = 0
 
     while True:
-        line = input()
+        try:
+            line = input()
+        except EOFError:
+            break
+
         if not line.strip():
             blank_count += 1
             if blank_count >= 2:
@@ -224,20 +386,22 @@ def ask_body() -> str:
 def build_message() -> str:
     staged_files = get_staged_files()
     recommended_scopes = infer_scope_candidates(staged_files)
+    recommended_type = infer_type_candidate(staged_files)
 
     print()
     print("staged files:")
     if staged_files:
-        for file_path in staged_files[:20]:
+        for file_path in staged_files[:30]:
             print(f"  - {file_path}")
-        if len(staged_files) > 20:
-            print(f"  ... and {len(staged_files) - 20} more")
+        if len(staged_files) > 30:
+            print(f"  ... and {len(staged_files) - 30} more")
     else:
         print("  (없음)")
 
-    commit_type = ask_choice("type을 선택하세요", TYPES)
+    commit_type = ask_choice("type을 선택하세요", TYPES, default_key=recommended_type)
     scope = ask_scope(recommended_scopes)
-    subject = ask_subject()
+    subject_candidates = infer_subject_candidates(staged_files, commit_type, scope)
+    subject = ask_subject(subject_candidates)
     body = ask_body()
 
     header = f"{commit_type}({scope}): {subject}"
@@ -250,15 +414,13 @@ def build_message() -> str:
 def should_skip(source: str, existing_message: str) -> bool:
     source = (source or "").strip().lower()
 
-    # git commit -m "..."
     if source == "message":
         return True
 
-    # merge/squash/기존 메시지 존재 시 덮어쓰지 않음
-    if source in {"merge", "squash", "commit"}:
+    if source in {"merge", "squash"}:
         return True
 
-    if existing_message:
+    if is_effective_commit_message_text(existing_message):
         return True
 
     return False

@@ -6,14 +6,21 @@ if [ -z "$MSG_FILE" ]; then
   exit 0
 fi
 
-if command -v py >/dev/null 2>&1; then
-  py -3 scripts/commit_message_helper.py "$MSG_FILE" "$SOURCE"
-  exit $?
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO_ROOT" ]; then
+  exit 0
 fi
 
-if command -v python >/dev/null 2>&1; then
-  python scripts/commit_message_helper.py "$MSG_FILE" "$SOURCE"
-  exit $?
+if [ -e /dev/tty ]; then
+  if command -v py >/dev/null 2>&1; then
+    py -3 "$REPO_ROOT/scripts/commit_message_helper.py" "$MSG_FILE" "$SOURCE" < /dev/tty > /dev/tty 2>&1
+    exit $?
+  fi
+
+  if command -v python >/dev/null 2>&1; then
+    python "$REPO_ROOT/scripts/commit_message_helper.py" "$MSG_FILE" "$SOURCE" < /dev/tty > /dev/tty 2>&1
+    exit $?
+  fi
 fi
 
 exit 0
