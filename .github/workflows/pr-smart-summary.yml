@@ -3,12 +3,12 @@ name: PR Smart Summary
 
 on:
   pull_request:
+    branches:
+      - main
     types:
       - opened
       - synchronize
       - reopened
-      - labeled
-      - unlabeled
       - ready_for_review
 
 permissions:
@@ -38,13 +38,11 @@ jobs:
 
             const headRef = pr.head.ref;
             const baseRef = pr.base.ref;
-            const labels = (pr.labels || []).map(x => x.name);
 
-            // release 판단은 제목 자동 변경이 아니라 본문 섹션 생성에만 사용
+            // main 대상 PR만 이 워크플로가 실행되므로 release PR 여부는 브랜치 기준으로만 판단
             const isDevelopToMain = headRef === 'develop' && baseRef === 'main';
             const isReleaseBranchToMain = /^release[\/-]/.test(headRef) && baseRef === 'main';
-            const hasReleaseLabel = labels.includes('release');
-            const isReleasePr = isDevelopToMain || isReleaseBranchToMain || hasReleaseLabel;
+            const isReleasePr = isDevelopToMain || isReleaseBranchToMain;
 
             const headingMap = {
               feat: '✨ 기능 추가',
@@ -152,18 +150,12 @@ jobs:
               lines.push(`- 기준 브랜치: \`${headRef}\` → \`${baseRef}\``);
               lines.push(`- 반영 커밋 수: **${parsedCommits.length}건**`);
               lines.push('');
-
-              const grouped = buildGroupedSections(parsedCommits);
-              if (grouped) {
-                lines.push(grouped);
-                lines.push('');
-              }
-
+              lines.push(buildGroupedSections(parsedCommits));
+              lines.push('');
               lines.push('## 📌 영향 범위');
               lines.push('');
               lines.push(buildScopeSummary(parsedCommits));
               lines.push('');
-
               return lines.join('\n').trim();
             }
 
@@ -179,11 +171,7 @@ jobs:
               bodyLines.push(`- 브랜치: \`${headRef}\` → \`${baseRef}\``);
               bodyLines.push(`- 커밋 수: ${parsedCommits.length}건`);
               bodyLines.push('');
-
-              const grouped = buildGroupedSections(parsedCommits);
-              if (grouped) {
-                bodyLines.push(grouped);
-              }
+              bodyLines.push(buildGroupedSections(parsedCommits));
 
               return {
                 title,
@@ -225,7 +213,6 @@ jobs:
             );
 
             const parsedCommits = commits.map(c => parseCommitSubject(c.commit.message.split('\n')[0]));
-
             const counts = parsedCommits.reduce((acc, item) => {
               acc[item.type] = (acc[item.type] || 0) + 1;
               return acc;
@@ -238,7 +225,6 @@ jobs:
             summaryLines.push(`- 커밋 수: **${parsedCommits.length}건**`);
             summaryLines.push(`- 유형 분포: feat ${counts.feat || 0} / fix ${counts.fix || 0} / refactor ${counts.refactor || 0} / perf ${counts.perf || 0} / chore ${counts.chore || 0}`);
             summaryLines.push('');
-
             summaryLines.push('## 🧩 커밋 분류');
             summaryLines.push('');
             summaryLines.push(buildGroupedSections(parsedCommits));
@@ -264,7 +250,6 @@ jobs:
             summaryLines.push(squash.body);
             summaryLines.push('```');
             summaryLines.push('');
-
             summaryLines.push('## 📝 수동 메모');
             summaryLines.push('');
             summaryLines.push('- 필요한 검증 항목이나 배포 메모를 여기에 추가하세요.');
@@ -273,7 +258,6 @@ jobs:
             const generatedBody = summaryLines.join('\n').trim();
             const nextBody = mergeManualBody(pr.body, generatedBody);
 
-            // 제목은 자동 수정하지 않음
             await github.rest.pulls.update({
               owner,
               repo,
