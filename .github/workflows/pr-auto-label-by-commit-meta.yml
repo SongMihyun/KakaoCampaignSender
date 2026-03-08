@@ -3,6 +3,8 @@ name: PR Auto Label by Commit Meta
 
 on:
   pull_request:
+    branches:
+      - main
     types:
       - opened
       - synchronize
@@ -71,11 +73,7 @@ jobs:
               const s = String(subject || "").trim();
               const m = s.match(/^([a-zA-Z]+)(\(([^)]+)\))?:\s+(.+)$/);
               if (!m) {
-                return {
-                  type: null,
-                  scope: null,
-                  subject: s,
-                };
+                return { type: null, scope: null };
               }
 
               const type = m[1] ? m[1].toLowerCase() : null;
@@ -84,7 +82,6 @@ jobs:
               return {
                 type: allowedTypes.has(type) ? type : null,
                 scope: rawScope && allowedScopes.has(rawScope) ? rawScope : null,
-                subject: m[4] ? m[4].trim() : s,
               };
             }
 
@@ -118,51 +115,16 @@ jobs:
                 app: "BFD4F2",
                 infra: "BFD4F2",
               };
-
               return colorMap[name] || "BFDADC";
             }
 
             function getLabelDescription(name) {
-              const descMap = {
-                feat: "Conventional commit type: feature",
-                fix: "Conventional commit type: fix",
-                refactor: "Conventional commit type: refactor",
-                perf: "Conventional commit type: performance",
-                docs: "Conventional commit type: docs",
-                test: "Conventional commit type: test",
-                chore: "Conventional commit type: chore",
-                build: "Conventional commit type: build",
-                ci: "Conventional commit type: ci",
-                style: "Conventional commit type: style",
-                revert: "Conventional commit type: revert",
-                contacts: "Conventional commit scope: contacts",
-                groups: "Conventional commit scope: groups",
-                campaigns: "Conventional commit scope: campaigns",
-                sending: "Conventional commit scope: sending",
-                logs: "Conventional commit scope: logs",
-                reports: "Conventional commit scope: reports",
-                updates: "Conventional commit scope: updates",
-                frontend: "Conventional commit scope: frontend",
-                backend: "Conventional commit scope: backend",
-                ui: "Conventional commit scope: ui",
-                excel: "Conventional commit scope: excel",
-                windows: "Conventional commit scope: windows",
-                core: "Conventional commit scope: core",
-                db: "Conventional commit scope: db",
-                app: "Conventional commit scope: app",
-                infra: "Conventional commit scope: infra",
-              };
-
-              return descMap[name] || "Auto-managed conventional commit label";
+              return `Auto-managed conventional commit label: ${name}`;
             }
 
             async function ensureLabelExists(name) {
               try {
-                await github.rest.issues.getLabel({
-                  owner,
-                  repo,
-                  name,
-                });
+                await github.rest.issues.getLabel({ owner, repo, name });
               } catch (error) {
                 if (error.status === 404) {
                   await github.rest.issues.createLabel({
@@ -224,7 +186,6 @@ jobs:
                 issue_number: pull_number,
                 name,
               });
-              core.info(`Removed stale label: ${name}`);
             }
 
             if (labelsToApply.length === 0) {
@@ -245,9 +206,6 @@ jobs:
                 issue_number: pull_number,
                 labels: labelsToAdd,
               });
-              core.info(`Added labels: ${labelsToAdd.join(", ")}`);
-            } else {
-              core.info("No new labels to add.");
             }
 
             core.info(`Detected types: ${[...detectedTypes].join(", ") || "(none)"}`);
