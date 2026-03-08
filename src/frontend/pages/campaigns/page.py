@@ -8,7 +8,7 @@ from PySide6.QtGui import QPixmap, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMessageBox, QFrame, QListWidget, QListWidgetItem,
-    QComboBox, QDialog
+    QComboBox, QDialog, QCheckBox
 )
 
 from backend.domains.campaigns.service import CampaignsService
@@ -80,6 +80,14 @@ class CampaignPage(QWidget):
 
         lv.addWidget(QLabel("캠페인 구성(순서 편집)"))
 
+        mode_row = QHBoxLayout()
+        mode_row.setSpacing(8)
+        self.chk_multi_attach = QCheckBox("이미지 묶음 전송 모드")
+        self.chk_multi_attach.setToolTip("체크 시 연속된 이미지가 카카오톡에서 묶음 첨부 방식으로 전송됩니다.")
+        mode_row.addWidget(self.chk_multi_attach)
+        mode_row.addStretch(1)
+        lv.addLayout(mode_row)
+
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
@@ -139,7 +147,9 @@ class CampaignPage(QWidget):
             self.cbo_campaigns.addItem("(저장된 캠페인 없음)", None)
         else:
             for c in self._campaigns:
-                self.cbo_campaigns.addItem(f"[{c.id}] {c.name}", c.id)
+                mode = str(getattr(c, "send_mode", "clipboard") or "clipboard")
+                mode_tag = " | 묶음" if mode == "multi_attach" else ""
+                self.cbo_campaigns.addItem(f"[{c.id}] {c.name}{mode_tag}", c.id)
 
         self.cbo_campaigns.setCurrentIndex(0)
         self.cbo_campaigns.blockSignals(False)
@@ -150,6 +160,7 @@ class CampaignPage(QWidget):
 
     def _new_draft(self) -> None:
         self._draft = []
+        self.chk_multi_attach.setChecked(False)
         self._rebuild_list(select_index=-1)
         self._on_status("새 캠페인 작성 시작")
 
@@ -372,8 +383,10 @@ class CampaignPage(QWidget):
             for it in self._draft
         ]
 
+        send_mode = "multi_attach" if self.chk_multi_attach.isChecked() else "clipboard"
+
         try:
-            cid = self.service.create_campaign(name, draft_items)
+            cid = self.service.create_campaign(name, draft_items, send_mode=send_mode)
         except ValueError as e:
             QMessageBox.warning(self, "오류", str(e))
             return
@@ -381,8 +394,12 @@ class CampaignPage(QWidget):
             QMessageBox.critical(self, "오류", f"저장 실패\n{e}")
             return
 
-        QMessageBox.information(self, "완료", f"캠페인 저장 완료\n- ID: {cid}\n- 이름: {name}")
-        self._on_status(f"캠페인 저장: {name} (id={cid})")
+        QMessageBox.information(
+            self,
+            "완료",
+            f"캠페인 저장 완료\n- ID: {cid}\n- 이름: {name}\n- 모드: {send_mode}"
+        )
+        self._on_status(f"캠페인 저장: {name} (id={cid}, mode={send_mode})")
         self._reload_campaigns_combo()
 
         try:
@@ -397,6 +414,7 @@ class CampaignPage(QWidget):
             return
 
         try:
+            campaign = self.service.get_campaign(cid)
             rows = self.service.get_campaign_items(cid)
         except Exception as e:
             QMessageBox.critical(self, "오류", f"불러오기 실패\n{e}")
@@ -409,8 +427,11 @@ class CampaignPage(QWidget):
             else:
                 self._draft.append(DraftItem(item_type="IMAGE", image_name=r.image_name, image_bytes=r.image_bytes))
 
+        mode = str(getattr(campaign, "send_mode", "clipboard") or "clipboard") if campaign else "clipboard"
+        self.chk_multi_attach.setChecked(mode == "multi_attach")
+
         self._rebuild_list(select_index=0)
-        self._on_status(f"캠페인 불러오기: id={cid}")
+        self._on_status(f"캠페인 불러오기: id={cid}, mode={mode}")
 
     def _delete_selected_campaign(self) -> None:
         cid = self._selected_campaign_id()

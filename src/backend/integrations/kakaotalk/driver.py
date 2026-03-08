@@ -8,6 +8,9 @@ import ctypes
 import logging
 import threading
 import hashlib
+import tempfile
+import shutil
+from pathlib import Path
 from io import BytesIO
 from PIL import Image
 
@@ -17,7 +20,10 @@ from typing import List, Tuple, Any, Callable, Optional
 from contextlib import contextmanager
 
 from backend.integrations.kakaotalk.hooks import open_chat_by_name_hook, send_image_dialog_hook, ChatNotFound, _is_kakao_toast_quick_reply
-from backend.integrations.kakaotalk.image_attach_ctrl_t import send_png_via_ctrl_t
+from backend.integrations.kakaotalk.image_attach_ctrl_t import (
+    send_png_via_ctrl_t,
+    send_files_via_ctrl_t,
+)
 from ctypes import wintypes
 from backend.integrations.kakaotalk.image_attach_ctrl_v import attach_image_via_ctrl_v
 from backend.integrations.windows.win32_core import close_open_dialog_if_any
@@ -190,7 +196,13 @@ class KakaoSenderDriver:
     def send_to_name(self, name: str, message: str, image_bytes_list: List[bytes]) -> None:
         raise NotImplementedError
 
-    def send_campaign_items(self, name: str, campaign_items: List[Any]) -> None:
+    def send_campaign_items(
+            self,
+            name: str,
+            campaign_items: list[Any],
+            *,
+            send_mode: str = "clipboard",
+    ) -> None:
         raise NotImplementedError
 
     def stop(self) -> None:
@@ -1114,24 +1126,29 @@ class KakaoPcDriver(KakaoSenderDriver):
 
         self._ensure_foreground_chat()
         self._focus_chat_input_best_effort()
-        self._sleep(max(0.02, self._send_interval))
+        self._sleep(0.01)
 
         t_cb0 = time.perf_counter()
-        w32.set_clipboard_text(text)  # ✅ win32_core 사용
+        w32.set_clipboard_text(text)
         self._trace("TEXT:clipboard_set", ms=int((time.perf_counter() - t_cb0) * 1000))
-        self._sleep(0.02)
+        self._sleep(0.01)
 
+        # 붙여넣기와 엔터를 최대한 연속 처리
         self._send_keys("^v", to_chat=True)
-        self._sleep(0.02)
+        self._sleep(0.01)
 
         self._send_keys("{ENTER}", to_chat=True)
         self._trace("TEXT:enter_sent")
-        self._sleep(0.04)
+        self._sleep(0.02)
 
         remain = self._get_chat_input_text_best_effort()
         fail = self._text_remain_means_fail(remain, text)
-        self._trace("TEXT:once_end", ok=(not fail), total_ms=int((time.perf_counter() - t0) * 1000),
-                    remain_len=len(remain))
+        self._trace(
+            "TEXT:once_end",
+            ok=(not fail),
+            total_ms=int((time.perf_counter() - t0) * 1000),
+            remain_len=len(remain),
+        )
         return not fail
 
     def _paste_text_and_send(self, text: str) -> bool:
@@ -1624,9 +1641,20 @@ class KakaoPcDriver(KakaoSenderDriver):
     # ----------------------------
     # send APIs
     # ----------------------------
-    def send_campaign_items(self, name: str, campaign_items: List[Any]) -> None:
+    def send_campaign_items(
+            self,
+            name: str,
+            campaign_items: list[Any],
+            *,
+            send_mode: str = "clipboard",
+    ) -> None:
         t0 = time.perf_counter()
-        self._trace("SEND_CAMPAIGN:begin", name=(name or "").strip(), items_type=str(type(campaign_items)))
+        self._trace(
+            "SEND_CAMPAIGN:begin",
+            name=(name or "").strip(),
+            items_type=str(type(campaign_items)),
+            send_mode=send_mode,
+        )
 
         self._check_stop()
         self._lock_kakao_target_once()
@@ -1635,26 +1663,30 @@ class KakaoPcDriver(KakaoSenderDriver):
         if not name:
             raise ValueError("수신자 이름이 비어있습니다.")
 
-        # ✅ 전송 중에는 개인창만 허용
+        send_mode = (send_mode or "clipboard").strip().lower()
+        if send_mode not in ("clipboard", "multi_attach"):
+            send_mode = "clipboard"
+
         _prev_open_in_main = bool(self._open_in_main)
         self._open_in_main = False
+
         try:
-            # ---- 기존 로직 그대로 ----
             items = list(campaign_items or [])
 
-            prepared: list[tuple[str, str, bytes]] = []
+            prepared: list[tuple[str, str, bytes, str]] = []
             for it in items:
                 typ = str(getattr(it, "item_type", "") or "").upper().strip()
                 if typ == "TEXT":
                     t = (getattr(it, "text", "") or "").strip()
-                    prepared.append(("TEXT", t, b""))
+                    prepared.append(("TEXT", t, b"", ""))
                 else:
                     b = getattr(it, "image_bytes", b"") or b""
+                    p = str(getattr(it, "image_path", "") or "").strip()
                     try:
                         b = bytes(b)
                     except Exception:
                         pass
-                    prepared.append(("IMG", "", b))
+                    prepared.append(("IMG", "", b, p))
 
             opened = self._open_chat_by_name(name)
             if not opened:
@@ -1662,40 +1694,113 @@ class KakaoPcDriver(KakaoSenderDriver):
 
             failures: List[str] = []
             sent_any = False
+
+            def _flush_image_bundle(bundle: List[tuple[bytes, str]], bundle_index: int) -> None:
+                nonlocal sent_any
+                if not bundle:
+                    return
+
+                if send_mode == "multi_attach":
+                    valid_paths = [p for (_b, p) in bundle if p and os.path.exists(p)]
+
+                    # bundle 전체가 path로 준비돼 있으면 path 우선
+                    if len(valid_paths) == len(bundle):
+                        ok = self.send_files_via_ctrl_t_paths(valid_paths)
+                    else:
+                        valid_bytes = [b for (b, _p) in bundle if b]
+                        ok = self.send_images_via_ctrl_t(valid_bytes)
+
+                    sent_any = True
+                    if not ok:
+                        failures.append(f"{bundle_index}:IMG_BUNDLE:retry_exceeded")
+                else:
+                    for inner_i, (img_bytes, _img_path) in enumerate(bundle, start=1):
+                        ok = self._paste_image_and_send(img_bytes)
+                        sent_any = True
+                        if not ok:
+                            failures.append(f"{bundle_index}:IMG#{inner_i}:retry_exceeded")
+                        self._sleep(max(0.02, self._send_interval))
+
             try:
-                for idx, (typ, t, b) in enumerate(prepared, start=1):
+                image_bundle: List[tuple[bytes, str]] = []
+                bundle_seq = 0
+
+                for idx, (typ, t, b, p) in enumerate(prepared, start=1):
                     self._check_stop()
 
-                    if typ == "TEXT":
-                        if t:
-                            ok = self._paste_text_and_send(t)
-                            sent_any = True
-                            if not ok:
-                                failures.append(f"{idx}:TEXT:retry_exceeded")
-                    else:
-                        if b:
-                            ok = self._paste_image_and_send(b)
-                            sent_any = True
-                            if not ok:
-                                failures.append(f"{idx}:IMG:retry_exceeded")
+                    if typ == "IMG":
+                        if b or p:
+                            image_bundle.append((b, p))
+                        continue
+
+                    if image_bundle:
+                        bundle_seq += 1
+                        _flush_image_bundle(image_bundle, bundle_seq)
+                        image_bundle = []
+                        self._sleep(max(0.02, self._send_interval))
+
+                    if t:
+                        ok = self._paste_text_and_send(t)
+                        sent_any = True
+                        if not ok:
+                            failures.append(f"{idx}:TEXT:retry_exceeded")
 
                     self._sleep(max(0.02, self._send_interval))
 
+                if image_bundle:
+                    bundle_seq += 1
+                    _flush_image_bundle(image_bundle, bundle_seq)
+
                 if not sent_any:
                     raise RuntimeError("캠페인 아이템이 비어있어 전송할 내용이 없습니다.")
+
+
             finally:
+
                 try:
+
                     self._close_chat()
+
                 except CloseForcedByConfirm:
+
                     failures.append("CLOSE_FORCED_CONFIRM")
+
                 except Exception as e:
+
                     self._trace("SEND_CAMPAIGN:close_chat_exception", err=str(e))
+
+                finally:
+
+                    try:
+
+                        from backend.integrations.windows.win32_core import close_open_dialog_if_any
+
+                        close_open_dialog_if_any()
+
+                    except Exception:
+
+                        pass
+
+                    try:
+
+                        self._ensure_foreground_main_fast()
+
+                    except Exception:
+
+                        pass
+
+                    self._chat_in_main = False
+
+                    self._chat_hwnd = 0
+
+                    self._mode = "MAIN"
+
+                    self._search_ready = True
 
             if failures:
                 raise RuntimeError("일부 아이템 전송 실패:\n" + "\n".join(failures))
 
         finally:
-            # ✅ 원복
             self._open_in_main = _prev_open_in_main
 
     def send_to_name(self, name: str, message: str, image_bytes_list: List[bytes]) -> None:
@@ -2112,6 +2217,149 @@ class KakaoPcDriver(KakaoSenderDriver):
 
         except Exception:
             return False
+
+    def _normalize_temp_image_ext(self, image_bytes: bytes, default_ext: str = ".png") -> str:
+        try:
+            img = Image.open(BytesIO(image_bytes))
+            fmt = str(getattr(img, "format", "") or "").upper()
+            if fmt == "JPEG":
+                return ".jpg"
+            if fmt == "PNG":
+                return ".png"
+            if fmt == "WEBP":
+                return ".webp"
+        except Exception:
+            pass
+        return default_ext
+
+    def _save_temp_images_for_multi_attach(self, image_bytes_list: List[bytes]) -> tuple[str, List[str]]:
+        """
+        bytes fallback용 temp 저장.
+        path 기반이 없을 때만 사용.
+        """
+        root_dir = os.path.join(tempfile.gettempdir(), "kcs_bundle")
+        os.makedirs(root_dir, exist_ok=True)
+
+        bundle_dir = tempfile.mkdtemp(prefix="b", dir=root_dir)
+        saved_paths: List[str] = []
+
+        for idx, data in enumerate(image_bytes_list or [], start=1):
+            if not data:
+                continue
+
+            ext = self._normalize_temp_image_ext(data, default_ext=".png")
+            filename = f"img{idx:03d}{ext}"
+            path = os.path.join(bundle_dir, filename)
+
+            with open(path, "wb") as f:
+                f.write(data)
+
+            saved_paths.append(path)
+
+        return bundle_dir, saved_paths
+
+    def _build_multi_file_dialog_names_text(self, paths: List[str]) -> str:
+        """
+        파일열기 창 '파일 이름' 칸에 넣을 텍스트.
+        각 파일명을 반드시 개별 따옴표로 감싼다.
+
+        예:
+          "img001.jpg" "img002.jpg" "img003.png"
+        """
+        names: List[str] = []
+
+        for p in paths or []:
+            name = os.path.basename(str(p or "").strip())
+            if not name:
+                continue
+
+            # 내부 따옴표 제거 후 항상 quote
+            name = name.replace('"', "")
+            names.append(f'"{name}"')
+
+        return " ".join(names)
+
+
+
+    def send_images_via_ctrl_t(self, image_bytes_list: List[bytes]) -> bool:
+        self._check_stop()
+
+        images = [bytes(x) for x in (image_bytes_list or []) if x]
+        if not images:
+            return True
+
+        temp_dir = ""
+        saved_paths: List[str] = []
+
+        try:
+            temp_dir, saved_paths = self._save_temp_images_for_multi_attach(images)
+            if not saved_paths:
+                self._log("[CTRL+T-MULTI] no saved files")
+                return False
+
+            return self._run_with_retry(
+                "IMG_CTRL_T_MULTI",
+                lambda: self._send_images_via_ctrl_t_paths_once(saved_paths),
+            )
+
+        finally:
+            try:
+                self._sleep_abs(0.30)
+            except Exception:
+                pass
+
+            if temp_dir:
+                try:
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+    def send_files_via_ctrl_t_paths(self, image_paths: List[str]) -> bool:
+        self._check_stop()
+
+        paths = [str(p).strip() for p in (image_paths or []) if str(p).strip()]
+        if not paths:
+            return True
+
+        try:
+            ok = send_files_via_ctrl_t(
+                file_paths=paths,
+                send_keys_fast=self._send_keys_fast,
+                set_clipboard_text=w32.set_clipboard_text,
+                ensure_foreground_chat=self._ensure_foreground_chat,
+                focus_chat_input_best_effort=self._focus_chat_input_best_effort,
+                sleep_abs=self._sleep_abs,
+                timeout_sec=max(1.8, self._sf(float(self._image_dialog_timeout))),
+                key_delay=self._sf(self._key_delay),
+                debug=self._debug_log,
+                log=self._log,
+                prefer_hwnd=int(self._chat_hwnd or self._hwnd),
+                get_foreground_hwnd=w32.get_foreground_hwnd,
+                timings={
+                    "focus_settle": self._sf(self._profile.ctrl_t.focus_settle),
+                    "after_ctrl_t": self._sf(self._profile.ctrl_t.after_ctrl_t),
+                    "clipboard_settle": self._sf(self._profile.ctrl_t.clipboard_settle),
+                    "after_paste_path": self._sf(self._profile.ctrl_t.after_paste_path),
+                    "after_enter_path": self._sf(self._profile.ctrl_t.after_enter_path),
+                },
+            )
+        except Exception as e:
+            self._log(f"[CTRL+T-MULTI] module call exception: {e}")
+            return False
+
+        if ok:
+            try:
+                self._restore_chat_focus_after_image_dialog()
+            except Exception:
+                pass
+
+        return bool(ok)
+
+
+
+
+
+
 
 __all__ = [
     "KakaoSenderDriver",
