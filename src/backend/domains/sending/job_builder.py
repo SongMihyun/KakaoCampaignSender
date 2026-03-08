@@ -43,7 +43,10 @@ class SendJobBuilder:
             )
 
             recipients, recipients_snapshot = build_recipients_and_snapshot(contacts_mem)
+
+            campaign = self.campaigns_service.get_campaign(campaign_id)
             campaign_items = self.campaigns_service.get_campaign_items(campaign_id)
+            send_mode = str(getattr(campaign, "send_mode", "clipboard") or "clipboard")
 
             jobs.append(
                 SendJob(
@@ -52,6 +55,7 @@ class SendJobBuilder:
                     group_name=group_name,
                     campaign_id=campaign_id,
                     campaign_name=campaign_name,
+                    send_mode=send_mode,
                     recipients=recipients,
                     recipients_snapshot=recipients_snapshot,
                     campaign_items=campaign_items,

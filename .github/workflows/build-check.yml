@@ -2,11 +2,15 @@
 name: Windows Build Check
 
 on:
-  push:
+  pull_request:
     branches:
-      - "**"
-    tags-ignore:
-      - "v*"
+      - develop
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
     paths-ignore:
       - ".github/release.yml"
       - "docs/**"
@@ -16,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-check-${{ github.ref }}
+  group: build-check-pr-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 jobs:
@@ -62,7 +66,8 @@ jobs:
         run: |
           $required = @(
             "src/app/main.py",
-            "src/app/version.py"
+            "src/app/version.py",
+            "KakaoSender.spec"
           )
 
           foreach ($path in $required) {
@@ -71,17 +76,13 @@ jobs:
             }
           }
 
-      - name: Verify PyInstaller spec exists
+      - name: Clean build output
         run: |
-          if (-not (Test-Path "KakaoSender.spec")) {
-            throw "KakaoSender.spec not found at repo root."
-          }
+          if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
+          if (Test-Path "dist")  { Remove-Item "dist"  -Recurse -Force }
 
       - name: Build smoke check
         run: |
-          if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
-          if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
-
           poetry run pyinstaller -y --clean `
             --distpath dist/app `
             --workpath build/pyinstaller `

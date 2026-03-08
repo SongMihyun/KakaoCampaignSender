@@ -490,6 +490,15 @@ def set_clipboard_dib(dib: bytes) -> None:
         user32.CloseClipboard()
 
 
+def quote_path(path: str) -> str:
+    p = str(path or "").strip()
+    if not p:
+        return ""
+    if " " in p or "(" in p or ")" in p:
+        return f'"{p}"'
+    return p
+
+
 __all__ = [
     "user32",
     "kernel32",
