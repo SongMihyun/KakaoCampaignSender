@@ -41,7 +41,7 @@ from frontend.pages.contacts.page import ContactsPage
 from frontend.pages.groups.page import GroupsPage
 from frontend.pages.logs.page import LogsPage
 from frontend.pages.sending.page import SendPage
-
+from backend.domains.sending.worker import MultiSendWorker
 
 class MainWindow(QMainWindow):
     TITLES = ["대상자 관리", "발송 그룹", "캠페인 설정", "발송", "로그/리포트"]
@@ -109,8 +109,10 @@ class MainWindow(QMainWindow):
             contacts_store=self.contacts_store,
             campaigns_service=self.campaigns_service,
         )
+
         self.sending_service = SendingService(
             job_builder=self.send_job_builder,
+            worker_factory=MultiSendWorker,
         )
 
         from frontend.app.app_events import app_events

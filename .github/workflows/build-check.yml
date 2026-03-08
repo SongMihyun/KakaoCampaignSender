@@ -4,11 +4,21 @@ name: Windows Build Check
 on:
   push:
     branches:
-      - "**"
-    tags-ignore:
-      - "v*"
+      - develop
+      - main
     paths-ignore:
-      - ".github/release.yml"
+      - "docs/**"
+      - "**/*.md"
+  pull_request:
+    branches:
+      - develop
+      - main
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+    paths-ignore:
       - "docs/**"
       - "**/*.md"
 
@@ -16,7 +26,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: build-check-${{ github.ref }}
+  group: build-check-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -62,7 +72,8 @@ jobs:
         run: |
           $required = @(
             "src/app/main.py",
-            "src/app/version.py"
+            "src/app/version.py",
+            "KakaoSender.spec"
           )
 
           foreach ($path in $required) {
@@ -71,17 +82,13 @@ jobs:
             }
           }
 
-      - name: Verify PyInstaller spec exists
+      - name: Clean build output
         run: |
-          if (-not (Test-Path "KakaoSender.spec")) {
-            throw "KakaoSender.spec not found at repo root."
-          }
+          if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
+          if (Test-Path "dist")  { Remove-Item "dist"  -Recurse -Force }
 
       - name: Build smoke check
         run: |
-          if (Test-Path "build") { Remove-Item "build" -Recurse -Force }
-          if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
-
           poetry run pyinstaller -y --clean `
             --distpath dist/app `
             --workpath build/pyinstaller `
@@ -98,3 +105,58 @@ jobs:
             throw "Expected EXE not found: $exePath"
           }
           Write-Host "OK: $exePath"
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup -y
+          if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) {
+            throw "ISCC.exe not found after install."
+          }
+
+      - name: Verify installer inputs
+        run: |
+          if (-not (Test-Path "installer/KakaoCampaignSender.iss")) { throw "installer/KakaoCampaignSender.iss not found." }
+          if (-not (Test-Path "installer/KakaoSender.ico")) { throw "installer/KakaoSender.ico not found." }
+
+      - name: Compile installer smoke check
+        run: |
+          $outDir = Join-Path $pwd "dist\installer"
+          $appDir = Join-Path $pwd "dist\app\KakaoCampaignSender"
+          $ico    = Join-Path $pwd "installer\KakaoSender.ico"
+          $iss    = Join-Path $pwd "installer\KakaoCampaignSender.iss"
+          $ISCC   = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
+
+          if (-not (Test-Path $outDir)) {
+            New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          }
+
+          $args = @(
+            "/DMyAppVersion=0.0.0-ci",
+            "/DOutputDir=$outDir",
+            "/DMyAppDistDir=$appDir",
+            "/DMyAppIconSource=$ico",
+            $iss
+          )
+
+          Start-Process -FilePath $ISCC -ArgumentList $args -Wait -NoNewWindow
+
+      - name: Verify installer output
+        run: |
+          $installer = Get-ChildItem "dist/installer" -Filter "*.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installer) {
+            Write-Host "----- dist/installer tree -----"
+            if (Test-Path "dist/installer") {
+              Get-ChildItem -Recurse "dist/installer" | Select-Object FullName
+            }
+            throw "Installer output not found in dist/installer"
+          }
+          Write-Host "OK: $($installer.FullName)"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build-check-${{ github.run_id }}
+          path: |
+            dist/app/**
+            dist/installer/**
+          if-no-files-found: error

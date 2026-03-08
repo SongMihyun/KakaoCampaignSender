@@ -516,7 +516,9 @@ class SendPage(QWidget):
             self.cbo_campaigns.addItem("(캠페인 없음)", None)
         else:
             for c in campaigns:
-                self.cbo_campaigns.addItem(f"[{c.id}] {c.name}", int(c.id))
+                mode = str(getattr(c, "send_mode", "clipboard") or "clipboard")
+                mode_tag = " | 묶음" if mode == "multi_attach" else ""
+                self.cbo_campaigns.addItem(f"[{c.id}] {c.name}{mode_tag}", int(c.id))
 
         self.cbo_campaigns.setCurrentIndex(0)
         self.cbo_campaigns.blockSignals(False)

@@ -39,7 +39,6 @@ jobs:
             const headRef = pr.head.ref;
             const baseRef = pr.base.ref;
 
-            // main 대상 PR만 이 워크플로가 실행되므로 release PR 여부는 브랜치 기준으로만 판단
             const isDevelopToMain = headRef === 'develop' && baseRef === 'main';
             const isReleaseBranchToMain = /^release[\/-]/.test(headRef) && baseRef === 'main';
             const isReleasePr = isDevelopToMain || isReleaseBranchToMain;

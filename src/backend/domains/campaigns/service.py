@@ -10,7 +10,25 @@ class CampaignsService:
 
     def list_campaigns(self) -> list[Campaign]:
         rows = self.repo.list_campaigns()
-        return [Campaign(id=int(r.id), name=str(r.name)) for r in rows]
+        return [
+            Campaign(
+                id=int(r.id),
+                name=str(r.name),
+                send_mode=str(getattr(r, "send_mode", "clipboard") or "clipboard"),
+            )
+            for r in rows
+        ]
+
+    def get_campaign(self, campaign_id: int) -> Campaign | None:
+        row = self.repo.get_campaign(int(campaign_id))
+        if row is None:
+            return None
+
+        return Campaign(
+            id=int(row.id),
+            name=str(row.name),
+            send_mode=str(getattr(row, "send_mode", "clipboard") or "clipboard"),
+        )
 
     def get_campaign_items(self, campaign_id: int) -> list[CampaignItem]:
         rows = self.repo.get_campaign_items(int(campaign_id))
@@ -22,13 +40,24 @@ class CampaignsService:
                 text=str(getattr(r, "text", "") or ""),
                 image_name=str(getattr(r, "image_name", "") or ""),
                 image_bytes=getattr(r, "image_bytes", b"") or b"",
+                image_path=str(getattr(r, "image_path", "") or ""),
                 sort_order=int(getattr(r, "sort_order", 0) or 0),
             )
             for r in rows
         ]
 
-    def create_campaign(self, name: str, draft_items: list[CampaignDraftItemDTO]) -> int:
+    def create_campaign(
+        self,
+        name: str,
+        draft_items: list[CampaignDraftItemDTO],
+        send_mode: str = "clipboard",
+    ) -> int:
         name = (name or "").strip()
+        send_mode = (send_mode or "clipboard").strip().lower()
+
+        if send_mode not in ("clipboard", "multi_attach"):
+            send_mode = "clipboard"
+
         if not name:
             raise ValueError("캠페인명은 필수입니다.")
         if not draft_items:
@@ -43,8 +72,10 @@ class CampaignsService:
                 payload.append(("IMAGE", {
                     "image_name": (it.image_name or "").strip(),
                     "image_bytes": it.image_bytes or b"",
+                    "image_path": (it.image_path or "").strip(),
                 }))
-        return int(self.repo.create_campaign(name, payload))
+
+        return int(self.repo.create_campaign(name, payload, send_mode=send_mode))
 
     def delete_campaign(self, campaign_id: int) -> None:
         self.repo.delete_campaign(int(campaign_id))
