@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -97,7 +98,6 @@ class MainWindow(QMainWindow):
         )
 
         self.report_reader = SendReportReader()
-
         self.logs_service = LogsService(
             repo=self.send_logs_repo,
             report_reader=self.report_reader,
@@ -134,6 +134,7 @@ class MainWindow(QMainWindow):
 
         self.groups_page = GroupsPage(
             service=self.groups_service,
+            contacts_service=self.contacts_service,
             contacts_store=self.contacts_store,
             on_status=self.status.set_message,
         )
@@ -176,21 +177,25 @@ class MainWindow(QMainWindow):
         self._go_page(0)
         self._apply_style()
 
-    def closeEvent(self, event) -> None:
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._cleanup_before_close()
+        self._finalize_pending_update()
+        super().closeEvent(event)
+
+    def _cleanup_before_close(self) -> None:
         try:
             if hasattr(self, "send_page") and self.send_page:
                 self.send_page.cleanup()
         except Exception:
             pass
 
+    def _finalize_pending_update(self) -> None:
         try:
             from backend.updates.updater import finalize_update_on_app_close
 
             finalize_update_on_app_close()
         except Exception:
             pass
-
-        super().closeEvent(event)
 
     def _go_page(self, idx: int) -> None:
         if idx < 0 or idx >= self.stack.count():
@@ -354,11 +359,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        try:
-            if hasattr(self, "send_page") and self.send_page:
-                self.send_page.cleanup()
-        except Exception:
-            pass
+        self._cleanup_before_close()
 
         try:
             log_path = schedule_delete_all_local_data()
@@ -414,11 +415,7 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
 
-        try:
-            if hasattr(self, "send_page") and self.send_page:
-                self.send_page.cleanup()
-        except Exception:
-            pass
+        self._cleanup_before_close()
 
         uninst = os.path.join(os.path.dirname(sys.executable), "unins000.exe")
 

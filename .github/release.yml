@@ -1,0 +1,47 @@
+# FILE: .github/release.yml
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+      - no-release-notes
+
+  categories:
+    - title: "✨ 기능 추가"
+      labels:
+        - feat
+        - feature
+
+    - title: "🐞 버그 수정"
+      labels:
+        - fix
+        - bugfix
+        - bug
+
+    - title: "🛠 구조 개선"
+      labels:
+        - refactor
+
+    - title: "⚡ 성능 개선"
+      labels:
+        - perf
+        - performance
+
+    - title: "📝 문서"
+      labels:
+        - docs
+
+    - title: "✅ 테스트"
+      labels:
+        - test
+
+    - title: "🔧 유지보수 / 인프라"
+      labels:
+        - chore
+        - infra
+        - tooling
+        - build
+        - ci
+
+    - title: "기타"
+      labels:
+        - "*"
