@@ -1,3 +1,4 @@
+# FILE: src/app/main.py
 from __future__ import annotations
 
 import ctypes
@@ -5,6 +6,8 @@ import logging
 import os
 import sys
 from ctypes import wintypes
+
+from app.startup_args import parse_startup_args
 
 # ----------------------------
 # COM STA init (main thread) - must run BEFORE heavy imports
@@ -17,7 +20,6 @@ S_OK = 0x00000000
 S_FALSE = 0x00000001
 RPC_E_CHANGED_MODE = 0x80010106
 
-# ✅ wintypes.HRESULT 보강 (환경에 따라 미정의)
 HRESULT = getattr(wintypes, "HRESULT", ctypes.c_long)
 
 ole32.CoInitializeEx.argtypes = [wintypes.LPVOID, wintypes.DWORD]
@@ -41,7 +43,6 @@ def _com_init_sta_main_best_effort() -> bool:
 
 
 def main() -> None:
-    # ✅ stdout 로깅 강제
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
@@ -49,40 +50,34 @@ def main() -> None:
         force=True,
     )
 
-    # ✅ 개발 중 TRACE 기본 ON
     os.environ.setdefault("KAKAO_TRACE", "1")
 
-    # ✅ 0) COM STA 선점 (가장 먼저!)
     com_inited = _com_init_sta_main_best_effort()
+    startup_args = parse_startup_args(sys.argv[1:])
 
-    # ✅ 1) QApplication을 최대한 빨리 올려서 "실행 중 표시"를 즉시 제공
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
 
-    # ✅ 1.5) 로그인(통과해야만 앱 실행)
-    try:
-        from frontend.dialogs.login_dialog import LoginDialog
-        ok = LoginDialog.run_login()
-        if not ok:
-            # 로그인 취소/실패로 종료
-            sys.exit(0)
-    except Exception:
-        # 로그인 모듈 로드 실패 시 보수적으로 종료
-        sys.exit(0)
-
-    # ✅ 2) 스플래시(로딩 표시) 즉시 노출
     splash = None
-    try:
-        from frontend.app.splash import make_splash
 
-        splash = make_splash()
-        splash.show()
-        app.processEvents()
-    except Exception:
-        splash = None
+    def _ensure_splash():
+        nonlocal splash
+        if splash is not None:
+            return splash
+        try:
+            from frontend.app.splash import make_splash
+
+            splash = make_splash()
+            splash.show()
+            app.processEvents()
+            return splash
+        except Exception:
+            splash = None
+            return None
 
     def _splash_msg(msg: str) -> None:
+        _ensure_splash()
         if splash is None:
             return
         try:
@@ -95,21 +90,40 @@ def main() -> None:
         except Exception:
             pass
 
-    # ✅ 3) 업데이트 체크/다운로드 준비 (실패해도 앱은 계속 실행)
-    _splash_msg("업데이트 확인 중…")
-    try:
-        from app.version import __version__, LATEST_JSON_URL
-        from frontend.app.splash import check_and_prepare_update, set_pending_update
+    # 예약발송으로 자동 기동된 경우에는 업데이트/로그인 때문에 예약발송이 막히지 않도록 스킵
+    if not startup_args.is_scheduled_launch:
+        try:
+            from app.version import __version__, LATEST_JSON_URL
+            from frontend.app.splash import run_startup_update_if_needed
 
-        plan = check_and_prepare_update(LATEST_JSON_URL, __version__)
-        if plan.available:
-            # ✅ 종료 시 설치되도록 예약만 걸어둠
-            set_pending_update(plan)
-    except Exception:
-        # 업데이트 실패는 런타임 중단 사유 아님
-        pass
+            update_result = run_startup_update_if_needed(LATEST_JSON_URL, __version__)
+            logging.getLogger("main").info(
+                "startup update check result: started=%s reason=%s latest=%s",
+                update_result.started,
+                update_result.reason,
+                update_result.latest_version,
+            )
+            if update_result.started:
+                if com_inited:
+                    try:
+                        ole32.CoUninitialize()
+                    except Exception:
+                        pass
+                sys.exit(0)
+        except Exception as e:
+            logging.getLogger("main").exception(f"startup update failed: {e}")
 
-    # ✅ 4) DB 초기화
+        # 로그인 창이 스플래시에 가려지지 않도록 로그인은 스플래시 생성 전에 수행
+        try:
+            from frontend.dialogs.login_dialog import LoginDialog
+
+            ok = LoginDialog.run_login()
+            if not ok:
+                sys.exit(0)
+        except Exception as e:
+            logging.getLogger("main").exception(f"login init failed: {e}")
+            sys.exit(0)
+
     _splash_msg("데이터베이스 초기화 중…")
     try:
         from backend.database.db_bootstrap import ensure_db_initialized
@@ -118,12 +132,14 @@ def main() -> None:
     except Exception as e:
         logging.getLogger("main").exception(f"DB init failed: {e}")
 
-    # ✅ 5) UI 로딩 (무거운 import는 여기서)
     _splash_msg("UI 로딩 중…")
-    from frontend.app.main_window import MainWindow  # 현재 사용 중 경로 그대로
+    from frontend.app.main_window import MainWindow
 
-    win = MainWindow()
-    win.show()
+    win = MainWindow(startup_args=startup_args)
+    if startup_args.minimized:
+        win.showMinimized()
+    else:
+        win.show()
 
     if splash is not None:
         try:

@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.paths import contacts_db_path
+from app.startup_args import StartupArgs
 from app.version import __display_name__
 from backend.core.lifecycle.apply_settings_bundle import schedule_apply_settings_bundle_after_exit
 from backend.core.lifecycle.reset_app import schedule_delete_all_local_data
@@ -33,11 +35,14 @@ from backend.domains.logs.service import LogsService
 from backend.domains.reports.reader import SendReportReader
 from backend.domains.send_lists.repository import SendListsRepo
 from backend.domains.send_lists.service import SendListsService
+from backend.domains.scheduled_sends.repository import ScheduledSendsRepo
+from backend.domains.scheduled_sends.service import ScheduledSendsService
 from backend.domains.sending.job_builder import SendJobBuilder
 from backend.domains.sending.service import SendingService
 from backend.domains.sending.worker import MultiSendWorker
 from backend.domains.settings_bundle.service import SettingsBundleService
 from backend.stores.contacts_store import ContactsStore
+from backend.integrations.windows.task_scheduler_service import TaskSchedulerService
 
 from frontend.layout.header import Header
 from frontend.layout.navigation import Navigation
@@ -52,8 +57,10 @@ from frontend.pages.sending.page import SendPage
 class MainWindow(QMainWindow):
     TITLES = ["대상자 관리", "발송 그룹", "캠페인 설정", "발송", "로그/리포트"]
 
-    def __init__(self) -> None:
+    def __init__(self, startup_args: StartupArgs | None = None) -> None:
         super().__init__()
+
+        self.startup_args = startup_args or StartupArgs()
 
         self.setWindowTitle(__display_name__)
         self.resize(1180, 760)
@@ -85,6 +92,7 @@ class MainWindow(QMainWindow):
         self.send_lists_repo = SendListsRepo(db_path)
         self.send_logs_repo = SendLogsRepo(db_path)
         self.send_logs_repo.ensure_tables()
+        self.scheduled_sends_repo = ScheduledSendsRepo(db_path)
 
         # stores
         self.contacts_store = ContactsStore()
@@ -106,6 +114,11 @@ class MainWindow(QMainWindow):
             repo=self.send_lists_repo,
         )
         self.settings_bundle_service = SettingsBundleService()
+        self.task_scheduler_service = TaskSchedulerService()
+        self.scheduled_sends_service = ScheduledSendsService(
+            repo=self.scheduled_sends_repo,
+            task_scheduler=self.task_scheduler_service,
+        )
 
         self.report_reader = SendReportReader()
         self.logs_service = LogsService(
@@ -161,6 +174,7 @@ class MainWindow(QMainWindow):
             contacts_store=self.contacts_store,
             campaigns_service=self.campaigns_service,
             sending_service=self.sending_service,
+            scheduled_sends_service=self.scheduled_sends_service,
             send_logs_repo=self.send_logs_repo,
             on_progress=self.status.set_progress,
             on_status=self.status.set_message,
@@ -188,6 +202,43 @@ class MainWindow(QMainWindow):
         self.nav.page_changed.connect(self._go_page)
         self._go_page(0)
         self._apply_style()
+        QTimer.singleShot(300, self._handle_startup_actions)
+
+    def _handle_startup_actions(self) -> None:
+        try:
+            if self.startup_args.is_scheduled_launch and self.startup_args.scheduled_send_id:
+                self._go_page(3)
+                self.send_page.set_exit_after_scheduled_send(True)
+                started = self.send_page.start_scheduled_send(self.startup_args.scheduled_send_id)
+                if not started:
+                    self.status.set_message(f"예약발송 시작 실패: #{self.startup_args.scheduled_send_id}")
+                    QTimer.singleShot(1500, QApplication.quit)
+                return
+
+            if self.startup_args.recover_scheduled_sends:
+                self._recover_due_scheduled_sends(auto_start=True)
+                return
+
+            self._recover_due_scheduled_sends(auto_start=False)
+        except Exception as e:
+            self.status.set_message(f"예약 시작 처리 실패: {e}")
+
+    def _recover_due_scheduled_sends(self, *, auto_start: bool) -> None:
+        due_rows = self.scheduled_sends_service.list_due_pending()
+        if not due_rows:
+            return
+
+        first = due_rows[0]
+        if auto_start:
+            self._go_page(3)
+            self.send_page.start_scheduled_send(first.id)
+            return
+
+        self.status.set_message(f"미실행 예약 {len(due_rows)}건 있음 | 가장 빠른 예약 #{first.id} {first.planned_at}")
+        try:
+            self.send_page.refresh_schedule_status()
+        except Exception:
+            pass
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._cleanup_before_close()
