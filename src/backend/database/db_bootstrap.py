@@ -1,4 +1,5 @@
-﻿# ✅ FILE: src/backend/database/db_bootstrap.py
+# FILE: src/backend/database/db_bootstrap.py
+# ✅ FILE: src/backend/database/db_bootstrap.py
 
 from __future__ import annotations
 
@@ -7,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.paths import contacts_db_path
-from backend.database.schema import ensure_send_logs_schema
+from backend.database.schema import ensure_send_logs_schema, ensure_scheduled_sends_schema
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -55,8 +56,9 @@ def ensure_db_initialized() -> Path:
                     sqlite3.connect(db_file).close()
                     return db_file
 
-                # ✅ send_logs 테이블 보장 생성
+                # ✅ send_logs / scheduled_sends 테이블 보장 생성
                 ensure_send_logs_schema(conn)
+                ensure_scheduled_sends_schema(conn)
                 conn.commit()
 
             finally:
@@ -81,8 +83,9 @@ def ensure_db_initialized() -> Path:
     # ---------------------------
     conn = sqlite3.connect(db_file)
     try:
-        # ✅ 최초 생성 시에도 send_logs 생성
+        # ✅ 최초 생성 시에도 send_logs / scheduled_sends 생성
         ensure_send_logs_schema(conn)
+        ensure_scheduled_sends_schema(conn)
         conn.commit()
     finally:
         conn.close()

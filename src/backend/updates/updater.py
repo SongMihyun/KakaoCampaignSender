@@ -1,4 +1,5 @@
-﻿# FILE: src/backend/updates/updater.py
+# FILE: src/backend/updates/updater.py
+# FILE: src/backend/updates/updater.py
 from __future__ import annotations
 
 import hashlib
@@ -131,13 +132,23 @@ class Updater:
         got = sha256_file(path).lower()
         return got == want_sha256.lower().strip()
 
-    def run_silent_install(self, installer_path: str) -> None:
+    def run_silent_install(
+        self,
+        installer_path: str,
+        *,
+        close_applications: bool = False,
+        restart_applications: bool = False,
+    ) -> None:
         args = [
             installer_path,
             "/VERYSILENT",
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
         ]
+        if close_applications:
+            args.append("/CLOSEAPPLICATIONS")
+        if restart_applications:
+            args.append("/RESTARTAPPLICATIONS")
         subprocess.Popen(args, close_fds=True)
 
     def mark_installer_for_after_close(self, installer_path: str) -> Path:
@@ -222,6 +233,8 @@ def finalize_update_on_app_close(*, base_dir: Optional[Path] = None) -> bool:
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
+        "/CLOSEAPPLICATIONS",
+        "/RESTARTAPPLICATIONS",
     ]
 
     try:

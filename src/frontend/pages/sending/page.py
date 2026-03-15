@@ -1,10 +1,13 @@
-﻿# FILE: src/frontend/pages/sending/page.py
+# FILE: src/frontend/pages/sending/page.py
 from __future__ import annotations
 
+import os
+import sys
 import time
+from datetime import datetime
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QAbstractNativeEventFilter, QModelIndex, QTimer
+from PySide6.QtCore import Qt, QAbstractNativeEventFilter, QModelIndex, QTimer, QDateTime
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
     QWidget,
@@ -22,6 +25,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QToolButton,
     QApplication,
+    QDateTimeEdit,
 )
 
 from app.paths import user_data_dir
@@ -138,6 +142,7 @@ class SendPage(QWidget):
         contacts_store,
         campaigns_service: CampaignsService,
         sending_service: SendingService,
+        scheduled_sends_service=None,
         send_logs_repo=None,
         on_progress: Optional[Callable[[int], None]] = None,
         on_status: Optional[Callable[[str], None]] = None,
@@ -149,6 +154,7 @@ class SendPage(QWidget):
         self.contacts_store = contacts_store
         self.campaigns_service = campaigns_service
         self.sending_service = sending_service
+        self.scheduled_sends_service = scheduled_sends_service
         self.send_logs_repo = send_logs_repo
 
         self._on_progress = on_progress or (lambda _: None)
@@ -159,6 +165,9 @@ class SendPage(QWidget):
         self._run_logger: Optional[SendRunLogger] = None
         self._current_sending_title: str = ""
         self._is_pause_ui: bool = False
+        self._active_scheduled_send_id: Optional[int] = None
+        self._latest_schedule_id: Optional[int] = None
+        self._exit_after_scheduled_send: bool = False
 
         self._hotkey_mgr: Optional[GlobalHotkeyManager] = None
         self._init_global_hotkey()
@@ -358,6 +367,27 @@ class SendPage(QWidget):
         action.addWidget(self.progress, 1)
         root.addLayout(action)
 
+        schedule_row = QHBoxLayout()
+        schedule_row.setSpacing(8)
+
+        schedule_row.addWidget(QLabel("예약 시각"))
+
+        self.dte_schedule = QDateTimeEdit()
+        self.dte_schedule.setCalendarPopup(True)
+        self.dte_schedule.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        self.dte_schedule.setDateTime(QDateTime.currentDateTime().addSecs(600))
+
+        self.btn_schedule_save = QPushButton("예약 저장")
+        self.btn_schedule_cancel = QPushButton("예약 취소")
+        self.lbl_schedule_status = QLabel("예약 없음")
+        self.lbl_schedule_status.setStyleSheet("color:#6b7280;")
+
+        schedule_row.addWidget(self.dte_schedule)
+        schedule_row.addWidget(self.btn_schedule_save)
+        schedule_row.addWidget(self.btn_schedule_cancel)
+        schedule_row.addWidget(self.lbl_schedule_status, 1)
+        root.addLayout(schedule_row)
+
         self.btn_reload_sources.clicked.connect(self.reload_sources)
         self.btn_create_send_list.clicked.connect(self._create_send_list)
 
@@ -374,6 +404,8 @@ class SendPage(QWidget):
         self.btn_send_start.clicked.connect(self._start_send_all_lists)
         self.btn_send_pause.clicked.connect(self._toggle_pause_send)
         self.btn_send_stop.clicked.connect(self._stop_send)
+        self.btn_schedule_save.clicked.connect(self._create_scheduled_send)
+        self.btn_schedule_cancel.clicked.connect(self._cancel_latest_schedule)
 
         self.tbl_preview.doubleClicked.connect(self._on_preview_double_clicked)
 
@@ -392,6 +424,142 @@ class SendPage(QWidget):
 
         self.reload_sources()
         self.reload_send_lists()
+        self.refresh_schedule_status()
+
+    def set_exit_after_scheduled_send(self, enabled: bool) -> None:
+        self._exit_after_scheduled_send = bool(enabled)
+
+    def refresh_schedule_status(self) -> None:
+        if self.scheduled_sends_service is None:
+            self._latest_schedule_id = None
+            self.lbl_schedule_status.setText("예약 기능 비활성")
+            return
+
+        try:
+            row = self.scheduled_sends_service.get_latest_actionable()
+        except Exception as e:
+            self._latest_schedule_id = None
+            self.lbl_schedule_status.setText(f"예약 조회 실패: {e}")
+            return
+
+        if not row:
+            self._latest_schedule_id = None
+            self.lbl_schedule_status.setText("예약 없음")
+            return
+
+        self._latest_schedule_id = int(row.id)
+        self.lbl_schedule_status.setText(
+            f"최근 예약 #{row.id} | {row.status} | {row.planned_at}"
+        )
+
+    def _collect_enabled_send_list_rows(self) -> list[dict]:
+        send_list_rows: list[dict] = []
+        for i in range(self.lst_send_lists.count()):
+            item = self.lst_send_lists.item(i)
+            if not item:
+                continue
+            if not (item.flags() & Qt.ItemIsEnabled):
+                continue
+
+            data = item.data(Qt.UserRole)
+            if not isinstance(data, dict):
+                continue
+            send_list_rows.append(data)
+        return send_list_rows
+
+    def _resolve_self_launch(self) -> tuple[str, list[str], str]:
+        if getattr(sys, "frozen", False):
+            exe_path = sys.executable
+            work_dir = os.path.dirname(sys.executable) or os.getcwd()
+            return exe_path, [], work_dir
+
+        exe_path = sys.executable
+        script_args = [sys.argv[0]]
+        work_dir = os.getcwd()
+        return exe_path, script_args, work_dir
+
+    def _create_scheduled_send(self) -> None:
+        if self.scheduled_sends_service is None:
+            QMessageBox.warning(self, "안내", "예약발송 서비스가 연결되지 않았습니다.")
+            return
+
+        if self._worker and self._worker.isRunning():
+            QMessageBox.information(self, "안내", "발송 중에는 예약을 저장할 수 없습니다.")
+            return
+
+        send_list_rows = self._collect_enabled_send_list_rows()
+        if not send_list_rows:
+            QMessageBox.information(self, "안내", "예약할 발송리스트가 없습니다.")
+            return
+
+        planned_at = self.dte_schedule.dateTime().toPython()
+        if planned_at <= datetime.now():
+            QMessageBox.warning(self, "안내", "현재 시각 이후로 예약해주세요.")
+            return
+
+        try:
+            speed_mode = str(self.cbo_speed.currentData() or "normal")
+        except Exception:
+            speed_mode = "normal"
+
+        exe_path, base_args, work_dir = self._resolve_self_launch()
+
+        try:
+            schedule_id = self.scheduled_sends_service.create_schedule(
+                planned_at=planned_at,
+                speed_mode=speed_mode,
+                send_list_rows=send_list_rows,
+                executable_path=exe_path,
+                arguments=base_args,
+                working_dir=work_dir,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"예약 저장 실패\n{e}")
+            return
+
+        self._latest_schedule_id = int(schedule_id)
+        self.lbl_schedule_status.setText(
+            f"예약됨 #{schedule_id} / {planned_at.strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        self._on_status(f"예약발송 등록 완료: #{schedule_id}")
+
+    def _cancel_latest_schedule(self) -> None:
+        if self.scheduled_sends_service is None:
+            return
+        schedule_id = self._latest_schedule_id
+        if not schedule_id:
+            QMessageBox.information(self, "안내", "취소할 예약이 없습니다.")
+            return
+
+        row = None
+        try:
+            row = self.scheduled_sends_service.get_schedule(int(schedule_id))
+        except Exception:
+            row = None
+
+        if row is None or row.status not in ("PENDING", "FAILED"):
+            QMessageBox.information(self, "안내", "취소 가능한 예약이 없습니다.")
+            self.refresh_schedule_status()
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "예약 취소",
+            f"예약 #{row.id} ({row.planned_at}) 을 취소하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            self.scheduled_sends_service.cancel_schedule(int(schedule_id))
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"예약 취소 실패\n{e}")
+            return
+
+        self._on_status(f"예약 취소 완료: #{schedule_id}")
+        self.refresh_schedule_status()
 
     def _init_global_hotkey(self) -> None:
         app = QApplication.instance()
@@ -470,6 +638,9 @@ class SendPage(QWidget):
         self.cbo_groups.setEnabled(not sending)
         self.cbo_campaigns.setEnabled(not sending)
         self.cbo_speed.setEnabled(not sending)
+        self.dte_schedule.setEnabled(not sending)
+        self.btn_schedule_save.setEnabled(not sending)
+        self.btn_schedule_cancel.setEnabled(not sending)
 
         self.tbl_preview.setEnabled(not sending)
 
@@ -930,66 +1101,45 @@ class SendPage(QWidget):
         dlg = CampaignPreviewDialog(campaign_title=title, items=items, parent=self)
         dlg.exec()
 
-    def _start_send_all_lists(self) -> None:
+    def _start_send_jobs(
+        self,
+        *,
+        jobs: list,
+        speed_mode: str,
+        confirm: bool,
+        scheduled_send_id: int | None = None,
+    ) -> None:
         self._run_logger = None
 
         if self._worker and self._worker.isRunning():
-            QMessageBox.information(self, "안내", "이미 발송 중입니다.")
-            return
+            raise RuntimeError("이미 발송 중입니다.")
 
         hwnd = self._pick_best_kakao_target_handle()
         if hwnd is None:
-            QMessageBox.information(self, "안내", "카카오톡 창이 없습니다.\n카카오톡 실행/로그인 후 다시 시도하세요.")
-            return
-
-        self._refresh_visible_numbers_only()
-
-        send_list_rows: list[dict] = []
-        for i in range(self.lst_send_lists.count()):
-            item = self.lst_send_lists.item(i)
-            if not item:
-                continue
-            if not (item.flags() & Qt.ItemIsEnabled):
-                continue
-
-            data = item.data(Qt.UserRole)
-            if not isinstance(data, dict):
-                continue
-
-            send_list_rows.append(data)
-
-        try:
-            jobs = self.sending_service.build_jobs(send_list_rows)
-        except Exception as e:
-            QMessageBox.critical(self, "오류", f"발송 준비(리스트 로드) 실패\n{e}")
-            return
+            raise RuntimeError("카카오톡 창이 없습니다.\n카카오톡 실행/로그인 후 다시 시도하세요.")
 
         if not jobs:
-            QMessageBox.information(self, "안내", "발송할 발송리스트가 없습니다.")
-            return
+            raise RuntimeError("발송할 발송리스트가 없습니다.")
 
         filtered = [j for j in jobs if j.campaign_items]
         if not filtered:
-            QMessageBox.information(self, "안내", "발송 가능한 발송리스트가 없습니다. (캠페인 내용 없음)")
-            return
+            raise RuntimeError("발송 가능한 발송리스트가 없습니다. (캠페인 내용 없음)")
 
         total_targets = sum(len(j.recipients) for j in filtered)
 
-        ok = QMessageBox.question(
-            self,
-            "발송 시작",
-            f"발송리스트 {len(filtered)}개를 위에서부터 순차 발송합니다.\n"
-            f"- 총 대상: {total_targets}명\n\n"
-            f"계속 진행하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-        )
-        if ok != QMessageBox.Yes:
-            return
+        if confirm:
+            ok = QMessageBox.question(
+                self,
+                "발송 시작",
+                f"발송리스트 {len(filtered)}개를 위에서부터 순차 발송합니다.\n"
+                f"- 총 대상: {total_targets}명\n\n"
+                f"계속 진행하시겠습니까?",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if ok != QMessageBox.Yes:
+                return
 
-        try:
-            speed_mode = str(self.cbo_speed.currentData() or "normal")
-        except Exception:
-            speed_mode = "normal"
+        self._active_scheduled_send_id = scheduled_send_id
 
         self.sender_driver = KakaoPcDriver(
             int(hwnd),
@@ -1006,14 +1156,10 @@ class SendPage(QWidget):
 
         run_logger = SendRunLogger.new_run(prefix="send_run")
         self._run_logger = run_logger
-        self._on_status(
-            f"발송 시작(카카오톡 자동화) | 속도: {speed_mode.upper()} | F9: 현재 열린 대화 발송 후 안전 정지/재개 | F11: 강제중지 | 일시정지됨 표시 후 카카오톡 사용 가능 | 로그: {run_logger.path_str()}"
-        )
 
         run_id = time.strftime("%Y%m%d_%H%M%S")
         report_writer = SendReportWriter(base_dir=user_data_dir(), run_id=run_id)
         report_writer.set_meta(total_lists=len(filtered), total_targets=total_targets)
-        self._on_status(f"리포트 파일 생성: {str(report_writer.path)}")
 
         self._worker = self.sending_service.create_worker(
             driver=self.sender_driver,
@@ -1033,16 +1179,69 @@ class SendPage(QWidget):
         self._worker.finished_ok.connect(self._on_send_finished)
         self._worker.start()
 
-    def _on_worker_list_changed(self, title: str, idx: int, total: int) -> None:
-        self._set_progress_title(f"{idx}/{total} {title}")
-        self.progress.setValue(0)
+    def _start_send_all_lists(self) -> None:
+        self._refresh_visible_numbers_only()
 
-    def _on_worker_pause_changed(self, paused: bool) -> None:
-        self._set_pause_ui(paused)
-        if paused:
-            self._on_status("일시정지됨(F9) | 현재 열린 대화 발송 완료 후 안전 정지되었습니다. 이제 카카오톡 PC를 사용해도 됩니다.")
-        else:
-            self._on_status("발송 재개됨(F9) | 다음 대상자를 카카오톡 메인창 검색부터 다시 시작합니다.")
+        send_list_rows = self._collect_enabled_send_list_rows()
+
+        try:
+            jobs = self.sending_service.build_jobs(send_list_rows)
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"발송 준비(리스트 로드) 실패\n{e}")
+            return
+
+        try:
+            speed_mode = str(self.cbo_speed.currentData() or "normal")
+        except Exception:
+            speed_mode = "normal"
+
+        try:
+            self._start_send_jobs(
+                jobs=jobs,
+                speed_mode=speed_mode,
+                confirm=True,
+                scheduled_send_id=None,
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "오류", str(e))
+
+    def start_scheduled_send(self, schedule_id: int) -> bool:
+        if self.scheduled_sends_service is None:
+            self._on_status("예약발송 서비스가 연결되지 않았습니다.")
+            return False
+
+        try:
+            locked = self.scheduled_sends_service.mark_running_if_pending(schedule_id)
+            if not locked:
+                self._on_status(f"예약 #{schedule_id} 는 이미 처리되었거나 실행 중입니다.")
+                self.refresh_schedule_status()
+                return False
+
+            schedule = self.scheduled_sends_service.get_schedule(schedule_id)
+            if schedule is None:
+                raise RuntimeError("예약 정보를 찾을 수 없습니다.")
+
+            send_list_rows = self.scheduled_sends_service.get_snapshot_rows(schedule_id)
+            jobs = self.sending_service.build_jobs(send_list_rows)
+
+            self._start_send_jobs(
+                jobs=jobs,
+                speed_mode=str(schedule.speed_mode or "normal"),
+                confirm=False,
+                scheduled_send_id=int(schedule_id),
+            )
+            self._on_status(f"예약발송 시작: #{schedule_id}")
+            self.refresh_schedule_status()
+            return True
+
+        except Exception as e:
+            try:
+                self.scheduled_sends_service.mark_failed(schedule_id, str(e))
+            except Exception:
+                pass
+            self._on_status(f"예약발송 오류: {e}")
+            self.refresh_schedule_status()
+            return False
 
     def _toggle_pause_send(self) -> None:
         if not self._worker or not self._worker.isRunning():
@@ -1064,6 +1263,11 @@ class SendPage(QWidget):
             return
         self._worker.request_stop()
         self._set_pause_ui(False)
+        if self._active_scheduled_send_id and self.scheduled_sends_service:
+            try:
+                self.scheduled_sends_service.mark_failed(self._active_scheduled_send_id, "사용자 중지")
+            except Exception:
+                pass
         self._on_status("중지 요청됨(F11 또는 버튼)")
 
     def _on_send_finished(self, list_done: int, success: int, fail: int) -> None:
@@ -1072,6 +1276,9 @@ class SendPage(QWidget):
         self._set_progress_title("")
         self.progress.setValue(100 if (success + fail) > 0 else 0)
 
+        active_schedule_id = self._active_scheduled_send_id
+        self._active_scheduled_send_id = None
+
         log_path = ""
         try:
             if self._run_logger:
@@ -1079,16 +1286,30 @@ class SendPage(QWidget):
         except Exception:
             log_path = ""
 
+        if active_schedule_id and self.scheduled_sends_service:
+            try:
+                self.scheduled_sends_service.mark_done(active_schedule_id)
+            except Exception as e:
+                self._on_status(f"예약 상태 완료 반영 실패: {e}")
+
+        self.refresh_schedule_status()
+
+        summary = (
+            f"발송 종료 | 리스트 {list_done}개 완료 | 성공 {success} / 실패 {fail}"
+            + (f" | 로그: {log_path}" if log_path else "")
+        )
+        self._on_status(summary)
+
+        if active_schedule_id:
+            if self._exit_after_scheduled_send:
+                QTimer.singleShot(1500, QApplication.quit)
+            return
+
         QMessageBox.information(
             self,
             "발송 종료",
             f"발송 종료\n- 완료 리스트: {list_done}개\n- 성공: {success}\n- 실패: {fail}"
             + (f"\n\n로그 파일:\n{log_path}" if log_path else ""),
-        )
-
-        self._on_status(
-            f"발송 종료 | 리스트 {list_done}개 완료 | 성공 {success} / 실패 {fail}"
-            + (f" | 로그: {log_path}" if log_path else "")
         )
 
     def _move_selected_send_list_up(self) -> None:
