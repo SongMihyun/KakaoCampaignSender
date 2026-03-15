@@ -1,20 +1,28 @@
 # FILE: src/frontend/pages/contacts/page.py
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Callable, Optional, List
 
+from PySide6.QtCore import Qt, QTimer, QEvent, QSize
+from PySide6.QtGui import QKeyEvent, QAction
 from PySide6.QtWidgets import (
+    QApplication,
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QLineEdit,
-    QTableView, QMessageBox, QDialog, QAbstractItemView
+    QTableView, QMessageBox, QDialog, QAbstractItemView, QMenu, QToolButton
 )
-from PySide6.QtCore import Qt, QTimer
 
 from backend.stores.contacts_store import ContactsStore
 from frontend.pages.contacts.table_model import ContactsTableModel, Contact
 from frontend.pages.contacts.dialog import ContactDialog
+from frontend.pages.contacts.paste_import_dialog import PasteImportDialog
 from backend.domains.contacts.service import ContactsService
 from backend.domains.contacts.dto import ContactCreateDTO
-from backend.integrations.excel.contacts_importer import import_contacts_xlsx
+from backend.integrations.excel.contacts_importer import (
+    import_contacts_file,
+    import_contacts_text,
+    is_supported_contact_import_file,
+)
 from backend.integrations.excel.contacts_exporter import export_contacts_xlsx, create_template_xlsx
 from frontend.pages.contacts.import_preview_dialog import ImportPreviewDialog
 
@@ -27,6 +35,9 @@ from frontend.app.app_events import app_events
 
 
 class ContactsPage(QWidget):
+    ACTION_BTN_W = 104
+    ACTION_BTN_H = 34
+
     def __init__(
         self,
         service: ContactsService,
@@ -39,6 +50,9 @@ class ContactsPage(QWidget):
         self.service = service
         self.store = contacts_store
         self._suppress_contacts_event = False
+        self._busy = False
+
+        self.setAcceptDrops(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(18, 18, 18, 18)
@@ -47,7 +61,7 @@ class ContactsPage(QWidget):
         title = QLabel("대상자 관리")
         title.setObjectName("PageTitle")
 
-        desc = QLabel("로컬 SQLite 저장/조회 기반 대상자 관리 (엑셀 Import/Export + 체크 삭제).")
+        desc = QLabel("로컬 SQLite 저장/조회 기반 대상자 관리 (파일/붙여넣기/드래그앤드롭 Import + 체크 삭제/엑셀 Export).")
         desc.setObjectName("PageDesc")
 
         search_row = QHBoxLayout()
@@ -58,31 +72,29 @@ class ContactsPage(QWidget):
         search_row.addWidget(btn_search_clear)
 
         btn_row = QHBoxLayout()
-        self.btn_template = QPushButton("샘플 서식 다운로드")
-        self.btn_import = QPushButton("엑셀 가져오기")
-        self.btn_export = QPushButton("엑셀 내보내기")
+        btn_row.setSpacing(10)
+
         self.btn_add = QPushButton("신규 추가")
         self.btn_edit = QPushButton("수정")
         self.btn_delete = QPushButton("삭제")
         self.btn_reload = QPushButton("새로고침")
+        self.btn_bulk_manage = self._create_bulk_manage_button()
 
-        btn_row.addWidget(self.btn_template)
-        btn_row.addWidget(self.btn_import)
-        btn_row.addWidget(self.btn_export)
-        btn_row.addWidget(self.btn_add)
-        btn_row.addWidget(self.btn_edit)
-        btn_row.addWidget(self.btn_delete)
-        btn_row.addWidget(self.btn_reload)
+        for btn in [self.btn_add, self.btn_edit, self.btn_delete, self.btn_reload]:
+            self._apply_action_button_style(btn)
+            btn_row.addWidget(btn)
+
         btn_row.addStretch(1)
+        btn_row.addWidget(self.btn_bulk_manage)
 
         self.table = QTableView()
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableView.SelectRows)
         self.table.setSelectionMode(QTableView.ExtendedSelection)
         self.table.setSortingEnabled(True)
-
-        # 인라인 편집 제거
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setAcceptDrops(True)
+        self.table.viewport().setAcceptDrops(True)
 
         self.model = ContactsTableModel(rows=[])
         self.proxy = ContactsSortProxyModel(self)
@@ -121,10 +133,6 @@ class ContactsPage(QWidget):
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
         btn_search_clear.clicked.connect(self._clear_search)
 
-        self.btn_template.clicked.connect(self._download_template)
-        self.btn_import.clicked.connect(self._import_excel)
-        self.btn_export.clicked.connect(self._export_excel)
-
         self.btn_add.clicked.connect(self._add)
         self.btn_edit.clicked.connect(self._edit)
         self.btn_delete.clicked.connect(self._delete_checked)
@@ -132,13 +140,126 @@ class ContactsPage(QWidget):
 
         app_events.contacts_changed.connect(self._on_contacts_changed)  # type: ignore[arg-type]
 
+        self.installEventFilter(self)
+        self.table.installEventFilter(self)
+        self.table.viewport().installEventFilter(self)
+
         self.reload()
         QTimer.singleShot(0, self._sync_header_checkbox)
 
+    def _apply_action_button_style(self, btn: QPushButton) -> None:
+        btn.setFixedSize(self.ACTION_BTN_W, self.ACTION_BTN_H)
+
+    def _create_bulk_manage_button(self) -> QToolButton:
+        btn = QToolButton(self)
+        btn.setText("일괄 관리")
+        btn.setPopupMode(QToolButton.InstantPopup)
+        btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        btn.setFixedSize(self.ACTION_BTN_W, self.ACTION_BTN_H)
+        btn.setMenu(self._build_bulk_menu(btn))
+        return btn
+
+    def _build_bulk_menu(self, parent) -> QMenu:
+        menu = QMenu(parent)
+
+        act_import_all = QAction("전체 파일 가져오기", menu)
+        act_import_excel = QAction("엑셀 파일 가져오기", menu)
+        act_import_word = QAction("워드 파일 가져오기", menu)
+        act_import_text = QAction("메모장/CSV 파일 가져오기", menu)
+        act_paste = QAction("붙여넣기 업로드", menu)
+        act_template = QAction("샘플 서식 다운로드", menu)
+        act_export = QAction("엑셀 내보내기", menu)
+
+        act_import_all.triggered.connect(lambda: self._pick_import_file("all"))
+        act_import_excel.triggered.connect(lambda: self._pick_import_file("excel"))
+        act_import_word.triggered.connect(lambda: self._pick_import_file("word"))
+        act_import_text.triggered.connect(lambda: self._pick_import_file("text"))
+        act_paste.triggered.connect(self._open_paste_dialog)
+        act_template.triggered.connect(self._download_template)
+        act_export.triggered.connect(self._export_excel)
+
+        menu.addAction(act_import_all)
+        menu.addSeparator()
+        menu.addAction(act_import_excel)
+        menu.addAction(act_import_word)
+        menu.addAction(act_import_text)
+        menu.addSeparator()
+        menu.addAction(act_paste)
+        menu.addAction(act_template)
+        menu.addAction(act_export)
+        return menu
+
+    def eventFilter(self, watched, event):
+        if watched in {self, self.table, self.table.viewport()}:
+            if event.type() == QEvent.KeyPress:
+                key_event = event if isinstance(event, QKeyEvent) else None
+                if key_event and self._is_direct_paste_event(key_event):
+                    self._paste_from_clipboard()
+                    return True
+
+            if event.type() in {QEvent.DragEnter, QEvent.DragMove}:
+                if self._has_supported_dropped_files(event):
+                    event.acceptProposedAction()
+                    return True
+
+            if event.type() == QEvent.Drop:
+                if self._handle_file_drop(event):
+                    return True
+
+        return super().eventFilter(watched, event)
+
+    def _is_direct_paste_event(self, event: QKeyEvent) -> bool:
+        if self._busy:
+            return False
+        if event.key() != Qt.Key_V:
+            return False
+        if event.modifiers() != Qt.ControlModifier:
+            return False
+        if self.search.hasFocus():
+            return False
+        return True
+
+    def _has_supported_dropped_files(self, event) -> bool:
+        if self._busy:
+            return False
+        mime = event.mimeData()
+        if not mime or not mime.hasUrls():
+            return False
+
+        for url in mime.urls():
+            if url.isLocalFile() and is_supported_contact_import_file(url.toLocalFile()):
+                return True
+        return False
+
+    def _handle_file_drop(self, event) -> bool:
+        if not self._has_supported_dropped_files(event):
+            return False
+
+        files = [
+            url.toLocalFile()
+            for url in event.mimeData().urls()
+            if url.isLocalFile() and is_supported_contact_import_file(url.toLocalFile())
+        ]
+        if not files:
+            return False
+
+        path = files[0]
+        event.acceptProposedAction()
+
+        if len(files) > 1:
+            QMessageBox.information(
+                self,
+                "안내",
+                f"여러 파일이 드롭되었습니다. 첫 번째 지원 파일만 처리합니다.\n\n{Path(path).name}"
+            )
+
+        self._import_file_from_path(path, source_label="드래그앤드롭")
+        return True
+
     def _set_busy(self, busy: bool) -> None:
+        self._busy = busy
         for b in [
-            self.btn_template, self.btn_import, self.btn_export,
-            self.btn_add, self.btn_edit, self.btn_delete, self.btn_reload
+            self.btn_add, self.btn_edit, self.btn_delete, self.btn_reload, self.btn_bulk_manage
         ]:
             b.setEnabled(not busy)
 
@@ -291,12 +412,40 @@ class ContactsPage(QWidget):
 
         self._on_status(f"삭제 완료: {len(ids)}건")
 
-    def _import_excel(self) -> None:
+    def _pick_import_file(self, mode: str = "all") -> None:
         try:
+            if mode == "excel":
+                filters = [
+                    Filter("Excel Files", "*.xlsx;*.xlsm"),
+                    Filter("All Files", "*.*"),
+                ]
+                default_ext = "xlsx"
+            elif mode == "word":
+                filters = [
+                    Filter("Word Files", "*.docx"),
+                    Filter("All Files", "*.*"),
+                ]
+                default_ext = "docx"
+            elif mode == "text":
+                filters = [
+                    Filter("Text Files", "*.txt;*.csv;*.tsv"),
+                    Filter("All Files", "*.*"),
+                ]
+                default_ext = "txt"
+            else:
+                filters = [
+                    Filter("지원 파일", "*.xlsx;*.xlsm;*.docx;*.txt;*.csv;*.tsv"),
+                    Filter("Excel Files", "*.xlsx;*.xlsm"),
+                    Filter("Word Files", "*.docx"),
+                    Filter("Text Files", "*.txt;*.csv;*.tsv"),
+                    Filter("All Files", "*.*"),
+                ]
+                default_ext = "xlsx"
+
             path = pick_open_file(
-                title="대상자 엑셀 선택",
-                filters=[Filter("Excel Files", "*.xlsx"), Filter("All Files", "*.*")],
-                default_ext="xlsx",
+                title="대상자 파일 선택",
+                filters=filters,
+                default_ext=default_ext,
             )
         except Exception as e:
             QMessageBox.critical(self, "오류", f"파일 선택기 실행 실패:\n{e}")
@@ -305,60 +454,102 @@ class ContactsPage(QWidget):
         if not path:
             return
 
+        self._import_file_from_path(path, source_label="파일")
+
+    def _import_file_from_path(self, path: str, source_label: str) -> None:
+        if not is_supported_contact_import_file(path):
+            QMessageBox.warning(
+                self,
+                "지원 형식 아님",
+                "지원 확장자: .xlsx, .xlsm, .docx, .txt, .csv, .tsv"
+            )
+            return
+
         self._set_busy(True)
-        self._on_status("엑셀 읽는 중...")
+        self._on_status(f"{source_label} 읽는 중...")
 
         def parse_job():
-            return import_contacts_xlsx(path)
+            return import_contacts_file(path)
 
-        def parse_done(result):
-            if result.errors:
-                self._set_busy(False)
-                QMessageBox.warning(self, "엑셀 오류", "\n".join(result.errors))
-                return
+        run_bg(
+            parse_job,
+            on_done=lambda result: self._after_parse(result, source_label=source_label),
+            on_error=self._show_bg_error,
+        )
 
-            if not result.rows:
-                self._set_busy(False)
-                QMessageBox.information(self, "안내", "등록할 데이터가 없습니다.")
-                return
+    def _open_paste_dialog(self) -> None:
+        dlg = PasteImportDialog(self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        text = dlg.get_text()
+        self._import_pasted_text(text, source_label="붙여넣기")
 
-            preview = ImportPreviewDialog(result.rows, parent=self)
-            r = preview.exec()
+    def _paste_from_clipboard(self) -> None:
+        text = QApplication.clipboard().text() or ""
+        if not text.strip():
+            QMessageBox.information(self, "안내", "클립보드에 업로드할 텍스트가 없습니다.")
+            return
+        self._import_pasted_text(text, source_label="클립보드")
 
-            if r != QDialog.Accepted:
-                self._set_busy(False)
-                self._on_status("엑셀 등록 취소")
-                return
+    def _import_pasted_text(self, text: str, source_label: str) -> None:
+        self._set_busy(True)
+        self._on_status(f"{source_label} 읽는 중...")
 
-            self._on_status("DB 저장 중...")
+        def parse_job():
+            return import_contacts_text(text)
 
-            def db_job():
-                inserted, dup_skipped = self.service.repo.insert_many(result.rows)
-                rows = self.service.repo.search_contacts("")
-                return inserted, dup_skipped, rows
+        run_bg(
+            parse_job,
+            on_done=lambda result: self._after_parse(result, source_label=source_label),
+            on_error=self._show_bg_error,
+        )
 
-            def db_done(res):
-                inserted, dup_skipped, rows = res
-                self.store.load_rows(rows)
-                self.reload()
+    def _after_parse(self, result, source_label: str) -> None:
+        if result.errors:
+            self._set_busy(False)
+            QMessageBox.warning(self, f"{source_label} 오류", "\n".join(result.errors))
+            return
 
-                self._suppress_contacts_event = True
-                try:
-                    app_events.contacts_changed.emit()
-                finally:
-                    self._suppress_contacts_event = False
+        if not result.rows:
+            self._set_busy(False)
+            QMessageBox.information(self, "안내", "등록할 데이터가 없습니다.")
+            return
 
-                self._set_busy(False)
+        preview = ImportPreviewDialog(result.rows, parent=self)
+        r = preview.exec()
 
-                msg = f"엑셀 등록 완료: {inserted}건"
-                if dup_skipped:
-                    msg += f" / 중복 스킵 {dup_skipped}건(사번/전화번호)"
-                self._on_status(msg)
-                QMessageBox.information(self, "완료", msg)
+        if r != QDialog.Accepted:
+            self._set_busy(False)
+            self._on_status(f"{source_label} 등록 취소")
+            return
 
-            run_bg(db_job, on_done=db_done, on_error=self._show_bg_error)
+        self._on_status("DB 저장 중...")
 
-        run_bg(parse_job, on_done=parse_done, on_error=self._show_bg_error)
+        def db_job():
+            inserted, dup_skipped = self.service.repo.insert_many(result.rows)
+            rows = self.service.repo.search_contacts("")
+            return inserted, dup_skipped, rows
+
+        def db_done(res):
+            inserted, dup_skipped, rows = res
+            self.store.load_rows(rows)
+            self.reload()
+
+            self._suppress_contacts_event = True
+            try:
+                app_events.contacts_changed.emit()
+            finally:
+                self._suppress_contacts_event = False
+
+            self._set_busy(False)
+
+            msg = f"{source_label} 등록 완료: {inserted}건"
+            if dup_skipped:
+                msg += f" / 중복 스킵 {dup_skipped}건(사번/전화번호)"
+            self._on_status(msg)
+            QMessageBox.information(self, "완료", msg)
+
+        run_bg(db_job, on_done=db_done, on_error=self._show_bg_error)
 
     def _download_template(self) -> None:
         try:

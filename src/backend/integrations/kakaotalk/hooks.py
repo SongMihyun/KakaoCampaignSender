@@ -42,6 +42,25 @@ def _get_t(timings: Dict[str, Any] | None) -> _Timings:
     return t
 
 
+def _maybe_wait_if_paused(wait_if_paused: Optional[Callable[[], bool]]) -> bool:
+    if not callable(wait_if_paused):
+        return False
+    try:
+        return bool(wait_if_paused())
+    except Exception:
+        return False
+
+
+def _sleep_with_pause(sec: float, wait_if_paused: Optional[Callable[[], bool]]) -> bool:
+    end = time.time() + max(0.0, float(sec))
+    while time.time() < end:
+        if _maybe_wait_if_paused(wait_if_paused):
+            return True
+        remain = end - time.time()
+        time.sleep(min(0.02, max(0.001, remain)))
+    return _maybe_wait_if_paused(wait_if_paused)
+
+
 def _is_kakao_toast_quick_reply(
     *,
     hwnd: int,
@@ -115,6 +134,7 @@ def open_chat_by_name_hook(
     get_window_rect=None,
     lazy_pywinauto=None,
     main_hwnd: int = 0,
+    wait_if_paused: Optional[Callable[[], bool]] = None,
 ) -> None:
     name = (name or "").strip()
     if not name:
@@ -123,7 +143,7 @@ def open_chat_by_name_hook(
     t = _get_t(timings)
 
     def _sleep(sec: float) -> None:
-        time.sleep(max(0.0, float(sec)))
+        _sleep_with_pause(sec, wait_if_paused)
 
     def _is_kakao_like_title(title: str) -> bool:
         tt = (title or "").lower()
@@ -461,6 +481,7 @@ def send_image_dialog_hook(
     log: Callable[[str], None],
     timings: Optional[Mapping[str, float]] = None,
     prefer_hwnd: int = 0,  # ✅ 추가
+    wait_if_paused: Optional[Callable[[], bool]] = None,
 ) -> bool:
     tm = dict(timings or {})
     log(
@@ -482,6 +503,7 @@ def send_image_dialog_hook(
         loop_sleep=float(tm.get("loop_sleep", 0.02)),
         post_click_sleep=float(tm.get("post_click_sleep", 0.03)),
         prefer_hwnd=int(prefer_hwnd or 0),  # ✅ 핵심
+        wait_if_paused=wait_if_paused,
     )
 
     log(f"[IMG-DLG] hook result={ok}")

@@ -14,6 +14,8 @@ from app.version import __display_name__, __version__
 
 
 class Header(QWidget):
+    export_settings_requested = Signal()
+    import_settings_requested = Signal()
     logout_requested = Signal()
     uninstall_requested = Signal()
 
@@ -73,15 +75,22 @@ class Header(QWidget):
 
         menu = QMenu(self.btn_menu)
 
+        act_export_settings = QAction("설정 내보내기", self)
+        act_import_settings = QAction("설정 가져오기", self)
         act_logout = QAction("로그아웃", self)
         act_uninstall = QAction("프로그램 제거", self)
 
+        menu.addAction(act_export_settings)
+        menu.addAction(act_import_settings)
+        menu.addSeparator()
         menu.addAction(act_logout)
         menu.addSeparator()
         menu.addAction(act_uninstall)
 
         self.btn_menu.setMenu(menu)
 
+        act_export_settings.triggered.connect(self.export_settings_requested.emit)
+        act_import_settings.triggered.connect(self.import_settings_requested.emit)
         act_logout.triggered.connect(self.logout_requested.emit)
         act_uninstall.triggered.connect(self.uninstall_requested.emit)
 

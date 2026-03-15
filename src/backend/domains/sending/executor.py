@@ -34,6 +34,8 @@ class SendExecutor:
         error_reporter=None,
         trace_log_path: str = "",
         is_stop_requested: Optional[Callable[[], bool]] = None,
+        is_pause_requested: Optional[Callable[[], bool]] = None,
+        wait_if_paused: Optional[Callable[[], bool]] = None,
         status_cb: Optional[Callable[[str], None]] = None,
         progress_cb: Optional[Callable[[int], None]] = None,
         list_changed_cb: Optional[Callable[[str, int, int], None]] = None,
@@ -51,6 +53,8 @@ class SendExecutor:
         self._trace_log_path = str(trace_log_path or "")
 
         self._is_stop_requested = is_stop_requested or (lambda: False)
+        self._is_pause_requested = is_pause_requested or (lambda: False)
+        self._wait_if_paused_cb = wait_if_paused or (lambda: False)
         self._status_cb = status_cb or (lambda _msg: None)
         self._progress_cb = progress_cb or (lambda _v: None)
         self._list_changed_cb = list_changed_cb or (lambda _title, _i, _t: None)
@@ -78,6 +82,8 @@ class SendExecutor:
         try:
             for list_index, job in enumerate(self._jobs, start=1):
                 if self._check_stop(result, "발송 강제 중지됨(F11)"):
+                    break
+                if self._wait_if_paused(result):
                     break
 
                 self._log_list_start(job=job, list_index=list_index, total_lists=total_lists)
@@ -182,6 +188,8 @@ class SendExecutor:
         for recipient_index, recipient in enumerate(job.recipients, start=1):
             if self._check_stop(result, "발송 강제 중지됨(F11)"):
                 return tail_retry, True
+            if self._wait_if_paused(result):
+                return tail_retry, True
 
             self._status_cb(
                 f"[{list_index}/{total_lists}] {job.title} | {recipient_index}/{total} | {recipient.name}"
@@ -207,6 +215,9 @@ class SendExecutor:
                 result.fail += 1
 
             self._progress_cb(int(recipient_index * 100 / total))
+            if self._wait_if_paused(result):
+                return tail_retry, True
+
             if self._sleep_with_stop(self._delay_ms, result):
                 return tail_retry, True
 
@@ -329,8 +340,14 @@ class SendExecutor:
 
                 last_err = e
 
-                if self._retry_sleep_ms > 0:
-                    time.sleep(self._retry_sleep_ms / 1000.0)
+                if self._sleep_with_stop_only(self._retry_sleep_ms):
+                    return {
+                        "ok": False,
+                        "stopped": True,
+                        "tail_retry_scheduled": False,
+                        "attempt": used_attempt,
+                        "last_err": e,
+                    }
 
                 try:
                     self._recover_driver_cb()
@@ -384,6 +401,8 @@ class SendExecutor:
         for recipient in tail_retry:
             if self._check_stop(result, "발송 강제 중지됨(F11)"):
                 return True
+            if self._wait_if_paused(result):
+                return True
 
             self._status_cb(f"[{list_index}/{total_lists}] {job.title} | 말미 재전송 | {recipient.name}")
 
@@ -395,7 +414,6 @@ class SendExecutor:
                 if self._is_stop_requested():
                     result.stopped = True
                     return True
-
                 used_attempt = attempt + 1
 
                 try:
@@ -413,8 +431,9 @@ class SendExecutor:
                         return True
 
                     last_err = e
-                    if self._retry_sleep_ms > 0:
-                        time.sleep(self._retry_sleep_ms / 1000.0)
+                    if self._sleep_with_stop_only(self._retry_sleep_ms):
+                        result.stopped = self._is_stop_requested()
+                        return True
 
                     try:
                         self._recover_driver_cb()
@@ -453,6 +472,9 @@ class SendExecutor:
                             "send_mode": str(getattr(job, "send_mode", "") or ""),
                         },
                     )
+
+            if self._wait_if_paused(result):
+                return True
 
         return False
 
@@ -552,7 +574,29 @@ class SendExecutor:
         self._status_cb(message)
         return True
 
-    def _sleep_with_stop(self, total_ms: int, result: SendRunResult) -> bool:
+    def _wait_if_paused(self, result: SendRunResult) -> bool:
+        if not self._is_pause_requested():
+            return False
+
+        self._status_cb("일시정지 중(F9) | 현재 열린 대화 발송을 마친 뒤 안전하게 멈추는 중...")
+        self._safe_log_event("PAUSE_WAIT_START")
+
+        stopped = bool(self._wait_if_paused_cb())
+        if stopped:
+            result.stopped = True
+            return True
+
+        self._safe_log_event("PAUSE_WAIT_END")
+        self._status_cb("발송 재개됨(F9) | 다음 대상자를 카카오톡 메인창 검색부터 다시 시작합니다.")
+        return False
+
+    def _wait_if_paused_direct(self) -> bool:
+        if not self._is_pause_requested():
+            return False
+        dummy = SendRunResult(list_done=0, success=0, fail=0, stopped=False)
+        return self._wait_if_paused(dummy)
+
+    def _sleep_with_stop(self, total_ms: int, result: Optional[SendRunResult]) -> bool:
         remain = max(0, int(total_ms))
         if remain <= 0:
             return False
@@ -560,8 +604,34 @@ class SendExecutor:
         step = 50
         while remain > 0:
             if self._is_stop_requested():
-                result.stopped = True
+                if result is not None:
+                    result.stopped = True
                 return True
+
+            if self._is_pause_requested():
+                if result is None:
+                    if self._wait_if_paused_direct():
+                        return True
+                else:
+                    if self._wait_if_paused(result):
+                        return True
+                continue
+
+            sleep_ms = min(step, remain)
+            time.sleep(sleep_ms / 1000.0)
+            remain -= sleep_ms
+        return False
+
+    def _sleep_with_stop_only(self, total_ms: int) -> bool:
+        remain = max(0, int(total_ms))
+        if remain <= 0:
+            return False
+
+        step = 50
+        while remain > 0:
+            if self._is_stop_requested():
+                return True
+
             sleep_ms = min(step, remain)
             time.sleep(sleep_ms / 1000.0)
             remain -= sleep_ms

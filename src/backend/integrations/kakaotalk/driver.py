@@ -360,6 +360,12 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._chat_input_ctrl_cache: dict[int, Any] = {}
         self._chat_input_ctrl_cache_ts: dict[int, float] = {}
 
+        self._is_pause_requested_cb = None
+        self._wait_if_paused_cb = None
+        self._pause_detached = False
+        self._resume_recover_required = False
+        self._pause_recovering = False
+
         self._open_in_main = bool(open_in_main)
         self._chat_in_main = False  # 이미 있으니 이 줄은 "초기화 위치"만 보장하면 됩니다.
 
@@ -534,6 +540,9 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._stop = False
         self._stop_event.clear()
         self._img_rr_idx = 0
+        self._pause_detached = False
+        self._resume_recover_required = False
+        self._pause_recovering = False
 
         self._get_desktop()
         self._lock_kakao_target_once()
@@ -576,6 +585,84 @@ class KakaoPcDriver(KakaoSenderDriver):
             self._stop_event.set()
         except Exception:
             pass
+
+    def set_pause_controller(self, *, is_pause_requested=None, wait_if_paused=None) -> None:
+        self._is_pause_requested_cb = is_pause_requested
+        self._wait_if_paused_cb = wait_if_paused
+
+    def mark_resume_recover_required(self) -> None:
+        self._resume_recover_required = True
+
+    def _prepare_for_external_pause(self) -> None:
+        if self._pause_detached:
+            return
+
+        self._pause_detached = True
+        self._resume_recover_required = True
+
+        self._search_ready = False
+        self._chat_in_main = False
+        self._chat_hwnd = 0
+        self._mode = "MAIN"
+        self._chat_input_ctrl_cache.clear()
+        self._chat_input_ctrl_cache_ts.clear()
+
+        try:
+            self._log("[PAUSE] detached current chat/search state. You may use KakaoTalk until resume.")
+        except Exception:
+            pass
+
+    def _maybe_wait_if_paused(self) -> None:
+        if self._pause_recovering:
+            return
+
+        is_pause_requested = self._is_pause_requested_cb
+        wait_if_paused = self._wait_if_paused_cb
+        if not callable(is_pause_requested) or not callable(wait_if_paused):
+            return
+
+        try:
+            if not bool(is_pause_requested()):
+                return
+        except Exception:
+            return
+
+        self._prepare_for_external_pause()
+
+        stopped = False
+        try:
+            stopped = bool(wait_if_paused())
+        except Exception:
+            stopped = False
+
+        if stopped or self._stop or self._stop_event.is_set():
+            raise StopNow("STOP_REQUESTED")
+
+    def _recover_after_external_pause_if_needed(self) -> None:
+        if self._pause_recovering or not self._resume_recover_required:
+            return
+
+        self._pause_recovering = True
+        try:
+            self._log("[PAUSE] resume requested -> recovering KakaoTalk context")
+
+            self._search_ready = False
+            self._chat_input_ctrl_cache.clear()
+            self._chat_input_ctrl_cache_ts.clear()
+
+            self.recover()
+
+            active = str(self._active_recipient or "").strip()
+            if active:
+                self._open_chat_by_name(active)
+                try:
+                    self._focus_chat_input_best_effort()
+                except Exception:
+                    pass
+        finally:
+            self._pause_detached = False
+            self._resume_recover_required = False
+            self._pause_recovering = False
 
     def _alt_tab_once(self, pause: float = 0.08) -> None:
         _, send_keys, _ = _lazy_pywinauto()
@@ -2370,4 +2457,3 @@ __all__ = [
     "TransferAbortedByClose",
     "CloseForcedByConfirm",
 ]
-
