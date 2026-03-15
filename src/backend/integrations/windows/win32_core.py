@@ -1,4 +1,3 @@
-
 # src/backend/integrations/windows/win32_core.py
 from __future__ import annotations
 
@@ -63,6 +62,15 @@ user32.SetFocus.restype = wintypes.HWND
 
 user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
 user32.GetWindowRect.restype = wintypes.BOOL
+
+user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+user32.GetClientRect.restype = wintypes.BOOL
+
+class _POINT(ctypes.Structure):
+    _fields_ = [("x", wintypes.LONG), ("y", wintypes.LONG)]
+
+user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(_POINT)]
+user32.ClientToScreen.restype = wintypes.BOOL
 
 user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
 user32.GetWindowTextLengthW.restype = ctypes.c_int
@@ -170,6 +178,30 @@ def get_window_rect(hwnd: int) -> Tuple[int, int, int, int]:
     if not user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(rc)):
         return (0, 0, 0, 0)
     return (int(rc.left), int(rc.top), int(rc.right), int(rc.bottom))
+
+
+def get_client_rect_screen(hwnd: int) -> Tuple[int, int, int, int]:
+    if not is_window(hwnd):
+        return (0, 0, 0, 0)
+
+    rc = wintypes.RECT()
+    if not user32.GetClientRect(wintypes.HWND(hwnd), ctypes.byref(rc)):
+        return (0, 0, 0, 0)
+
+    left_top = _POINT(int(rc.left), int(rc.top))
+    right_bottom = _POINT(int(rc.right), int(rc.bottom))
+
+    if not user32.ClientToScreen(wintypes.HWND(hwnd), ctypes.byref(left_top)):
+        return (0, 0, 0, 0)
+    if not user32.ClientToScreen(wintypes.HWND(hwnd), ctypes.byref(right_bottom)):
+        return (0, 0, 0, 0)
+
+    return (
+        int(left_top.x),
+        int(left_top.y),
+        int(right_bottom.x),
+        int(right_bottom.y),
+    )
 
 
 def rect_center(rect: Tuple[int, int, int, int]) -> Tuple[int, int]:
@@ -511,6 +543,7 @@ __all__ = [
     "is_window",
     "get_window_text",
     "get_window_rect",
+    "get_client_rect_screen",
     "rect_center",
     "get_pid",
     "foreground_hwnd_if_same_process",

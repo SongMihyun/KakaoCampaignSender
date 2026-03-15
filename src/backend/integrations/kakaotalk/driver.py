@@ -316,6 +316,11 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._main_fallback_points: List[Tuple[int, int]] = []
         self._main_rect_cache: Tuple[int, int, int, int] = (0, 0, 0, 0)
 
+        self._friend_tab_click_interval_sec = 0.16
+        self._friend_tab_verify_settle_sec = 0.22
+        self._friend_tab_max_attempts = 4
+        self._friend_tab_last_verified_at = 0.0
+
         self._debug_log = bool(debug_log)
         self._logger = logging.getLogger(str(log_prefix or "kakao_pc_driver"))
 
@@ -359,6 +364,12 @@ class KakaoPcDriver(KakaoSenderDriver):
         # ✅ 입력창 컨트롤 캐시 (hwnd별)
         self._chat_input_ctrl_cache: dict[int, Any] = {}
         self._chat_input_ctrl_cache_ts: dict[int, float] = {}
+
+        self._is_pause_requested_cb = None
+        self._wait_if_paused_cb = None
+        self._pause_detached = False
+        self._resume_recover_required = False
+        self._pause_recovering = False
 
         self._open_in_main = bool(open_in_main)
         self._chat_in_main = False  # 이미 있으니 이 줄은 "초기화 위치"만 보장하면 됩니다.
@@ -534,6 +545,9 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._stop = False
         self._stop_event.clear()
         self._img_rr_idx = 0
+        self._pause_detached = False
+        self._resume_recover_required = False
+        self._pause_recovering = False
 
         self._get_desktop()
         self._lock_kakao_target_once()
@@ -552,6 +566,7 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._ensure_foreground_main_fast()
         self._search_ready = False
         self._cache_main_fallback_points()
+        self._ensure_friend_category(reason="start")
 
     def recover(self) -> None:
         self._check_stop()
@@ -569,6 +584,7 @@ class KakaoPcDriver(KakaoSenderDriver):
 
         self._ensure_foreground_main_fast()
         self._cache_main_fallback_points()
+        self._ensure_friend_category(reason="recover")
 
     def stop(self) -> None:
         self._stop = True
@@ -576,6 +592,84 @@ class KakaoPcDriver(KakaoSenderDriver):
             self._stop_event.set()
         except Exception:
             pass
+
+    def set_pause_controller(self, *, is_pause_requested=None, wait_if_paused=None) -> None:
+        self._is_pause_requested_cb = is_pause_requested
+        self._wait_if_paused_cb = wait_if_paused
+
+    def mark_resume_recover_required(self) -> None:
+        self._resume_recover_required = True
+
+    def _prepare_for_external_pause(self) -> None:
+        if self._pause_detached:
+            return
+
+        self._pause_detached = True
+        self._resume_recover_required = True
+
+        self._search_ready = False
+        self._chat_in_main = False
+        self._chat_hwnd = 0
+        self._mode = "MAIN"
+        self._chat_input_ctrl_cache.clear()
+        self._chat_input_ctrl_cache_ts.clear()
+
+        try:
+            self._log("[PAUSE] detached current chat/search state. You may use KakaoTalk until resume.")
+        except Exception:
+            pass
+
+    def _maybe_wait_if_paused(self) -> None:
+        if self._pause_recovering:
+            return
+
+        is_pause_requested = self._is_pause_requested_cb
+        wait_if_paused = self._wait_if_paused_cb
+        if not callable(is_pause_requested) or not callable(wait_if_paused):
+            return
+
+        try:
+            if not bool(is_pause_requested()):
+                return
+        except Exception:
+            return
+
+        self._prepare_for_external_pause()
+
+        stopped = False
+        try:
+            stopped = bool(wait_if_paused())
+        except Exception:
+            stopped = False
+
+        if stopped or self._stop or self._stop_event.is_set():
+            raise StopNow("STOP_REQUESTED")
+
+    def _recover_after_external_pause_if_needed(self) -> None:
+        if self._pause_recovering or not self._resume_recover_required:
+            return
+
+        self._pause_recovering = True
+        try:
+            self._log("[PAUSE] resume requested -> recovering KakaoTalk context")
+
+            self._search_ready = False
+            self._chat_input_ctrl_cache.clear()
+            self._chat_input_ctrl_cache_ts.clear()
+
+            self.recover()
+
+            active = str(self._active_recipient or "").strip()
+            if active:
+                self._open_chat_by_name(active)
+                try:
+                    self._focus_chat_input_best_effort()
+                except Exception:
+                    pass
+        finally:
+            self._pause_detached = False
+            self._resume_recover_required = False
+            self._pause_recovering = False
 
     def _alt_tab_once(self, pause: float = 0.08) -> None:
         _, send_keys, _ = _lazy_pywinauto()
@@ -665,6 +759,298 @@ class KakaoPcDriver(KakaoSenderDriver):
 
         if self._debug_log:
             self._log(f"[MAIN] fallback points updated(safe-left): {self._main_fallback_points}")
+
+
+    def _normalize_probe_text(self, value: str) -> str:
+        return "".join(str(value or "").split())
+
+    def _probe_contains_any(self, texts: List[str], *tokens: str) -> bool:
+        if not texts:
+            return False
+
+        norms = [self._normalize_probe_text(x) for x in texts if str(x or "").strip()]
+        token_norms = [self._normalize_probe_text(x) for x in tokens if str(x or "").strip()]
+        if not norms or not token_norms:
+            return False
+
+        for norm in norms:
+            for token in token_norms:
+                if token and token in norm:
+                    return True
+        return False
+
+    def _collect_main_top_left_texts(self) -> List[str]:
+        self._check_stop()
+
+        rect = w32.get_window_rect(int(self._hwnd))
+        if rect == (0, 0, 0, 0):
+            return []
+
+        l, t, r, b = rect
+        w = max(0, int(r - l))
+        h = max(0, int(b - t))
+        if w <= 0 or h <= 0:
+            return []
+
+        area_right = int(l + max(130, w * 0.52))
+        area_bottom = int(t + max(120, h * 0.26))
+
+        out: List[str] = []
+        seen: set[str] = set()
+
+        def _push(raw: str) -> None:
+            txt = str(raw or "").strip()
+            if not txt:
+                return
+            norm = self._normalize_probe_text(txt)
+            if not norm or norm in seen:
+                return
+            seen.add(norm)
+            out.append(txt)
+
+        try:
+            Desktop, _, _ = _lazy_pywinauto()
+            win = Desktop(backend="uia").window(handle=int(self._hwnd))
+
+            controls: List[Any] = [win]
+            try:
+                controls.extend(list(win.descendants()))
+            except Exception:
+                pass
+
+            for ctrl in controls:
+                try:
+                    rc = ctrl.rectangle()
+                    if int(getattr(rc, "left", 0)) > area_right:
+                        continue
+                    if int(getattr(rc, "top", 0)) > area_bottom:
+                        continue
+                    if int(getattr(rc, "right", 0)) <= l or int(getattr(rc, "bottom", 0)) <= t:
+                        continue
+                except Exception:
+                    continue
+
+                try:
+                    _push(ctrl.window_text())
+                except Exception:
+                    pass
+                try:
+                    _push(getattr(ctrl.element_info, "name", ""))
+                except Exception:
+                    pass
+
+            if out:
+                return out
+        except Exception:
+            pass
+
+        try:
+            Desktop, _, _ = _lazy_pywinauto()
+            win = Desktop(backend="win32").window(handle=int(self._hwnd))
+            try:
+                _push(win.window_text())
+            except Exception:
+                pass
+            try:
+                for raw in (win.texts() or []):
+                    _push(raw)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        return out
+
+    def _get_main_text_blob(self) -> str:
+        try:
+            Desktop, _, _ = _lazy_pywinauto()
+            win = Desktop(backend="win32").window(handle=int(self._hwnd))
+            texts = []
+            try:
+                texts = [x for x in (win.texts() or []) if x]
+            except Exception:
+                texts = []
+
+            if texts:
+                return " ".join(texts)
+
+            try:
+                return str(win.window_text() or "")
+            except Exception:
+                return ""
+        except Exception:
+            return ""
+
+    def _detect_main_category(self) -> tuple[str, List[str]]:
+        texts = self._collect_main_top_left_texts()
+        has_friend = self._probe_contains_any(texts, "친구")
+        has_chat = self._probe_contains_any(texts, "채팅")
+
+        if has_friend and not has_chat:
+            return ("FRIEND", texts)
+        if has_chat and not has_friend:
+            return ("CHAT", texts)
+
+        # 카카오톡 PC는 상단 제목 텍스트보다 내부 Win32/UIA control 이름이 더 안정적으로 잡히는 경우가 많다.
+        # 실제 로그 기준:
+        # - 친구 탭: ContactListView / ContactListCtrl / SearchListCtrl
+        # - 채팅 탭: ChatRoomListView / ChatRoomListCtrl
+        # 따라서 구조 단서를 FRIEND/CHAT 판정에 우선 반영한다.
+        friend_struct_tokens = (
+            "ContactListView",
+            "ContactListCtrl",
+            "SearchListCtrl",
+        )
+        chat_struct_tokens = (
+            "ChatRoomListView",
+            "ChatRoomListCtrl",
+        )
+
+        has_friend_struct = self._probe_contains_any(texts, *friend_struct_tokens)
+        has_chat_struct = self._probe_contains_any(texts, *chat_struct_tokens)
+
+        if has_friend_struct and not has_chat_struct:
+            return ("FRIEND", texts)
+        if has_chat_struct and not has_friend_struct:
+            return ("CHAT", texts)
+
+        blob = self._normalize_probe_text(self._get_main_text_blob())
+        friend_clues = (
+            "업데이트한친구",
+            "생일인친구",
+            "즐겨찾는친구",
+            "친구의생일을확인해보세요",
+            "친구추가",
+            "contactlistview",
+            "contactlistctrl",
+            "searchlistctrl",
+        )
+        chat_clues = (
+            "통합검색",
+            "오픈채팅",
+            "채팅목록",
+            "읽지않음",
+            "chatroomlistview",
+            "chatroomlistctrl",
+        )
+
+        friend_hit = any(k.lower() in blob.lower() for k in friend_clues)
+        chat_hit = any(k.lower() in blob.lower() for k in chat_clues)
+
+        if friend_hit and not chat_hit:
+            return ("FRIEND", texts)
+        if chat_hit and not friend_hit:
+            return ("CHAT", texts)
+
+        return ("UNKNOWN", texts)
+
+    def _build_friend_tab_candidate_points(self) -> List[Tuple[int, int]]:
+        rect = w32.get_client_rect_screen(int(self._hwnd))
+        if rect == (0, 0, 0, 0):
+            rect = w32.get_window_rect(int(self._hwnd))
+
+        l, t, r, b = rect
+        w = max(0, int(r - l))
+        h = max(0, int(b - t))
+        if w <= 0 or h <= 0:
+            return []
+
+        base_x = int(l + max(24, min(38, round(w * 0.076))))
+        base_y = int(t + max(28, min(68, round(h * 0.074))))
+
+        raw_points = [
+            (base_x, base_y),
+            (base_x, base_y - 6),
+            (base_x, base_y + 6),
+            (base_x + 3, base_y),
+        ]
+
+        points: List[Tuple[int, int]] = []
+        for x, y in raw_points:
+            sx = max(l + 8, min(r - 8, int(x)))
+            sy = max(t + 8, min(b - 8, int(y)))
+            pt = (sx, sy)
+            if pt not in points:
+                points.append(pt)
+
+        self._trace("MAIN:friend_tab_candidates", client_rect=rect, points=points)
+        return points
+
+    def _ensure_main_window_foreground_only(self) -> None:
+        self._check_stop()
+
+        if w32.get_foreground_hwnd() == int(self._hwnd):
+            self._mode = "MAIN"
+            return
+
+        try:
+            w32.force_foreground_strict(int(self._hwnd), retries=3, sleep=self._sf(0.03))
+        except Exception:
+            self._ensure_foreground_main_fast()
+            if w32.get_foreground_hwnd() != int(self._hwnd):
+                raise
+
+        self._mode = "MAIN"
+
+    def _ensure_friend_category(self, *, reason: str) -> bool:
+        self._check_stop()
+
+        try:
+            close_open_dialog_if_any()
+        except Exception:
+            pass
+
+        self._ensure_main_window_foreground_only()
+        self._cache_main_fallback_points()
+
+        mode, texts = self._detect_main_category()
+        self._trace("MAIN:friend_verify", reason=reason, stage="before_click", mode=mode, texts=texts[:8])
+        if mode == "FRIEND":
+            self._friend_tab_last_verified_at = time.perf_counter()
+            return True
+
+        try:
+            self._send_keys_fast("{ESC}")
+            self._sleep_abs(0.05)
+        except Exception:
+            pass
+
+        points = self._build_friend_tab_candidate_points()
+        attempts = max(1, min(int(self._friend_tab_max_attempts), len(points) or 1))
+        points = points[:attempts]
+
+        for idx, (x, y) in enumerate(points, start=1):
+            self._check_stop()
+            self._ensure_main_window_foreground_only()
+
+            clicked = bool(w32.sendinput_click(int(x), int(y)))
+            if not clicked:
+                clicked = bool(w32.fallback_click_point(int(x), int(y)))
+
+            self._trace("MAIN:friend_tab_click", reason=reason, idx=idx, x=int(x), y=int(y), clicked=clicked)
+            self._sleep_abs(max(self._friend_tab_click_interval_sec, self._friend_tab_verify_settle_sec))
+            mode, texts = self._detect_main_category()
+            self._trace("MAIN:friend_verify", reason=reason, stage=f"after_click_{idx}", mode=mode, texts=texts[:8])
+
+            if mode == "FRIEND":
+                self._friend_tab_last_verified_at = time.perf_counter()
+                return True
+
+            if mode == "CHAT":
+                try:
+                    self._send_keys_fast("{ESC}")
+                    self._sleep_abs(0.05)
+                except Exception:
+                    pass
+
+        mode, texts = self._detect_main_category()
+        self._trace("MAIN:friend_verify", reason=reason, stage="final", mode=mode, texts=texts[:8])
+
+        if mode == "CHAT":
+            raise RuntimeError("카카오톡 메인창이 여전히 '채팅' 카테고리입니다. 친구 아이콘 좌표 또는 화면 구조를 다시 확인해주세요.")
+
+        self._log("[MAIN] friend category verify inconclusive -> continue")
+        return False
 
     # ----------------------------
     # foreground
@@ -947,6 +1333,8 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._active_recipient = name
         self._last_image_bytes = b""
         self._ctrl_t_fallback_done = False
+
+        self._ensure_friend_category(reason="open_chat")
 
         def _send_keys_main(keys: str) -> None:
             self._send_keys(keys, to_chat=False)
@@ -2370,4 +2758,3 @@ __all__ = [
     "TransferAbortedByClose",
     "CloseForcedByConfirm",
 ]
-
