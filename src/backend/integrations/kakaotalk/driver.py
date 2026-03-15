@@ -1,3 +1,4 @@
+# PATH: src/backend/integrations/kakaotalk/driver.py
 # ✅ FILE: src/backend/integrations/kakaotalk/driver.py
 from __future__ import annotations
 
@@ -2025,6 +2026,336 @@ class KakaoPcDriver(KakaoSenderDriver):
 
         self._log(f"[CTRL+T] fallback send result={ok}")
         return bool(ok)
+
+    def _capture_opened_chat_hwnd_from_friend_click(self, name: str, before: set[int], wait_sec: float = 0.7) -> int:
+        end = time.time() + max(0.2, float(wait_sec))
+        poll = max(self._profile.poll_sleep_min, self._sf(self._profile.poll_sleep_default))
+
+        while time.time() < end:
+            self._check_stop()
+
+            try:
+                hwnd = int(self._find_new_chat_hwnd(name, before) or 0)
+            except Exception:
+                hwnd = 0
+
+            if hwnd > 0 and hwnd != int(self._hwnd) and w32.is_window(int(hwnd)):
+                return int(hwnd)
+
+            try:
+                fg = int(w32.get_foreground_hwnd() or 0)
+            except Exception:
+                fg = 0
+
+            if fg > 0 and fg != int(self._hwnd) and w32.is_window(int(fg)):
+                try:
+                    title = str(w32.get_window_text(int(fg)) or '').strip()
+                except Exception:
+                    title = ''
+                if not name or (title and name in title):
+                    return int(fg)
+
+            try:
+                same_proc = int(w32.foreground_hwnd_if_same_process(int(self._hwnd)) or 0)
+            except Exception:
+                same_proc = 0
+
+            if same_proc > 0 and same_proc != int(self._hwnd) and w32.is_window(int(same_proc)):
+                try:
+                    title = str(w32.get_window_text(int(same_proc)) or '').strip()
+                except Exception:
+                    title = ''
+                if not name or (title and name in title):
+                    return int(same_proc)
+
+            time.sleep(min(0.05, max(0.01, float(poll))))
+
+        return 0
+
+    def _build_self_profile_candidate_points(self) -> list[tuple[int, int]]:
+        rect = w32.get_client_rect_screen(int(self._hwnd))
+        if rect == (0, 0, 0, 0):
+            rect = w32.get_window_rect(int(self._hwnd))
+
+        l, t, r, b = rect
+        w = max(0, int(r - l))
+        h = max(0, int(b - t))
+        if w <= 0 or h <= 0:
+            return []
+
+        row_y = int(t + min(max(118, h * 0.22), max(150, h * 0.28)))
+        row_y_lower = int(t + min(max(132, h * 0.25), max(166, h * 0.31)))
+
+        raw_points = [
+            # 우측 액션 영역(내 프로필 → 나와의 채팅 진입 가능성이 가장 높은 영역) 우선 시도
+            (int(l + min(max(278, w * 0.76), max(308, w * 0.84))), row_y),
+            (int(l + min(max(316, w * 0.86), max(346, w * 0.93))), row_y),
+            # 텍스트 / 행 본문 클릭 fallback
+            (int(l + min(max(214, w * 0.58), max(250, w * 0.68))), row_y),
+            (int(l + min(max(146, w * 0.40), max(188, w * 0.50))), row_y),
+            (int(l + min(max(112, w * 0.30), max(146, w * 0.38))), row_y),
+            # 조금 더 아래쪽 보정점
+            (int(l + min(max(278, w * 0.76), max(308, w * 0.84))), row_y_lower),
+            (int(l + min(max(214, w * 0.58), max(250, w * 0.68))), row_y_lower),
+            (int(l + min(max(146, w * 0.40), max(188, w * 0.50))), row_y_lower),
+        ]
+
+        points: list[tuple[int, int]] = []
+        for x, y in raw_points:
+            sx = max(l + 18, min(r - 18, int(x)))
+            sy = max(t + 18, min(b - 18, int(y)))
+            pt = (sx, sy)
+            if pt not in points:
+                points.append(pt)
+
+        self._trace('SELF_NOTIFY:self_profile_candidates', rect=rect, row_y=int(row_y), row_y_lower=int(row_y_lower), points=points)
+        return points
+
+    def _find_self_profile_click_point(self, my_name: str = '') -> tuple[int, int] | None:
+        points = self._build_self_profile_candidate_points()
+        return points[0] if points else None
+
+    def _clear_friend_search_keyword_for_self_notify(self) -> None:
+        self._check_stop()
+
+        try:
+            close_open_dialog_if_any()
+        except Exception:
+            pass
+
+        self._ensure_main_window_foreground_only()
+        self._mode = 'MAIN'
+        self._search_ready = False
+
+        def _focus_search_box() -> None:
+            last_err: Exception | None = None
+            for _ in range(3):
+                try:
+                    self._ensure_main_window_foreground_only()
+                    self._send_keys_fast('^f')
+                    self._sleep_abs(0.03)
+                    self._search_ready = True
+                    return
+                except Exception as e:
+                    last_err = e
+                    self._sleep_abs(0.02)
+
+            if last_err is not None:
+                raise last_err
+
+        def _try_clear(seq: list[tuple[str, float]], *, label: str) -> bool:
+            try:
+                _focus_search_box()
+                for keys, delay_sec in seq:
+                    self._send_keys_fast(keys)
+                    self._sleep_abs(float(delay_sec))
+                self._trace('SELF_NOTIFY:search_clear_seq_ok', label=label)
+                return True
+            except Exception as e:
+                self._trace('SELF_NOTIFY:search_clear_seq_fail', label=label, err=str(e))
+                return False
+
+        cleared = (
+            _try_clear(
+                [
+                    ('^{HOME}', 0.02),
+                    ('^+{END}', 0.02),
+                    ('{DEL}', 0.03),
+                    ('{DEL}', 0.02),
+                ],
+                label='CTRL_HOME_CTRL_SHIFT_END_DEL',
+            )
+            or _try_clear(
+                [
+                    ('{HOME}', 0.02),
+                    ('+{END}', 0.02),
+                    ('{DEL}', 0.03),
+                ],
+                label='HOME_SHIFT_END_DEL',
+            )
+            or _try_clear(
+                [
+                    ('{END}', 0.01),
+                    ('{BACKSPACE}' * 40, 0.03),
+                ],
+                label='END_BACKSPACE_X40',
+            )
+        )
+
+        self._search_ready = True
+        self._trace('SELF_NOTIFY:search_cleared', ok=bool(cleared))
+        self._sleep_abs(0.05)
+
+    def _open_self_chat_from_friend_row(self, my_name: str = '') -> bool:
+        name = (my_name or '').strip()
+
+        self._check_stop()
+        try:
+            close_open_dialog_if_any()
+        except Exception:
+            pass
+
+        self._chat_in_main = False
+        self._chat_hwnd = 0
+        self._mode = 'MAIN'
+        self._search_ready = False
+
+        self._ensure_friend_category(reason='self_notify')
+        self._clear_friend_search_keyword_for_self_notify()
+        self._ensure_main_window_foreground_only()
+
+        click_points = self._build_self_profile_candidate_points()
+        self._trace('SELF_NOTIFY:friend_row_probe', name=name, click_points=click_points)
+        if not click_points:
+            return False
+
+        def _activate_from_click(x: int, y: int, *, double_click: bool) -> int:
+            before = self._snapshot_visible_hwnds()
+
+            def _click_once() -> bool:
+                clicked_local = bool(w32.sendinput_click(int(x), int(y)))
+                if not clicked_local:
+                    clicked_local = bool(w32.fallback_click_point(int(x), int(y)))
+                return bool(clicked_local)
+
+            def _wait_open(wait_sec: float) -> int:
+                return int(self._capture_opened_chat_hwnd_from_friend_click(name, before, wait_sec=wait_sec) or 0)
+
+            clicked = _click_once()
+            self._trace('SELF_NOTIFY:friend_row_click', name=name, x=int(x), y=int(y), step='single_click', clicked=clicked)
+            self._sleep_abs(0.10)
+
+            hwnd = _wait_open(0.35)
+            if hwnd > 0:
+                return hwnd
+
+            # 1차 강제 오픈: 한 번 클릭 후 Enter
+            try:
+                self._send_keys_fast('{ENTER}')
+                self._trace('SELF_NOTIFY:friend_row_click', name=name, x=int(x), y=int(y), step='single_click_enter')
+            except Exception as e:
+                self._trace('SELF_NOTIFY:friend_row_click_enter_fail', name=name, x=int(x), y=int(y), err=str(e))
+            self._sleep_abs(0.10)
+
+            hwnd = _wait_open(0.55)
+            if hwnd > 0:
+                return hwnd
+
+            if double_click:
+                # 2차 강제 오픈: 동일 좌표 더블클릭
+                self._sleep_abs(0.06)
+                clicked2 = _click_once()
+                clicked = clicked or clicked2
+                self._trace('SELF_NOTIFY:friend_row_click', name=name, x=int(x), y=int(y), step='double_click_second', clicked=clicked2)
+                self._sleep_abs(0.10)
+
+                hwnd = _wait_open(0.60)
+                if hwnd > 0:
+                    return hwnd
+
+                # 3차 강제 오픈: 더블클릭 후 Enter
+                try:
+                    self._send_keys_fast('{ENTER}')
+                    self._trace('SELF_NOTIFY:friend_row_click', name=name, x=int(x), y=int(y), step='double_click_enter')
+                except Exception as e:
+                    self._trace('SELF_NOTIFY:friend_row_double_enter_fail', name=name, x=int(x), y=int(y), err=str(e))
+                self._sleep_abs(0.10)
+
+                hwnd = _wait_open(0.65)
+                if hwnd > 0:
+                    return hwnd
+
+                # 4차 강제 오픈: 한번 더 클릭 후 Enter 재시도
+                self._sleep_abs(0.05)
+                clicked3 = _click_once()
+                self._trace('SELF_NOTIFY:friend_row_click', name=name, x=int(x), y=int(y), step='final_click', clicked=clicked3)
+                self._sleep_abs(0.08)
+                try:
+                    self._send_keys_fast('{ENTER}')
+                    self._trace('SELF_NOTIFY:friend_row_click', name=name, x=int(x), y=int(y), step='final_click_enter')
+                except Exception as e:
+                    self._trace('SELF_NOTIFY:friend_row_final_enter_fail', name=name, x=int(x), y=int(y), err=str(e))
+                self._sleep_abs(0.10)
+
+                hwnd = _wait_open(0.70)
+                if hwnd > 0:
+                    return hwnd
+
+            return 0
+
+        for x, y in click_points:
+            for double_click in (False, True):
+                hwnd = _activate_from_click(int(x), int(y), double_click=double_click)
+                if hwnd > 0:
+                    self._chat_in_main = False
+                    self._chat_hwnd = int(hwnd)
+                    self._mode = 'CHAT'
+                    try:
+                        self._ensure_foreground_chat()
+                        self._focus_chat_input_best_effort()
+                    except Exception:
+                        pass
+                    self._trace('SELF_NOTIFY:friend_row_opened', name=name, hwnd=int(hwnd), x=int(x), y=int(y), double_click=double_click)
+                    return True
+
+                try:
+                    self._ensure_main_window_foreground_only()
+                    self._sleep_abs(0.06)
+                except Exception:
+                    pass
+
+        self._trace('SELF_NOTIFY:friend_row_open_failed', name=name)
+        return False
+
+    def send_self_notification(self, message: str, my_name: str = '') -> None:
+        self._check_stop()
+        self._lock_kakao_target_once()
+
+        name = (my_name or '').strip()
+        msg = (message or '').strip()
+        if not msg:
+            return
+
+        _prev_open_in_main = bool(self._open_in_main)
+        self._open_in_main = False
+
+        try:
+            opened = self._open_self_chat_from_friend_row(name)
+            if not opened and name:
+                opened = self._open_chat_by_name(name)
+            if not opened:
+                raise RuntimeError('알림용 내 프로필 개인창을 열지 못했습니다.')
+
+            failures: List[str] = []
+            try:
+                ok = self._paste_text_and_send(msg)
+                if not ok:
+                    failures.append('TEXT:retry_exceeded')
+            finally:
+                try:
+                    self._close_chat()
+                except CloseForcedByConfirm:
+                    failures.append('CLOSE_FORCED_CONFIRM')
+                except StopNow:
+                    raise
+                except Exception as e:
+                    self._trace('SELF_NOTIFY:close_chat_exception', err=str(e))
+
+                try:
+                    self._ensure_foreground_main_fast()
+                except Exception:
+                    pass
+
+                self._chat_in_main = False
+                self._chat_hwnd = 0
+                self._mode = 'MAIN'
+                self._search_ready = True
+
+            if failures:
+                raise RuntimeError('내 알림 전송 실패:\n' + '\n'.join(failures))
+
+        finally:
+            self._open_in_main = _prev_open_in_main
 
     # ----------------------------
     # send APIs

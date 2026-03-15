@@ -1,17 +1,44 @@
-﻿from __future__ import annotations
+# path: src/backend/integrations/kakaotalk/image_attach_ctrl_t.py
+from __future__ import annotations
 
+import ctypes
 import os
 import re
 import time
+from ctypes import wintypes
 from pathlib import Path
-from typing import Callable, Mapping, Optional, Sequence, Any
+from typing import Any, Callable, Mapping, Optional, Sequence
 
 from backend.integrations.kakaotalk.image_attach_cache import get_or_create_temp_png
 from backend.integrations.windows.win32_core import (
+    GA_ROOT,
     close_open_dialog_if_any,
     ensure_foreground_chat_hwnd,
+    get_class_name,
+    get_foreground_hwnd,
+    get_window_rect,
+    get_window_text,
     lazy_pywinauto,
+    user32,
 )
+
+WM_SETTEXT = 0x000C
+WM_GETTEXT = 0x000D
+WM_GETTEXTLENGTH = 0x000E
+BM_CLICK = 0x00F5
+WM_COMMAND = 0x0111
+EM_SETSEL = 0x00B1
+IDOK = 1
+EDT1 = 0x0480
+
+EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
+user32.EnumWindows.restype = wintypes.BOOL
+user32.EnumChildWindows.argtypes = [wintypes.HWND, EnumWindowsProc, wintypes.LPARAM]
+user32.EnumChildWindows.restype = wintypes.BOOL
+user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
+user32.GetDlgCtrlID.restype = ctypes.c_int
+
 
 def _safe_cleanup_after_file_dialog(
     *,
@@ -35,6 +62,8 @@ def _safe_cleanup_after_file_dialog(
             sleep_abs(0.08)
     except Exception as e:
         log(f"[FILE_DIALOG][CLEANUP] ensure_foreground_chat_hwnd fail: {e}")
+
+
 def _build_names_text(paths: Sequence[str]) -> str:
     """
     파일 이름 칸에 넣을 텍스트.
@@ -51,6 +80,24 @@ def _build_names_text(paths: Sequence[str]) -> str:
         name = name.replace('"', "")
         names.append(f'"{name}"')
     return " ".join(names)
+
+
+def _build_absolute_paths_text(paths: Sequence[str]) -> str:
+    out: list[str] = []
+    for p in paths or []:
+        ap = os.path.abspath(str(p or "").strip())
+        if not ap:
+            continue
+        ap = ap.replace('"', "")
+        out.append(f'"{ap}"')
+    return " ".join(out)
+
+
+def _normalize_compare_text(text: str) -> str:
+    s = str(text or "").strip().strip('"')
+    s = s.replace("/", "\\")
+    s = re.sub(r"\s+", " ", s)
+    return s.casefold()
 
 
 def _safe_window_text(el) -> str:
@@ -156,6 +203,7 @@ def _click_uia_element(
 
     return False
 
+
 def _find_send_button_in_chat_surface(
     *,
     chat_hwnd: int,
@@ -174,20 +222,11 @@ def _find_send_button_in_chat_surface(
         log(f"[FILE_SEND][ROOT_ATTACH_FAIL] hwnd={chat_hwnd} err={e}")
         return None
 
-    try:
-        root_text = _safe_window_text(root)
-    except Exception:
-        root_text = ""
-
-
-
     candidates = _iter_button_like_descendants(root)
-
 
     preferred: list[Any] = []
     fallback: list[Any] = []
 
-    # 너무 많을 수 있으니 앞 40개만 상세 로그
     max_debug = 40
     debug_idx = 0
 
@@ -221,8 +260,6 @@ def _find_send_button_in_chat_surface(
         except Exception as e:
             log(f"[FILE_SEND][CANDIDATE_ERR] err={e}")
             continue
-
-
 
     if preferred:
         preferred.sort(key=lambda x: x[0], reverse=True)
@@ -288,6 +325,296 @@ def send_files_dialog_hook(
             log=log,
         )
         return False
+
+
+def _root_hwnd(hwnd: int) -> int:
+    try:
+        h = int(hwnd or 0)
+        if h <= 0:
+            return 0
+        r = int(user32.GetAncestor(wintypes.HWND(h), GA_ROOT) or 0)
+        return r if r > 0 else h
+    except Exception:
+        return int(hwnd or 0)
+
+
+def _iter_top_windows() -> list[int]:
+    out: list[int] = []
+
+    @EnumWindowsProc
+    def _cb(hwnd, lparam):
+        try:
+            h = int(hwnd or 0)
+            if h > 0 and bool(user32.IsWindowVisible(wintypes.HWND(h))):
+                out.append(h)
+        except Exception:
+            pass
+        return True
+
+    user32.EnumWindows(_cb, 0)
+    return out
+
+
+def _iter_child_windows(parent_hwnd: int, *, recursive: bool = True) -> list[int]:
+    out: list[int] = []
+
+    def _walk(hwnd_parent: int) -> None:
+        @EnumWindowsProc
+        def _cb(hwnd, lparam):
+            try:
+                h = int(hwnd or 0)
+                if h > 0:
+                    out.append(h)
+                    if recursive:
+                        _walk(h)
+            except Exception:
+                pass
+            return True
+
+        user32.EnumChildWindows(wintypes.HWND(int(hwnd_parent)), _cb, 0)
+
+    if int(parent_hwnd or 0) > 0:
+        _walk(int(parent_hwnd))
+    return out
+
+
+def _looks_like_open_dialog(hwnd: int) -> bool:
+    h = int(hwnd or 0)
+    if h <= 0:
+        return False
+    cls = str(get_class_name(h) or "")
+    if cls != "#32770":
+        return False
+    title = str(get_window_text(h) or "").strip()
+    if not title:
+        return True
+    return ("열기" in title) or ("open" in title.casefold())
+
+
+def _wait_for_open_dialog(
+    *,
+    timeout_sec: float,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    get_foreground_hwnd_cb: Optional[Callable[[], int]] = None,
+) -> int:
+    deadline = time.perf_counter() + max(0.8, float(timeout_sec))
+    last_fg_root = 0
+    while time.perf_counter() < deadline:
+        fg = int((get_foreground_hwnd_cb or get_foreground_hwnd)() or 0)
+        fg_root = _root_hwnd(fg)
+        last_fg_root = fg_root
+        if _looks_like_open_dialog(fg_root):
+            log(f"[CTRL+T-MULTI] open dialog found by fg root={fg_root}")
+            return fg_root
+
+        for h in _iter_top_windows():
+            if _looks_like_open_dialog(h):
+                log(f"[CTRL+T-MULTI] open dialog found by enum hwnd={h}")
+                return h
+        sleep_abs(0.05)
+
+    log(f"[CTRL+T-MULTI] open dialog not found fg_root={last_fg_root}")
+    return 0
+
+
+def _get_edit_text_via_messages(hwnd: int) -> str:
+    h = int(hwnd or 0)
+    if h <= 0:
+        return ""
+    try:
+        length = int(user32.SendMessageW(wintypes.HWND(h), WM_GETTEXTLENGTH, 0, 0) or 0)
+        buf = ctypes.create_unicode_buffer(max(1, length + 2))
+        user32.SendMessageW(wintypes.HWND(h), WM_GETTEXT, len(buf), ctypes.cast(buf, ctypes.c_void_p).value or 0)
+        return str(buf.value or "")
+    except Exception:
+        return ""
+
+
+def _find_filename_edit_hwnd(dialog_hwnd: int, *, log: Callable[[str], None]) -> int:
+    candidates: list[tuple[int, int]] = []
+    for h in _iter_child_windows(dialog_hwnd, recursive=True):
+        try:
+            if str(get_class_name(h) or "") != "Edit":
+                continue
+            l, t, r, b = get_window_rect(h)
+            if r <= l or b <= t:
+                continue
+            area = max(0, r - l) * max(0, b - t)
+            ctrl_id = int(user32.GetDlgCtrlID(wintypes.HWND(h)) or 0)
+            parent = int(user32.GetParent(wintypes.HWND(h)) or 0)
+            parent_id = int(user32.GetDlgCtrlID(wintypes.HWND(parent)) or 0) if parent > 0 else 0
+            parent_cls = str(get_class_name(parent) or "") if parent > 0 else ""
+            score = (b * 10) + area
+            if ctrl_id == EDT1:
+                score += 10000000
+            if parent_id == EDT1:
+                score += 5000000
+            if parent_cls in {"ComboBox", "ComboBoxEx32"}:
+                score += 1000000
+            candidates.append((score, h))
+            log(f"[CTRL+T-MULTI] edit candidate hwnd={h} ctrl_id={ctrl_id} parent={parent} parent_id={parent_id} parent_cls={parent_cls!r} rect={(l,t,r,b)}")
+        except Exception:
+            continue
+
+    if not candidates:
+        log("[CTRL+T-MULTI] filename edit not found")
+        return 0
+
+    candidates.sort(reverse=True)
+    hwnd = int(candidates[0][1])
+    log(f"[CTRL+T-MULTI] filename edit hwnd={hwnd}")
+    return hwnd
+
+
+def _set_edit_text_verified(
+    edit_hwnd: int,
+    text: str,
+    *,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    timeout_sec: float = 1.2,
+) -> bool:
+    h = int(edit_hwnd or 0)
+    if h <= 0:
+        return False
+
+    # ctypes wrapper 환경에서는 LPARAM에 c_wchar_p를 직접 넘기면
+    # 'object cannot be interpreted as an integer' 예외가 날 수 있다.
+    # 반드시 버퍼 포인터 값을 정수 LPARAM으로 넘긴다.
+    try:
+        buf = ctypes.create_unicode_buffer(str(text or ""))
+        lp = ctypes.cast(buf, ctypes.c_void_p).value or 0
+        user32.SendMessageW(wintypes.HWND(h), WM_SETTEXT, 0, lp)
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] WM_SETTEXT fail hwnd={h} err={e}")
+        return False
+
+    deadline = time.perf_counter() + max(0.6, float(timeout_sec))
+    target = _normalize_compare_text(text)
+    last_actual = ""
+    while time.perf_counter() < deadline:
+        last_actual = _get_edit_text_via_messages(h)
+        current = _normalize_compare_text(last_actual)
+        if current == target:
+            log(f"[CTRL+T-MULTI] filename text verified hwnd={h}")
+            return True
+        sleep_abs(0.05)
+
+    try:
+        user32.SetForegroundWindow(wintypes.HWND(h))
+    except Exception:
+        pass
+    try:
+        user32.SendMessageW(wintypes.HWND(h), EM_SETSEL, 0, -1)
+    except Exception:
+        pass
+
+    deadline = time.perf_counter() + max(0.8, float(timeout_sec))
+    while time.perf_counter() < deadline:
+        last_actual = _get_edit_text_via_messages(h)
+        current = _normalize_compare_text(last_actual)
+        if current == target:
+            log(f"[CTRL+T-MULTI] filename text verified hwnd={h} (retry)")
+            return True
+        sleep_abs(0.05)
+
+    log(
+        "[CTRL+T-MULTI] filename verify fail "
+        f"expected={text!r} actual={last_actual!r}"
+    )
+    return False
+
+
+def _find_open_button_hwnd(dialog_hwnd: int, *, log: Callable[[str], None]) -> int:
+    fallback_idok = 0
+    fallback_area = 0
+    for h in _iter_child_windows(dialog_hwnd, recursive=True):
+        try:
+            if str(get_class_name(h) or "") != "Button":
+                continue
+            txt = str(get_window_text(h) or "").strip()
+            ctrl_id = int(user32.GetDlgCtrlID(wintypes.HWND(h)) or 0)
+            l, t, r, b = get_window_rect(h)
+            area = max(0, r - l) * max(0, b - t)
+            if txt and (("열기" in txt) or ("open" in txt.casefold())):
+                log(f"[CTRL+T-MULTI] open button hwnd={h} text={txt!r}")
+                return h
+            if ctrl_id == IDOK and area >= fallback_area:
+                fallback_area = area
+                fallback_idok = h
+        except Exception:
+            continue
+
+    if fallback_idok:
+        log(f"[CTRL+T-MULTI] open button fallback IDOK hwnd={fallback_idok}")
+    else:
+        log("[CTRL+T-MULTI] open button not found")
+    return int(fallback_idok or 0)
+
+
+def _wait_for_dialog_close(dialog_hwnd: int, *, sleep_abs: Callable[[float], None], timeout_sec: float) -> bool:
+    deadline = time.perf_counter() + max(0.4, float(timeout_sec))
+    h = int(dialog_hwnd or 0)
+    while time.perf_counter() < deadline:
+        if not bool(user32.IsWindow(wintypes.HWND(h))):
+            return True
+        sleep_abs(0.05)
+    return False
+
+
+def _confirm_dialog_fields_and_submit(
+    *,
+    dialog_hwnd: int,
+    edit_hwnd: int,
+    expected_text: str,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    submit_timeout_sec: float = 3.0,
+) -> bool:
+    raw_actual = _get_edit_text_via_messages(edit_hwnd)
+    actual = _normalize_compare_text(raw_actual)
+    expected = _normalize_compare_text(expected_text)
+    if actual != expected:
+        log(
+            "[CTRL+T-MULTI] submit blocked by filename mismatch "
+            f"expected={expected_text!r} actual={raw_actual!r}"
+        )
+        return False
+
+    btn_hwnd = _find_open_button_hwnd(dialog_hwnd, log=log)
+    if btn_hwnd:
+        try:
+            user32.SendMessageW(wintypes.HWND(btn_hwnd), BM_CLICK, 0, 0)
+            if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+                log("[CTRL+T-MULTI] dialog closed after BM_CLICK")
+                return True
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] BM_CLICK fail hwnd={btn_hwnd} err={e}")
+
+        try:
+            l, t, r, b = get_window_rect(btn_hwnd)
+            if r > l and b > t:
+                x = int((l + r) / 2)
+                y = int((t + b) / 2)
+                _, _, click = lazy_pywinauto()
+                click(coords=(x, y))
+                if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+                    log("[CTRL+T-MULTI] dialog closed after click")
+                    return True
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] open button click fail err={e}")
+
+    try:
+        user32.SendMessageW(wintypes.HWND(dialog_hwnd), WM_COMMAND, IDOK, 0)
+        if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+            log("[CTRL+T-MULTI] dialog closed after WM_COMMAND IDOK")
+            return True
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] WM_COMMAND(IDOK) fail err={e}")
+
+    return False
+
 
 def send_png_via_ctrl_t(
     *,
@@ -421,22 +748,13 @@ def send_files_via_ctrl_t(
     def _t(key: str, default: float = 0.0) -> float:
         return float(tm.get(key, default))
 
-    bundle_dir = os.path.dirname(valid_paths[0])
-    if not bundle_dir:
-        log("[CTRL+T-MULTI] invalid bundle_dir")
-        return False
-
-    for p in valid_paths:
-        if os.path.dirname(p) != bundle_dir:
-            log(f"[CTRL+T-MULTI] different dirs detected: {p}")
-            return False
-
     names_text = _build_names_text(valid_paths)
-    if not names_text:
+    full_paths_text = _build_absolute_paths_text(valid_paths)
+    if not full_paths_text:
         return False
 
-    log(f"[CTRL+T-MULTI] bundle_dir={bundle_dir}")
     log(f"[CTRL+T-MULTI] names_text={names_text}")
+    log(f"[CTRL+T-MULTI] full_paths_text={full_paths_text}")
 
     try:
         ensure_foreground_chat()
@@ -446,36 +764,62 @@ def send_files_via_ctrl_t(
         log(f"[CTRL+T-MULTI] pre-focus fail: {e}")
 
     try:
-        # 1) 열기 창
         send_keys_fast("^t")
-        sleep_abs(_t("after_ctrl_t", 0.20))
+        dialog_hwnd = _wait_for_open_dialog(
+            timeout_sec=max(2.5, _t("after_ctrl_t", 0.20) + 3.0),
+            sleep_abs=sleep_abs,
+            log=log,
+            get_foreground_hwnd_cb=get_foreground_hwnd,
+        )
+        if not dialog_hwnd:
+            _safe_cleanup_after_file_dialog(
+                prefer_hwnd=int(prefer_hwnd or 0),
+                sleep_abs=sleep_abs,
+                log=log,
+            )
+            return False
 
-        # 2) 주소창 이동
-        send_keys_fast("%d")
-        sleep_abs(0.10)
+        edit_hwnd = _find_filename_edit_hwnd(dialog_hwnd, log=log)
+        if not edit_hwnd:
+            _safe_cleanup_after_file_dialog(
+                prefer_hwnd=int(prefer_hwnd or 0),
+                sleep_abs=sleep_abs,
+                log=log,
+            )
+            return False
 
-        set_clipboard_text(bundle_dir)
-        sleep_abs(_t("clipboard_settle", 0.03))
-        send_keys_fast("^v")
-        sleep_abs(0.08)
-        send_keys_fast("{ENTER}")
-        sleep_abs(0.35)
+        if not _set_edit_text_verified(
+            edit_hwnd,
+            full_paths_text,
+            sleep_abs=sleep_abs,
+            log=log,
+            timeout_sec=max(1.2, _t("after_paste_path", 0.08) + 1.2),
+        ):
+            _safe_cleanup_after_file_dialog(
+                prefer_hwnd=int(prefer_hwnd or 0),
+                sleep_abs=sleep_abs,
+                log=log,
+            )
+            return False
 
-        # 3) 파일 이름 칸
-        send_keys_fast("%n")
-        sleep_abs(0.10)
+        if not _confirm_dialog_fields_and_submit(
+            dialog_hwnd=dialog_hwnd,
+            edit_hwnd=edit_hwnd,
+            expected_text=full_paths_text,
+            sleep_abs=sleep_abs,
+            log=log,
+            submit_timeout_sec=max(3.0, float(timeout_sec)),
+        ):
+            log("[CTRL+T-MULTI] submit failed or dialog did not close")
+            _safe_cleanup_after_file_dialog(
+                prefer_hwnd=int(prefer_hwnd or 0),
+                sleep_abs=sleep_abs,
+                log=log,
+            )
+            return False
 
-        # 4) 파일명만 입력
-        set_clipboard_text(names_text)
-        sleep_abs(_t("clipboard_settle", 0.03))
-        send_keys_fast("^v")
-        sleep_abs(_t("after_paste_path", 0.08))
+        sleep_abs(max(0.15, _t("after_enter_path", 0.25)))
 
-        # 5) 선택 확정
-        send_keys_fast("{ENTER}")
-        sleep_abs(_t("after_enter_path", 0.25))
-
-        # 6) 파일 전송 확인
         ok = send_files_dialog_hook(
             chat_hwnd=int(prefer_hwnd or 0),
             send_keys_fast=send_keys_fast,
@@ -491,7 +835,6 @@ def send_files_via_ctrl_t(
             )
             return False
 
-        # 최종 정리
         _safe_cleanup_after_file_dialog(
             prefer_hwnd=int(prefer_hwnd or 0),
             sleep_abs=sleep_abs,
@@ -502,7 +845,6 @@ def send_files_via_ctrl_t(
 
     except Exception as e:
         log(f"[CTRL+T-MULTI] exception: {e}")
-
         _safe_cleanup_after_file_dialog(
             prefer_hwnd=int(prefer_hwnd or 0),
             sleep_abs=sleep_abs,

@@ -1,5 +1,4 @@
-# FILE: src/backend/updates/update_config.py
-# src/backend/updates/update_config.py
+﻿# src/backend/updates/update_config.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -19,6 +18,6 @@ class UpdateConfig:
 
 # ✅ 프로젝트에 맞게 수정
 UPDATE_CONFIG = UpdateConfig(
-    owner="SongMihyun",
-    repo="KakaoCampaignSender",
+    owner="YOUR_GITHUB_OWNER",
+    repo="YOUR_GITHUB_REPO",
 )

@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtGui import QCloseEvent
-from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -20,7 +19,6 @@ from PySide6.QtWidgets import (
 )
 
 from app.paths import contacts_db_path
-from app.startup_args import StartupArgs
 from app.version import __display_name__
 from backend.core.lifecycle.apply_settings_bundle import schedule_apply_settings_bundle_after_exit
 from backend.core.lifecycle.reset_app import schedule_delete_all_local_data
@@ -42,7 +40,6 @@ from backend.domains.sending.service import SendingService
 from backend.domains.sending.worker import MultiSendWorker
 from backend.domains.settings_bundle.service import SettingsBundleService
 from backend.stores.contacts_store import ContactsStore
-from backend.integrations.windows.task_scheduler_service import TaskSchedulerService
 
 from frontend.layout.header import Header
 from frontend.layout.navigation import Navigation
@@ -57,10 +54,8 @@ from frontend.pages.sending.page import SendPage
 class MainWindow(QMainWindow):
     TITLES = ["대상자 관리", "발송 그룹", "캠페인 설정", "발송", "로그/리포트"]
 
-    def __init__(self, startup_args: StartupArgs | None = None) -> None:
+    def __init__(self) -> None:
         super().__init__()
-
-        self.startup_args = startup_args or StartupArgs()
 
         self.setWindowTitle(__display_name__)
         self.resize(1180, 760)
@@ -114,10 +109,8 @@ class MainWindow(QMainWindow):
             repo=self.send_lists_repo,
         )
         self.settings_bundle_service = SettingsBundleService()
-        self.task_scheduler_service = TaskSchedulerService()
         self.scheduled_sends_service = ScheduledSendsService(
             repo=self.scheduled_sends_repo,
-            task_scheduler=self.task_scheduler_service,
         )
 
         self.report_reader = SendReportReader()
@@ -202,43 +195,6 @@ class MainWindow(QMainWindow):
         self.nav.page_changed.connect(self._go_page)
         self._go_page(0)
         self._apply_style()
-        QTimer.singleShot(300, self._handle_startup_actions)
-
-    def _handle_startup_actions(self) -> None:
-        try:
-            if self.startup_args.is_scheduled_launch and self.startup_args.scheduled_send_id:
-                self._go_page(3)
-                self.send_page.set_exit_after_scheduled_send(True)
-                started = self.send_page.start_scheduled_send(self.startup_args.scheduled_send_id)
-                if not started:
-                    self.status.set_message(f"예약발송 시작 실패: #{self.startup_args.scheduled_send_id}")
-                    QTimer.singleShot(1500, QApplication.quit)
-                return
-
-            if self.startup_args.recover_scheduled_sends:
-                self._recover_due_scheduled_sends(auto_start=True)
-                return
-
-            self._recover_due_scheduled_sends(auto_start=False)
-        except Exception as e:
-            self.status.set_message(f"예약 시작 처리 실패: {e}")
-
-    def _recover_due_scheduled_sends(self, *, auto_start: bool) -> None:
-        due_rows = self.scheduled_sends_service.list_due_pending()
-        if not due_rows:
-            return
-
-        first = due_rows[0]
-        if auto_start:
-            self._go_page(3)
-            self.send_page.start_scheduled_send(first.id)
-            return
-
-        self.status.set_message(f"미실행 예약 {len(due_rows)}건 있음 | 가장 빠른 예약 #{first.id} {first.planned_at}")
-        try:
-            self.send_page.refresh_schedule_status()
-        except Exception:
-            pass
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._cleanup_before_close()
@@ -325,8 +281,11 @@ class MainWindow(QMainWindow):
                 border-radius: 10px;
                 border: 1px solid #e5e7eb;
                 background: #ffffff;
+                color: #111827;
+                font-weight: 400;
             }
             QPushButton:hover { background: #f3f4f6; }
+            QPushButton:disabled { background: #f8fafc; color: #94a3b8; }
 
             QLineEdit, QTextEdit, QComboBox {
                 border: 1px solid #e5e7eb;
@@ -339,258 +298,133 @@ class MainWindow(QMainWindow):
                 border: 1px solid #e5e7eb;
                 border-radius: 8px;
                 background: #ffffff;
-                padding: 0px 6px;
-                font-weight: 900;
             }
-            QToolButton#HeaderMenuBtn:hover {
-                background: #f3f4f6;
-            }
+            QToolButton#HeaderMenuBtn:hover { background: #f3f4f6; }
             """
         )
 
-    def _load_contacts_store_from_db(self) -> int:
-        all_rows = self.contacts_repo.search_contacts("")
-        self.contacts_store.load_rows(all_rows)
-        return len(all_rows)
-
     def _on_contacts_changed_global(self) -> None:
-        if not hasattr(self, "_contacts_sync_timer"):
-            from PySide6.QtCore import QTimer
+        from frontend.utils.worker import run_bg
+        from frontend.app.app_events import app_events
 
-            self._contacts_sync_timer = QTimer(self)  # type: ignore[attr-defined]
-            self._contacts_sync_timer.setSingleShot(True)  # type: ignore[attr-defined]
-            self._contacts_sync_timer.timeout.connect(self._do_contacts_store_sync_bg)  # type: ignore[attr-defined]
-
-        try:
-            self._contacts_sync_timer.start(120)  # type: ignore[attr-defined]
-        except Exception:
-            self._do_contacts_store_sync_bg()
-
-    def _do_contacts_store_sync_bg(self) -> None:
-        try:
-            from frontend.utils.worker import run_bg
-        except Exception:
+        def _load_contacts_rows() -> list[dict]:
             try:
-                cnt = self._load_contacts_store_from_db()
-                self.status.set_message(f"대상자 캐시 동기화 완료: {cnt}건")
-            except Exception as e:
-                self.status.set_message(f"대상자 캐시 동기화 실패: {e}")
-            return
+                return self.contacts_repo.list_all()
+            except Exception:
+                return self.contacts_repo.search_contacts("")
 
-        def job():
-            return self.contacts_repo.search_contacts("")
-
-        def done(all_rows):
+        def _apply(rows: list[dict]) -> None:
             try:
-                self.contacts_store.load_rows(all_rows)
-                self._refresh_pages_after_contacts_sync()
-                self.status.set_message(f"대상자 캐시 동기화 완료: {len(all_rows)}건")
-            except Exception as e:
-                self.status.set_message(f"대상자 캐시 반영 실패: {e}")
+                self.contacts_store.load_rows(rows)
+            except Exception:
+                try:
+                    self.contacts_store.clear()
+                except Exception:
+                    pass
 
-        def err(tb: str):
-            self.status.set_message(f"대상자 캐시 동기화 실패: {tb}")
+            try:
+                if hasattr(self, "groups_page") and self.groups_page:
+                    self.groups_page.reload_groups()
+            except Exception:
+                pass
 
-        run_bg(job, on_done=done, on_error=err)
-
-    def _refresh_pages_after_contacts_sync(self) -> None:
-        try:
-            if hasattr(self, "groups_page") and self.groups_page:
-                if hasattr(self.groups_page, "refresh"):
-                    self.groups_page.refresh()
-        except Exception:
-            pass
-
-        try:
-            if hasattr(self, "send_page") and self.send_page:
-                if hasattr(self.send_page, "reload_send_lists"):
+            try:
+                if hasattr(self, "send_page") and self.send_page:
+                    self.send_page.reload_sources()
                     self.send_page.reload_send_lists()
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-    def _is_send_busy(self) -> bool:
-        try:
-            if hasattr(self, "send_page") and self.send_page:
-                if hasattr(self.send_page, "is_sending_active"):
-                    return bool(self.send_page.is_sending_active())
-        except Exception:
-            pass
-        return False
+            try:
+                app_events.groups_changed.emit()  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+        run_bg(self, _load_contacts_rows, done=_apply)
 
     def export_settings_bundle(self) -> None:
-        if self._is_send_busy():
-            QMessageBox.information(
-                self,
-                "안내",
-                "발송 중에는 설정 내보내기를 할 수 없습니다.\n발송 종료 후 다시 시도해주세요.",
-            )
-            return
-
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"kakao_sender_settings_{ts}.kcsbundle"
-        default_path = str(Path.home() / "Downloads" / default_name)
-
-        file_path, _ = QFileDialog.getSaveFileName(
+        default_name = f"kakao_sender_settings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        path, _ = QFileDialog.getSaveFileName(
             self,
             "설정 내보내기",
-            default_path,
-            "카센더 설정 백업 (*.kcsbundle);;ZIP 파일 (*.zip)",
+            str(Path.home() / default_name),
+            "ZIP Files (*.zip)",
         )
-        if not file_path:
+        if not path:
             return
 
         try:
-            info = self.settings_bundle_service.export_bundle(file_path)
+            out = self.settings_bundle_service.export_bundle(path)
         except Exception as e:
-            QMessageBox.critical(
-                self,
-                "내보내기 실패",
-                f"설정 내보내기 중 오류가 발생했습니다.\n\n{e}",
-            )
+            QMessageBox.critical(self, "오류", f"설정 내보내기 실패\n{e}")
             return
 
-        self.status.set_message(f"설정 내보내기 완료: {info.bundle_path}")
-        QMessageBox.information(
-            self,
-            "설정 내보내기 완료",
-            "설정 백업 파일이 생성되었습니다.\n\n"
-            f"파일: {info.bundle_path}\n"
-            f"연락처: {info.contacts_count}건\n"
-            f"그룹: {info.groups_count}건\n"
-            f"캠페인: {info.campaigns_count}건\n"
-            f"발송리스트: {info.send_lists_count}건\n"
-            f"캠페인 이미지 폴더 포함: {'예' if info.has_campaign_assets else '아니오'}\n"
-            f"리포트 폴더 포함: {'예' if info.has_reports else '아니오'}\n"
-            f"로그 폴더 포함: {'예' if info.has_logs else '아니오'}"
-        )
+        QMessageBox.information(self, "완료", f"설정 내보내기 완료\n{out}")
 
     def import_settings_bundle(self) -> None:
-        if self._is_send_busy():
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "설정 가져오기",
+            str(Path.home()),
+            "ZIP Files (*.zip)",
+        )
+        if not path:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "설정 가져오기",
+            "설정을 가져오면 앱이 종료 후 재시작됩니다.\n계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            restart_cmd = [sys.executable, sys.argv[0]]
+            schedule_apply_settings_bundle_after_exit(path, restart_cmd)
+            self._skip_finalize_pending_update_once = True
+            QApplication.quit()
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"설정 가져오기 예약 실패\n{e}")
+
+    def logout(self) -> None:
+        QMessageBox.information(self, "로그아웃", "로그아웃 기능은 준비 중입니다.")
+
+    def reset_application(self) -> None:
+        reply = QMessageBox.warning(
+            self,
+            "초기화 확인",
+            "앱의 로컬 데이터(DB/로그/설정)를 모두 삭제하고 종료합니다.\n계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            schedule_delete_all_local_data(sys.executable, [sys.argv[0]])
+            self._skip_finalize_pending_update_once = True
+            QApplication.quit()
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"초기화 예약 실패\n{e}")
+
+    def uninstall_application(self) -> None:
+        root = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parents[3]))
+        ps1 = root / "uninstall.ps1"
+        if not ps1.exists():
             QMessageBox.information(
                 self,
                 "안내",
-                "발송 중에는 설정 가져오기를 할 수 없습니다.\n발송 종료 후 다시 시도해주세요.",
+                f"삭제 스크립트를 찾을 수 없습니다.\n{ps1}",
             )
             return
 
-        file_path, _ = QFileDialog.getOpenFileName(
+        reply = QMessageBox.warning(
             self,
-            "설정 가져오기",
-            str(Path.home() / "Downloads"),
-            "카센더 설정 백업 (*.kcsbundle *.zip)",
-        )
-        if not file_path:
-            return
-
-        try:
-            info = self.settings_bundle_service.inspect_bundle(file_path)
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "파일 확인 실패",
-                f"설정 번들 확인 중 오류가 발생했습니다.\n\n{e}",
-            )
-            return
-
-        reply = QMessageBox.question(
-            self,
-            "설정 가져오기",
-            "현재 로컬 데이터(DB/캠페인 이미지/리포트/로그)가 가져온 파일로 교체됩니다.\n"
-            "DB 파일이 사용 중일 수 있으므로, 프로그램을 먼저 종료한 뒤 오프라인으로 적용합니다.\n"
-            "적용이 끝나면 프로그램이 자동으로 다시 실행됩니다.\n\n"
-            f"연락처: {info.contacts_count}건\n"
-            f"그룹: {info.groups_count}건\n"
-            f"캠페인: {info.campaigns_count}건\n"
-            f"발송리스트: {info.send_lists_count}건\n"
-            f"내보낸 시각: {info.exported_at}\n\n"
-            "계속하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        self._cleanup_before_close()
-
-        try:
-            log_path = schedule_apply_settings_bundle_after_exit(
-                bundle_path=file_path,
-                wait_pid=os.getpid(),
-                relaunch_executable=sys.executable,
-                relaunch_args=list(sys.argv[1:]) if getattr(sys, "frozen", False) else list(sys.argv),
-            )
-        except Exception as e:
-            QMessageBox.critical(
-                self,
-                "설정 가져오기 실패",
-                f"설정 적용 예약 중 오류가 발생했습니다.\n\n{e}",
-            )
-            return
-
-        self._skip_finalize_pending_update_once = True
-        QMessageBox.information(
-            self,
-            "설정 가져오기 예약 완료",
-            "프로그램을 종료한 뒤 설정을 적용합니다.\n"
-            "적용 완료 후 프로그램이 자동으로 다시 실행됩니다.\n\n"
-            f"적용 로그: {log_path}",
-        )
-        QApplication.quit()
-        sys.exit(0)
-
-    def _restart_application(self) -> None:
-        try:
-            if getattr(sys, "frozen", False):
-                args = [sys.executable] + list(sys.argv[1:])
-            else:
-                args = [sys.executable] + list(sys.argv)
-            subprocess.Popen(args, cwd=os.getcwd(), shell=False)
-        except Exception as e:
-            QMessageBox.warning(
-                self,
-                "재시작 안내",
-                "자동 재시작에 실패했습니다.\n프로그램을 종료한 뒤 직접 다시 실행해주세요.\n\n"
-                f"상세: {e}",
-            )
-        QApplication.quit()
-        sys.exit(0)
-
-    def reset_application(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "전체 초기화",
-            "모든 로컬 데이터(DB 포함)를 삭제하고 프로그램을 종료합니다.\n"
-            "프로그램 종료 후 자동으로 삭제가 진행됩니다.\n\n계속하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        self._cleanup_before_close()
-
-        try:
-            log_path = schedule_delete_all_local_data()
-        except Exception as e:
-            QMessageBox.critical(self, "삭제 예약 실패", f"삭제 예약 중 오류:\n{e}")
-            return
-
-        QMessageBox.information(
-            self,
-            "완료",
-            "프로그램을 종료합니다.\n"
-            "종료 후 로컬 데이터가 자동으로 삭제됩니다.\n\n"
-            f"삭제 로그: {log_path}",
-        )
-
-        QApplication.quit()
-        sys.exit(0)
-
-    def logout(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "로그아웃",
-            "로그아웃 하시겠습니까?",
+            "프로그램 삭제",
+            "프로그램 제거를 시작합니다.\n진행 중 앱이 종료될 수 있습니다.\n계속하시겠습니까?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -598,49 +432,25 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            from frontend.dialogs.login_dialog import LoginDialog
-        except Exception:
-            QMessageBox.information(self, "안내", "LoginDialog를 찾을 수 없습니다.")
-            return
+            flags = 0
+            try:
+                flags = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]
+            except Exception:
+                flags = 0
 
-        self.hide()
-        ok = LoginDialog.run_login(self)
-        if ok:
-            self.show()
-            self._go_page(0)
-        else:
-            self.close()
-
-    def uninstall_application(self) -> None:
-        reply = QMessageBox.question(
-            self,
-            "프로그램 제거",
-            "프로그램 제거(언인스톨)를 실행합니다.\n"
-            "제거가 시작되면 프로그램은 종료됩니다.\n\n계속하시겠습니까?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        self._cleanup_before_close()
-
-        uninst = os.path.join(os.path.dirname(sys.executable), "unins000.exe")
-
-        if not os.path.exists(uninst):
-            QMessageBox.warning(
-                self,
-                "언인스톨러 없음",
-                "언인스톨러(unins000.exe)를 찾지 못했습니다.\n"
-                "Windows '앱 및 기능'에서 카센더를 제거해주세요.",
+            subprocess.Popen(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(ps1),
+                ],
+                cwd=str(root),
+                creationflags=flags,
             )
-            return
-
-        try:
-            subprocess.Popen([uninst], shell=False)
+            self._skip_finalize_pending_update_once = True
+            QApplication.quit()
         except Exception as e:
-            QMessageBox.critical(self, "제거 실행 실패", f"제거 실행 중 오류:\n{e}")
-            return
-
-        QApplication.quit()
-        sys.exit(0)
+            QMessageBox.critical(self, "오류", f"삭제 실행 실패\n{e}")

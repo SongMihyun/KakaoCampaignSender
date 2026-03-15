@@ -1,8 +1,6 @@
 # FILE: src/frontend/pages/sending/page.py
 from __future__ import annotations
 
-import os
-import sys
 import time
 from datetime import datetime
 from typing import Callable, Optional
@@ -167,7 +165,6 @@ class SendPage(QWidget):
         self._is_pause_ui: bool = False
         self._active_scheduled_send_id: Optional[int] = None
         self._latest_schedule_id: Optional[int] = None
-        self._exit_after_scheduled_send: bool = False
 
         self._hotkey_mgr: Optional[GlobalHotkeyManager] = None
         self._init_global_hotkey()
@@ -187,6 +184,11 @@ class SendPage(QWidget):
         self._preview_refresh_timer = QTimer(self)
         self._preview_refresh_timer.setSingleShot(True)
         self._preview_refresh_timer.timeout.connect(self._refresh_current_preview)
+
+        self._schedule_monitor_timer = QTimer(self)
+        self._schedule_monitor_timer.setInterval(1000)
+        self._schedule_monitor_timer.timeout.connect(self._on_schedule_monitor_tick)
+        self._schedule_monitor_timer.start()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(18, 18, 18, 18)
@@ -426,8 +428,6 @@ class SendPage(QWidget):
         self.reload_send_lists()
         self.refresh_schedule_status()
 
-    def set_exit_after_scheduled_send(self, enabled: bool) -> None:
-        self._exit_after_scheduled_send = bool(enabled)
 
     def refresh_schedule_status(self) -> None:
         if self.scheduled_sends_service is None:
@@ -444,12 +444,12 @@ class SendPage(QWidget):
 
         if not row:
             self._latest_schedule_id = None
-            self.lbl_schedule_status.setText("예약 없음")
+            self.lbl_schedule_status.setText("예약 없음 | 앱 실행 중일 때만 자동 시작")
             return
 
         self._latest_schedule_id = int(row.id)
         self.lbl_schedule_status.setText(
-            f"최근 예약 #{row.id} | {row.status} | {row.planned_at}"
+            f"최근 예약 #{row.id} | {row.status} | {row.planned_at} | 앱 실행 중 자동 시작"
         )
 
     def _collect_enabled_send_list_rows(self) -> list[dict]:
@@ -467,16 +467,6 @@ class SendPage(QWidget):
             send_list_rows.append(data)
         return send_list_rows
 
-    def _resolve_self_launch(self) -> tuple[str, list[str], str]:
-        if getattr(sys, "frozen", False):
-            exe_path = sys.executable
-            work_dir = os.path.dirname(sys.executable) or os.getcwd()
-            return exe_path, [], work_dir
-
-        exe_path = sys.executable
-        script_args = [sys.argv[0]]
-        work_dir = os.getcwd()
-        return exe_path, script_args, work_dir
 
     def _create_scheduled_send(self) -> None:
         if self.scheduled_sends_service is None:
@@ -502,26 +492,28 @@ class SendPage(QWidget):
         except Exception:
             speed_mode = "normal"
 
-        exe_path, base_args, work_dir = self._resolve_self_launch()
-
         try:
-            schedule_id = self.scheduled_sends_service.create_schedule(
+            schedule_id, created = self.scheduled_sends_service.create_schedule(
                 planned_at=planned_at,
                 speed_mode=speed_mode,
                 send_list_rows=send_list_rows,
-                executable_path=exe_path,
-                arguments=base_args,
-                working_dir=work_dir,
             )
         except Exception as e:
             QMessageBox.critical(self, "오류", f"예약 저장 실패\n{e}")
             return
 
         self._latest_schedule_id = int(schedule_id)
+        if created:
+            self.lbl_schedule_status.setText(
+                f"예약됨 #{schedule_id} / {planned_at.strftime('%Y-%m-%d %H:%M:%S')} | 앱 실행 중 자동 시작"
+            )
+            self._on_status(f"예약발송 등록 완료: #{schedule_id} | 앱을 켜둔 상태에서 예약 시각이 되면 자동 시작됩니다.")
+            return
+
         self.lbl_schedule_status.setText(
-            f"예약됨 #{schedule_id} / {planned_at.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"중복 예약 유지 #{schedule_id} / {planned_at.strftime('%Y-%m-%d %H:%M:%S')} | 동일 예약 추가 저장 안함"
         )
-        self._on_status(f"예약발송 등록 완료: #{schedule_id}")
+        self._on_status(f"동일한 예약이 이미 존재합니다. 기존 예약 #{schedule_id} 를 유지합니다.")
 
     def _cancel_latest_schedule(self) -> None:
         if self.scheduled_sends_service is None:
@@ -560,6 +552,26 @@ class SendPage(QWidget):
 
         self._on_status(f"예약 취소 완료: #{schedule_id}")
         self.refresh_schedule_status()
+
+    def _on_schedule_monitor_tick(self) -> None:
+        if self.scheduled_sends_service is None:
+            return
+        if self._worker and self._worker.isRunning():
+            return
+
+        try:
+            due_rows = self.scheduled_sends_service.list_due_pending()
+        except Exception:
+            return
+
+        if not due_rows:
+            return
+
+        first = due_rows[0]
+        started = self.start_scheduled_send(int(first.id))
+        if started:
+            self._on_status(f"예약 시간 도달로 자동 발송 시작: #{first.id}")
+
 
     def _init_global_hotkey(self) -> None:
         app = QApplication.instance()
@@ -1243,6 +1255,17 @@ class SendPage(QWidget):
             self.refresh_schedule_status()
             return False
 
+    def _on_worker_list_changed(self, title: str, idx: int, total: int) -> None:
+        self._set_progress_title(f"{idx}/{total} {title}")
+        self.progress.setValue(0)
+
+    def _on_worker_pause_changed(self, paused: bool) -> None:
+        self._set_pause_ui(paused)
+        if paused:
+            self._on_status("일시정지됨(F9) | 현재 열린 대화 발송 완료 후 안전 정지되었습니다. 이제 카카오톡 PC를 사용해도 됩니다.")
+        else:
+            self._on_status("발송 재개됨(F9) | 다음 대상자를 카카오톡 메인창 검색부터 다시 시작합니다.")
+
     def _toggle_pause_send(self) -> None:
         if not self._worker or not self._worker.isRunning():
             return
@@ -1301,8 +1324,6 @@ class SendPage(QWidget):
         self._on_status(summary)
 
         if active_schedule_id:
-            if self._exit_after_scheduled_send:
-                QTimer.singleShot(1500, QApplication.quit)
             return
 
         QMessageBox.information(
@@ -1372,6 +1393,7 @@ class SendPage(QWidget):
             self._sources_reload_timer.stop()
             self._send_lists_reload_timer.stop()
             self._preview_refresh_timer.stop()
+            self._schedule_monitor_timer.stop()
         except Exception:
             pass
 
