@@ -43,6 +43,25 @@ def _looks_like_kakao_context(title: str) -> bool:
     return False
 
 
+def _sleep_with_pause(sec: float, wait_if_paused=None) -> bool:
+    end = time.time() + max(0.0, float(sec))
+    while time.time() < end:
+        if callable(wait_if_paused):
+            try:
+                if bool(wait_if_paused()):
+                    return True
+            except Exception:
+                pass
+        remain = end - time.time()
+        time.sleep(min(0.02, max(0.001, remain)))
+    if callable(wait_if_paused):
+        try:
+            return bool(wait_if_paused())
+        except Exception:
+            return False
+    return False
+
+
 def _candidate_click_points(rect: Tuple[int, int, int, int]) -> List[Tuple[int, int]]:
     l, t, r, b = rect
     w = r - l
@@ -113,6 +132,7 @@ def send_clipboard_image_dialog_force(
     loop_sleep: float = 0.02,
     post_click_sleep: float = 0.03,
     prefer_hwnd: int = 0,  # ✅ (호출부에서 이미 넘기고 있으면 매칭)
+    wait_if_paused=None,
 ) -> bool:
     logger = get_logger(debug=debug)
     Desktop, send_keys, _ = lazy_pywinauto()
@@ -148,12 +168,16 @@ def send_clipboard_image_dialog_force(
                     first_click_ms = int((time.time() - t0) * 1000)
 
                 try:
-                    time.sleep(post_click_sleep)
+                    if _sleep_with_pause(post_click_sleep, wait_if_paused):
+                        return False
                     for i in range(enter_times):
+                        if _sleep_with_pause(0.0, wait_if_paused):
+                            return False
                         send_keys("{ENTER}", pause=key_delay, with_spaces=True)
                         enters += 1
                         if i < enter_times - 1:
-                            time.sleep(enter_gap_sec)
+                            if _sleep_with_pause(enter_gap_sec, wait_if_paused):
+                                return False
                 except Exception:
                     pass
 
@@ -163,7 +187,8 @@ def send_clipboard_image_dialog_force(
                 )
                 return True
 
-        time.sleep(loop_sleep)
+        if _sleep_with_pause(loop_sleep, wait_if_paused):
+            return False
 
     total_ms = int((time.time() - t0) * 1000)
     logger.info(

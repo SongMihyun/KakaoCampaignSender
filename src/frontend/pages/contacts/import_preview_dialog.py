@@ -49,15 +49,9 @@ class _PreviewModel(QAbstractTableModel):
 
 
 class ImportPreviewDialog(QDialog):
-    """
-    엑셀 Import 미리보기:
-    - 저장 누르면 accept()
-    - 취소 누르면 reject()
-    """
-
     def __init__(self, rows: Sequence[PreviewRow], parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("엑셀 Import 미리보기")
+        self.setWindowTitle("대상자 Import 미리보기")
         self.resize(920, 640)
 
         root = QVBoxLayout(self)
@@ -93,12 +87,11 @@ class ImportPreviewDialog(QDialog):
         self.model = _PreviewModel(rows)
         self.table.setModel(self.model)
 
-        # 컬럼 폭(가독성)
-        self.table.setColumnWidth(0, 120)  # 사번
-        self.table.setColumnWidth(1, 140)  # 이름
-        self.table.setColumnWidth(2, 160)  # 전화
-        self.table.setColumnWidth(3, 200)  # 대리점
-        self.table.setColumnWidth(4, 200)  # 지사
+        self.table.setColumnWidth(0, 120)
+        self.table.setColumnWidth(1, 140)
+        self.table.setColumnWidth(2, 160)
+        self.table.setColumnWidth(3, 200)
+        self.table.setColumnWidth(4, 200)
 
         cv.addWidget(self.table, 1)
         root.addWidget(card, 1)

@@ -90,21 +90,26 @@ class GlobalHotkeyManager:
             pass
         self._installed = False
 
-    def register_f11(self, hotkey_id: int = 1001) -> bool:
+    def register_hotkey(self, hotkey_id: int, vk_code: int) -> bool:
         try:
             import ctypes
 
             user32 = ctypes.windll.user32
             mod_norepeat = 0x4000
-            vk_f11 = 0x7A
 
             self.install()
-            ok = bool(user32.RegisterHotKey(None, hotkey_id, mod_norepeat, vk_f11))
+            ok = bool(user32.RegisterHotKey(None, hotkey_id, mod_norepeat, int(vk_code)))
             if ok:
                 self._registered_ids.add(hotkey_id)
             return ok
         except Exception:
             return False
+
+    def register_f11(self, hotkey_id: int = 1001) -> bool:
+        return self.register_hotkey(hotkey_id, 0x7A)
+
+    def register_f9(self, hotkey_id: int = 1002) -> bool:
+        return self.register_hotkey(hotkey_id, 0x78)
 
     def unregister_all(self) -> None:
         try:
@@ -123,6 +128,7 @@ class GlobalHotkeyManager:
 
 class SendPage(QWidget):
     HOTKEY_ID_FORCE_STOP = 1001
+    HOTKEY_ID_PAUSE_TOGGLE = 1002
     ROLE_CONTACT_ID = int(Qt.UserRole) + 101
 
     def __init__(
@@ -152,6 +158,7 @@ class SendPage(QWidget):
         self._worker = None
         self._run_logger: Optional[SendRunLogger] = None
         self._current_sending_title: str = ""
+        self._is_pause_ui: bool = False
 
         self._hotkey_mgr: Optional[GlobalHotkeyManager] = None
         self._init_global_hotkey()
@@ -195,6 +202,15 @@ class SendPage(QWidget):
         self.lbl_priv.setStyleSheet("color:#b45309; font-weight:600;")
         header_left.addWidget(self.lbl_priv)
         self._refresh_priv_label()
+
+        self.lbl_pause_badge = QLabel("일시정지됨 · 카카오톡 사용 가능 · 다음 대상은 검색창부터 재개")
+        self.lbl_pause_badge.setVisible(False)
+        self.lbl_pause_badge.setStyleSheet(
+            "background:#b91c1c; color:white; font-weight:700; "
+            "border:1px solid #991b1b; border-radius:14px; "
+            "padding:6px 12px;"
+        )
+        header_left.addWidget(self.lbl_pause_badge, 0, Qt.AlignLeft)
 
         header_row.addLayout(header_left, 1)
 
@@ -323,6 +339,9 @@ class SendPage(QWidget):
         action = QHBoxLayout()
 
         self.btn_send_start = QPushButton("발송 시작")
+        self.btn_send_pause = QPushButton("일시정지(F9)")
+        self.btn_send_pause.setEnabled(False)
+
         self.btn_send_stop = QPushButton("중지")
         self.btn_send_stop.setEnabled(False)
 
@@ -334,6 +353,7 @@ class SendPage(QWidget):
         self._set_progress_title("")
 
         action.addWidget(self.btn_send_start)
+        action.addWidget(self.btn_send_pause)
         action.addWidget(self.btn_send_stop)
         action.addWidget(self.progress, 1)
         root.addLayout(action)
@@ -352,6 +372,7 @@ class SendPage(QWidget):
         self.lst_send_lists.itemDoubleClicked.connect(self._on_send_list_double_clicked)
 
         self.btn_send_start.clicked.connect(self._start_send_all_lists)
+        self.btn_send_pause.clicked.connect(self._toggle_pause_send)
         self.btn_send_stop.clicked.connect(self._stop_send)
 
         self.tbl_preview.doubleClicked.connect(self._on_preview_double_clicked)
@@ -378,12 +399,18 @@ class SendPage(QWidget):
             return
         self._hotkey_mgr = GlobalHotkeyManager(app, self._on_global_hotkey)
         self._hotkey_mgr.register_f11(self.HOTKEY_ID_FORCE_STOP)
+        self._hotkey_mgr.register_f9(self.HOTKEY_ID_PAUSE_TOGGLE)
 
     def _on_global_hotkey(self, hotkey_id: int) -> None:
-        if hotkey_id != self.HOTKEY_ID_FORCE_STOP:
+        if hotkey_id == self.HOTKEY_ID_FORCE_STOP:
+            if self._worker and self._worker.isRunning():
+                self._force_stop_send()
             return
-        if self._worker and self._worker.isRunning():
-            self._force_stop_send()
+
+        if hotkey_id == self.HOTKEY_ID_PAUSE_TOGGLE:
+            if self._worker and self._worker.isRunning():
+                self._toggle_pause_send()
+            return
 
     def _force_stop_send(self) -> None:
         try:
@@ -394,17 +421,42 @@ class SendPage(QWidget):
             pass
 
     def _refresh_priv_label(self) -> None:
-        self.lbl_priv.setText("강제 중지: F11  |  발송 중 언제든지 즉시 중지됩니다.")
+        self.lbl_priv.setText("F9: 현재 열린 대화 발송 후 안전 정지/재개  |  F11: 강제 중지  |  일시정지됨 표시 후 카카오톡 사용 가능")
+
+    def _refresh_progress_format(self) -> None:
+        if not self._current_sending_title:
+            self.progress.setFormat("%p%")
+            return
+
+        prefix = "일시정지" if self._is_pause_ui else "발송중"
+        self.progress.setFormat(f"{prefix}: {self._current_sending_title}  %p%")
 
     def _set_progress_title(self, title: str) -> None:
         self._current_sending_title = (title or "").strip()
-        if self._current_sending_title:
-            self.progress.setFormat(f"발송중: {self._current_sending_title}  %p%")
-        else:
-            self.progress.setFormat("%p%")
+        self._refresh_progress_format()
+
+    def _refresh_pause_badge(self) -> None:
+        try:
+            self.lbl_pause_badge.setVisible(bool(self._is_pause_ui))
+        except Exception:
+            pass
+
+    def _set_pause_ui(self, paused: bool) -> None:
+        self._is_pause_ui = bool(paused)
+        self.btn_send_pause.setText("재개(F9)" if self._is_pause_ui else "일시정지(F9)")
+        self.btn_send_pause.setStyleSheet(
+            "font-weight:700; color:#b45309;" if self._is_pause_ui else ""
+        )
+        self._refresh_pause_badge()
+        self._refresh_progress_format()
 
     def _set_sending_ui(self, sending: bool) -> None:
+        if not sending:
+            self._is_pause_ui = False
+            self._refresh_pause_badge()
+
         self.btn_send_start.setEnabled(not sending)
+        self.btn_send_pause.setEnabled(sending)
         self.btn_send_stop.setEnabled(sending)
 
         self.btn_create_send_list.setEnabled(not sending)
@@ -948,13 +1000,14 @@ class SendPage(QWidget):
         )
 
         self.progress.setValue(0)
+        self._set_pause_ui(False)
         self._set_progress_title(f"1/{len(filtered)} {filtered[0].title}")
         self._set_sending_ui(True)
 
         run_logger = SendRunLogger.new_run(prefix="send_run")
         self._run_logger = run_logger
         self._on_status(
-            f"발송 시작(카카오톡 자동화) | 속도: {speed_mode.upper()} | 강제중지: F11 | 로그: {run_logger.path_str()}"
+            f"발송 시작(카카오톡 자동화) | 속도: {speed_mode.upper()} | F9: 현재 열린 대화 발송 후 안전 정지/재개 | F11: 강제중지 | 일시정지됨 표시 후 카카오톡 사용 가능 | 로그: {run_logger.path_str()}"
         )
 
         run_id = time.strftime("%Y%m%d_%H%M%S")
@@ -973,6 +1026,7 @@ class SendPage(QWidget):
             report_writer=report_writer,
         )
         self._worker.list_changed.connect(self._on_worker_list_changed)
+        self._worker.pause_changed.connect(self._on_worker_pause_changed)
         self._worker.progress.connect(self.progress.setValue)
         self._worker.progress.connect(self._on_progress)
         self._worker.status.connect(self._on_status)
@@ -983,13 +1037,37 @@ class SendPage(QWidget):
         self._set_progress_title(f"{idx}/{total} {title}")
         self.progress.setValue(0)
 
+    def _on_worker_pause_changed(self, paused: bool) -> None:
+        self._set_pause_ui(paused)
+        if paused:
+            self._on_status("일시정지됨(F9) | 현재 열린 대화 발송 완료 후 안전 정지되었습니다. 이제 카카오톡 PC를 사용해도 됩니다.")
+        else:
+            self._on_status("발송 재개됨(F9) | 다음 대상자를 카카오톡 메인창 검색부터 다시 시작합니다.")
+
+    def _toggle_pause_send(self) -> None:
+        if not self._worker or not self._worker.isRunning():
+            return
+
+        try:
+            toggle_fn = getattr(self._worker, "toggle_pause", None)
+            if callable(toggle_fn):
+                toggle_fn()
+            elif self._worker.is_paused():
+                self._worker.request_resume()
+            else:
+                self._worker.request_pause()
+        except Exception:
+            pass
+
     def _stop_send(self) -> None:
         if not self._worker or not self._worker.isRunning():
             return
         self._worker.request_stop()
-        self._on_status("중지 요청됨")
+        self._set_pause_ui(False)
+        self._on_status("중지 요청됨(F11 또는 버튼)")
 
     def _on_send_finished(self, list_done: int, success: int, fail: int) -> None:
+        self._set_pause_ui(False)
         self._set_sending_ui(False)
         self._set_progress_title("")
         self.progress.setValue(100 if (success + fail) > 0 else 0)
@@ -1060,6 +1138,13 @@ class SendPage(QWidget):
         self._schedule_reload_sources()
         self.reload_send_lists(select_send_list_id=cur_sid)
         self._schedule_refresh_current_preview()
+
+
+    def is_sending_active(self) -> bool:
+        try:
+            return bool(self._worker and self._worker.isRunning())
+        except Exception:
+            return False
 
     def cleanup(self) -> None:
         try:
