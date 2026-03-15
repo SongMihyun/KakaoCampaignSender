@@ -1,4 +1,3 @@
-# FILE: src/backend/database/db_bootstrap.py
 # ✅ FILE: src/backend/database/db_bootstrap.py
 
 from __future__ import annotations

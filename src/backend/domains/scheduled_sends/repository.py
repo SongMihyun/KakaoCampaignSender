@@ -21,14 +21,51 @@ class ScheduledSendsRepo:
             pass
         return conn
 
+    def _find_matching_pending_row(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        planned_at: str,
+        speed_mode: str,
+        send_list_snapshot_json: str,
+    ) -> Optional[sqlite3.Row]:
+        return conn.execute(
+            """
+            SELECT *
+            FROM scheduled_sends
+            WHERE status='PENDING'
+              AND planned_at=?
+              AND speed_mode=?
+              AND send_list_snapshot_json=?
+            ORDER BY id DESC
+            LIMIT 1;
+            """,
+            (planned_at, speed_mode, send_list_snapshot_json),
+        ).fetchone()
+
     def create_pending(
         self,
         *,
         planned_at: str,
         speed_mode: str,
         send_list_snapshot_json: str,
-    ) -> int:
+    ) -> tuple[int, bool]:
         with self._connect() as conn:
+            try:
+                conn.execute("BEGIN IMMEDIATE;")
+            except Exception:
+                pass
+
+            existing = self._find_matching_pending_row(
+                conn,
+                planned_at=planned_at,
+                speed_mode=speed_mode,
+                send_list_snapshot_json=send_list_snapshot_json,
+            )
+            if existing is not None:
+                conn.commit()
+                return int(existing["id"]), False
+
             cur = conn.execute(
                 """
                 INSERT INTO scheduled_sends(
@@ -42,25 +79,7 @@ class ScheduledSendsRepo:
                 (planned_at, speed_mode, send_list_snapshot_json),
             )
             conn.commit()
-            return int(cur.lastrowid or 0)
-
-    def attach_task_info(
-        self,
-        schedule_id: int,
-        *,
-        task_name: str,
-        task_path: str,
-    ) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """
-                UPDATE scheduled_sends
-                SET task_name=?, task_path=?
-                WHERE id=?;
-                """,
-                (task_name, task_path, int(schedule_id)),
-            )
-            conn.commit()
+            return int(cur.lastrowid or 0), True
 
     def get(self, schedule_id: int) -> Optional[ScheduledSendRow]:
         with self._connect() as conn:
@@ -108,6 +127,7 @@ class ScheduledSendsRepo:
                 UPDATE scheduled_sends
                 SET status='RUNNING',
                     launched_at=?,
+                    finished_at='',
                     last_error=''
                 WHERE id=?
                   AND status='PENDING';
