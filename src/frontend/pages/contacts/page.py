@@ -60,11 +60,10 @@ from frontend.utils.worker import run_bg
 from frontend.utils.contact_edit import edit_contact_by_id
 from backend.integrations.windows.win_file_picker import pick_open_file, pick_save_file, Filter
 from frontend.app.app_events import app_events
+from frontend.theme import style_button, style_tool_button
 
 
 class ContactsPage(QWidget):
-    ACTION_BTN_W = 104
-    ACTION_BTN_H = 34
 
     def __init__(
         self,
@@ -83,33 +82,33 @@ class ContactsPage(QWidget):
         self.setAcceptDrops(True)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(12)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
 
         title = QLabel("대상자 관리")
         title.setObjectName("PageTitle")
 
-        desc = QLabel("로컬 SQLite 저장/조회 기반 대상자 관리 (업로드/다운로드/샘플 + 엑셀/워드/메모장 미리보기·편집).")
+        desc = QLabel("검색 · 추가/수정 · 파일 가져오기/보내기")
         desc.setObjectName("PageDesc")
 
         search_row = QHBoxLayout()
+        search_row.setSpacing(8)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("이름/사번/전화/대리점/지사 검색")
-        btn_search_clear = QPushButton("초기화")
+        self.search.setPlaceholderText("이름, 사번, 전화, 대리점, 지사")
+        btn_search_clear = style_button(QPushButton("초기화"), "ghost")
         search_row.addWidget(self.search, 1)
         search_row.addWidget(btn_search_clear)
 
         btn_row = QHBoxLayout()
-        btn_row.setSpacing(10)
+        btn_row.setSpacing(8)
 
-        self.btn_add = QPushButton("신규 추가")
-        self.btn_edit = QPushButton("수정")
-        self.btn_delete = QPushButton("삭제")
-        self.btn_reload = QPushButton("새로고침")
+        self.btn_add = style_button(QPushButton("추가"), "primary")
+        self.btn_edit = style_button(QPushButton("수정"), "secondary")
+        self.btn_delete = style_button(QPushButton("삭제"), "danger")
+        self.btn_reload = style_button(QPushButton("새로고침"), "ghost")
         self.btn_bulk_manage = self._create_bulk_manage_button()
 
         for btn in [self.btn_add, self.btn_edit, self.btn_delete, self.btn_reload]:
-            self._apply_action_button_style(btn)
             btn_row.addWidget(btn)
 
         btn_row.addStretch(1)
@@ -175,15 +174,12 @@ class ContactsPage(QWidget):
         self.reload()
         QTimer.singleShot(0, self._sync_header_checkbox)
 
-    def _apply_action_button_style(self, btn: QPushButton) -> None:
-        btn.setFixedSize(self.ACTION_BTN_W, self.ACTION_BTN_H)
-
     def _create_bulk_manage_button(self) -> QToolButton:
         btn = QToolButton(self)
-        btn.setText("일괄 관리")
+        btn.setText("가져오기 / 보내기 ▾")
         btn.setPopupMode(QToolButton.InstantPopup)
         btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        btn.setFixedSize(self.ACTION_BTN_W, self.ACTION_BTN_H)
+        style_tool_button(btn, "secondary")
         btn.setMenu(self._build_bulk_menu(btn))
         return btn
 

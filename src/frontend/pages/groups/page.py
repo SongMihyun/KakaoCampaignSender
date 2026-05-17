@@ -30,6 +30,7 @@ from frontend.widgets.checkable_header import CheckableHeader
 from frontend.utils.contact_edit import edit_contact_by_id
 from frontend.utils.worker import run_bg
 from frontend.app.app_events import app_events
+from frontend.theme import style_button
 
 
 class GroupsPage(QWidget):
@@ -64,42 +65,45 @@ class GroupsPage(QWidget):
         self._member_id_set: set[int] = set()
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
 
         title = QLabel("그룹 관리")
         title.setObjectName("PageTitle")
-        desc = QLabel("발송 대상자를 그룹으로 구성/관리합니다. (검색 → 선택 → 그룹 추가/제거)")
+        desc = QLabel("그룹을 선택한 뒤, 검색 결과에서 멤버를 추가·제거합니다.")
         desc.setObjectName("PageDesc")
 
         top = QHBoxLayout()
         top.setSpacing(8)
 
-        top.addWidget(QLabel("그룹 선택"))
+        grp_lbl = QLabel("그룹")
+        grp_lbl.setObjectName("SectionTitle")
+        top.addWidget(grp_lbl)
         self.cbo_groups = QComboBox()
-        self.cbo_groups.setMinimumWidth(280)
+        self.cbo_groups.setMinimumWidth(220)
 
-        self.btn_group_add = QPushButton("그룹 생성")
-        self.btn_group_edit = QPushButton("그룹 수정")
-        self.btn_group_del = QPushButton("그룹 삭제")
+        self.btn_group_add = style_button(QPushButton("새 그룹"), "primary")
+        self.btn_group_edit = style_button(QPushButton("이름 변경"), "secondary")
+        self.btn_group_del = style_button(QPushButton("삭제"), "danger")
 
-        top.addWidget(self.cbo_groups)
+        top.addWidget(self.cbo_groups, 1)
         top.addWidget(self.btn_group_add)
         top.addWidget(self.btn_group_edit)
         top.addWidget(self.btn_group_del)
-        top.addStretch(1)
 
         main = QHBoxLayout()
         main.setSpacing(12)
 
         left = QVBoxLayout()
         left.setSpacing(8)
-        left.addWidget(QLabel("대상자 검색 결과"))
+        cand_title = QLabel("대상자 목록")
+        cand_title.setObjectName("SectionTitle")
+        left.addWidget(cand_title)
 
         cand_search_row = QHBoxLayout()
         self.cand_search = QLineEdit()
-        self.cand_search.setPlaceholderText("후보 검색: 이름/사번/전화/대리점/지사")
-        self.btn_cand_clear = QPushButton("초기화")
+        self.cand_search.setPlaceholderText("이름, 사번, 전화, 대리점, 지사")
+        self.btn_cand_clear = style_button(QPushButton("초기화"), "ghost")
         cand_search_row.addWidget(self.cand_search, 1)
         cand_search_row.addWidget(self.btn_cand_clear)
         left.addLayout(cand_search_row)
@@ -124,18 +128,20 @@ class GroupsPage(QWidget):
         self._apply_table_layout(self.tbl_candidates)
         self._hide_id_column(self.tbl_candidates)
 
-        self.btn_add_to_group = QPushButton("그룹에 추가 ▶")
+        self.btn_add_to_group = style_button(QPushButton("그룹에 추가 →"), "accent")
         left.addWidget(self.tbl_candidates, 1)
         left.addWidget(self.btn_add_to_group)
 
         right = QVBoxLayout()
         right.setSpacing(8)
-        right.addWidget(QLabel("그룹 멤버"))
+        mem_title = QLabel("그룹 멤버")
+        mem_title.setObjectName("SectionTitle")
+        right.addWidget(mem_title)
 
         mem_search_row = QHBoxLayout()
         self.mem_search = QLineEdit()
-        self.mem_search.setPlaceholderText("멤버 검색: 이름/사번/전화/대리점/지사")
-        self.btn_mem_clear = QPushButton("초기화")
+        self.mem_search.setPlaceholderText("이름, 사번, 전화, 대리점, 지사")
+        self.btn_mem_clear = style_button(QPushButton("초기화"), "ghost")
         mem_search_row.addWidget(self.mem_search, 1)
         mem_search_row.addWidget(self.btn_mem_clear)
         right.addLayout(mem_search_row)
@@ -160,7 +166,7 @@ class GroupsPage(QWidget):
         self._apply_table_layout(self.tbl_members)
         self._hide_id_column(self.tbl_members)
 
-        self.btn_remove_from_group = QPushButton("◀ 그룹에서 제거")
+        self.btn_remove_from_group = style_button(QPushButton("← 그룹에서 제거"), "danger")
         right.addWidget(self.tbl_members, 1)
         right.addWidget(self.btn_remove_from_group)
 
@@ -229,7 +235,6 @@ class GroupsPage(QWidget):
         table.setSortingEnabled(True)
         table.verticalHeader().setVisible(False)
         table.setAlternatingRowColors(True)
-        table.setStyleSheet("QTableView { gridline-color: #e5e7eb; }")
 
     def _apply_table_layout(self, table: QTableView) -> None:
         h = table.horizontalHeader()

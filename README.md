@@ -1,47 +1,60 @@
+# KakaoCampaignSender (카센더)
+
+연락처·캠페인·발송 작업을 관리하는 Windows 데스크톱 앱입니다.
+
+## 프로젝트 구조
+
+```
 src/
-├─ app/
-│  ├─ data/
-│  │  ├─ contacts_repo.py
-│  │  ├─ groups_repo.py
-│  │  └─ campaigns_repo.py
-│  └─ io/
-│     └─ contacts_excel.py        # ✅ import/export/template 통합
-└─ ui/
-   ├─ pages/
-   │  ├─ contacts_page.py         # ✅ 엑셀 I/O 비동기 처리
-   │  ├─ groups_page.py           # ✅ 검색/로드 디바운스 + 비동기
-   │  └─ campaign_page.py         # ✅ 이미지 읽기 비동기(다중 파일)
-   └─ utils/
-      └─ async_job.py             # ✅ 공용 비동기 실행 유틸
+├── app/              # 진입점, 경로, 버전
+├── backend/
+│   ├── core/         # lifecycle, logging, error_report
+│   ├── database/     # SQLite 스키마·부트스트랩
+│   ├── domains/      # contacts, campaigns, sending, logs, …
+│   ├── integrations/ # kakaotalk, excel, windows
+│   ├── stores/       # UI용 in-memory 캐시
+│   └── updates/      # 온라인 업데이트
+└── frontend/
+    ├── app/          # MainWindow, splash
+    ├── layout/       # header, navigation, statusbar
+    ├── pages/        # 화면별 UI
+    ├── dialogs/
+    ├── utils/
+    └── widgets/
+```
 
+레이어 책임·발송 흐름은 [ARCHITECTURE.md](ARCHITECTURE.md)를 참고하세요.
 
+## 로컬 실행
 
-
-src/app/sender/
-  ├─ kakao_pc_driver.py              # 드라이버(오케스트레이션)
-  ├─ kakao_pc_hooks.py               # 채팅 열기/이미지 다이얼로그 hook
-  ├─ kakao_dialog_send.py            # 이미지 전송 다이얼로그 처리(클릭+엔터)
-  ├─ win32_core.py                   # Win32 공통(포커스/윈도우/클립보드)
-  ├─ speed_profiles.py               # SpeedProfile/Timings
-  ├─ trace_logger.py                 # trace/log 설정(중복 제거)
-  ├─ image_attach_cache.py           # temp png 파일 캐시(기존 유지, 약간 정리)
-  ├─ image_attach_ctrl_t.py          # Ctrl+T attach 전송(캐시 사용)
-  └─ image_dib_cache.py              # PNG->DIB 메모리 캐시(신규)
-
+```powershell
+poetry install
 poetry run python .\src\app\main.py
+```
 
-사용법 (핵심)
-1) “버전만” 입력해서 자동 Push + Tag
-.\release.ps1 -Version 0.1.16
-2) “로컬 빌드까지” 같이 하고 Push + Tag
-.\release.ps1 -Version 0.1.16 -BuildLocal
-3) dist/build 삭제 없이 빌드만 스킵하고 싶으면
-.\release.ps1 -Version 0.1.16 -BuildLocal -NoClean
+## 빌드
 
-
-기본(요청하신 3줄과 동일 동작)
+```powershell
+# 기본 (dist/build 정리 후 빌드)
 .\build_exe.ps1
-dist/build 삭제 없이 빌드만(테스트용)
+
+# 정리 없이 빌드만
 .\build_exe.ps1 -NoClean
-spec/출력 경로 바꾸고 싶을 때
-.\build_exe.ps1 -Spec "KakaoSender.spec" -DistPath "dist/app"
+```
+
+## 릴리스
+
+```powershell
+# 버전만 올리고 Push + Tag
+.\release.ps1 -Version 0.1.16
+
+# 로컬 빌드까지 포함
+.\release.ps1 -Version 0.1.16 -BuildLocal
+
+# dist/build 유지
+.\release.ps1 -Version 0.1.16 -BuildLocal -NoClean
+```
+
+## 회귀 테스트
+
+기능 변경 후 [REGRESSION_CHECKLIST.md](REGRESSION_CHECKLIST.md) 기준으로 확인합니다.

@@ -28,6 +28,7 @@ def schedule_apply_settings_bundle_after_exit(
     wait_pid: int,
     relaunch_executable: str,
     relaunch_args: Sequence[str],
+    relaunch_working_dir: str | Path,
 ) -> Path:
     """
     현재 앱 프로세스가 완전히 종료된 뒤 설정 번들을 오프라인으로 적용하고,
@@ -64,6 +65,7 @@ $reportsDir = Join-Path $base "Reports"
 $logsDir = Join-Path $base "logs"
 $exe = "{_ps_quote(str(relaunch_executable))}"
 $args = {_ps_array(list(relaunch_args))}
+$workDir = "{_ps_quote(str(Path(relaunch_working_dir).resolve()))}"
 
 function Write-Log([string]$message) {{
     ((Get-Date).ToString("s") + " | " + $message) | Out-File -FilePath $log -Encoding utf8 -Append
@@ -206,7 +208,7 @@ try {{
 
     Start-Sleep -Milliseconds 700
     Write-Log "RELAUNCH start"
-    Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory (Split-Path -Parent $exe)
+    Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory $workDir
     Write-Log "DONE"
 }} catch {{
     Write-Log ("FAIL " + $_.Exception.Message)

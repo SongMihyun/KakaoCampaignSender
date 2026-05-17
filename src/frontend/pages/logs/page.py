@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from app.paths import user_data_dir
 from frontend.pages.campaigns.preview_dialog import CampaignPreviewDialog
+from frontend.theme import style_button
 
 
 class LogsPage(QWidget):
@@ -63,12 +64,12 @@ class LogsPage(QWidget):
         self._shown_rows: List[Dict[str, Any]] = []
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
 
         title = QLabel("로그/리포트")
         title.setObjectName("PageTitle")
-        desc = QLabel("성공/실패/NOT_FOUND/사유/재시도 대상 관리 및 결과 내보내기 + 로그 파일/리포트 내용 확인.")
+        desc = QLabel("발송 결과 조회 · CSV 저장 · 실패 건 재시도")
         desc.setObjectName("PageDesc")
 
         root.addWidget(title)
@@ -82,7 +83,7 @@ class LogsPage(QWidget):
         self.cbo_reports = QComboBox()
         self.cbo_reports.setMinimumWidth(520)
 
-        self.btn_reports_refresh = QPushButton("리포트 새로고침")
+        self.btn_reports_refresh = style_button(QPushButton("새로고침"), "ghost")
         report_row.addWidget(self.cbo_reports, 1)
         report_row.addWidget(self.btn_reports_refresh, 0)
 
@@ -104,9 +105,9 @@ class LogsPage(QWidget):
         self.txt_keyword = QLineEdit()
         self.txt_keyword.setPlaceholderText("검색: 수신자/사유/채널 키워드")
 
-        self.btn_refresh = QPushButton("새로고침")
-        self.btn_fail_only = QPushButton("실패건 보기")
-        self.btn_export = QPushButton("CSV 내보내기")
+        self.btn_refresh = style_button(QPushButton("새로고침"), "ghost")
+        self.btn_fail_only = style_button(QPushButton("실패만"), "secondary")
+        self.btn_export = style_button(QPushButton("CSV 저장"), "primary")
 
         filter_row.addWidget(QLabel("상태"))
         filter_row.addWidget(self.cbo_status, 0)
@@ -189,17 +190,15 @@ class LogsPage(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
-        self.btn_retry = QPushButton("재시도(실패 대상 목록 추출)")
+        self.btn_retry = style_button(QPushButton("실패 대상 추출"), "secondary")
         btn_row.addWidget(self.btn_retry)
 
         btn_row.addStretch(1)
 
-        self.reset_btn = QPushButton("전체 삭제 (send_logs + 리포트 초기화)")
-        self.reset_btn.setStyleSheet("background:#fee2e2; color:#b91c1c;")
+        self.reset_btn = style_button(QPushButton("로그·리포트 삭제"), "danger")
         btn_row.addWidget(self.reset_btn)
 
-        self.btn_reset_all = QPushButton("전체 리셋 (로컬 데이터 삭제 후 종료)")
-        self.btn_reset_all.setStyleSheet("background:#dc2626; color:#ffffff; font-weight:700;")
+        self.btn_reset_all = style_button(QPushButton("전체 초기화 후 종료"), "danger")
         self.btn_reset_all.setEnabled(self._on_reset_all is not None)
         btn_row.addWidget(self.btn_reset_all)
 

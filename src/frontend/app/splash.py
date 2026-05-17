@@ -1,4 +1,4 @@
-﻿# src/app/ui/splash.py
+﻿# src/frontend/app/splash.py
 from __future__ import annotations
 
 from PySide6.QtGui import QPixmap

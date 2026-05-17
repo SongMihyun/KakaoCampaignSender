@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.paths import contacts_db_path
+from app.relaunch import relaunch_executable_and_args
 from app.version import __display_name__
 from backend.core.lifecycle.apply_settings_bundle import schedule_apply_settings_bundle_after_exit
 from backend.core.lifecycle.reset_app import schedule_delete_all_local_data
@@ -41,6 +42,7 @@ from backend.domains.sending.worker import MultiSendWorker
 from backend.domains.settings_bundle.service import SettingsBundleService
 from backend.stores.contacts_store import ContactsStore
 
+from frontend.theme import APP_STYLESHEET
 from frontend.layout.header import Header
 from frontend.layout.navigation import Navigation
 from frontend.layout.statusbar import StatusBar
@@ -232,76 +234,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(
-            """
-            QMainWindow { background: #f6f7fb; }
-
-            QWidget#Card {
-                background: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 12px;
-            }
-
-            QLabel#AppTitle { font-size: 18px; font-weight: 800; }
-            QLabel#SubTitle { font-size: 13px; color: #6b7280; }
-            QLabel#Meta { font-size: 12px; color: #6b7280; }
-
-            QListWidget {
-                background: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 12px;
-                padding: 6px;
-                font-size: 13px;
-            }
-            QListWidget::item { padding: 10px 12px; border-radius: 10px; margin: 2px 0; }
-
-            QListWidget::item:selected {
-                background: #e8efff;
-                color: #111827;
-            }
-            QListWidget::item:selected:active {
-                background: #e8efff;
-                color: #111827;
-            }
-            QListWidget::item:selected:!active {
-                background: #e8efff;
-                color: #111827;
-            }
-
-            QWidget#Page {
-                background: #ffffff;
-                border: 1px solid #e5e7eb;
-                border-radius: 12px;
-            }
-            QLabel#PageTitle { font-size: 18px; font-weight: 800; }
-            QLabel#PageDesc { font-size: 12px; color: #6b7280; }
-
-            QPushButton {
-                padding: 8px 12px;
-                border-radius: 10px;
-                border: 1px solid #e5e7eb;
-                background: #ffffff;
-                color: #111827;
-                font-weight: 400;
-            }
-            QPushButton:hover { background: #f3f4f6; }
-            QPushButton:disabled { background: #f8fafc; color: #94a3b8; }
-
-            QLineEdit, QTextEdit, QComboBox {
-                border: 1px solid #e5e7eb;
-                border-radius: 10px;
-                padding: 8px 10px;
-                background: #ffffff;
-            }
-
-            QToolButton#HeaderMenuBtn {
-                border: 1px solid #e5e7eb;
-                border-radius: 8px;
-                background: #ffffff;
-            }
-            QToolButton#HeaderMenuBtn:hover { background: #f3f4f6; }
-            """
-        )
+        self.setStyleSheet(APP_STYLESHEET)
 
     def _on_contacts_changed_global(self) -> None:
         from frontend.utils.worker import run_bg
@@ -343,38 +276,61 @@ class MainWindow(QMainWindow):
         run_bg(self, _load_contacts_rows, done=_apply)
 
     def export_settings_bundle(self) -> None:
-        default_name = f"kakao_sender_settings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+        default_name = f"kakao_sender_settings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.kcsbundle"
         path, _ = QFileDialog.getSaveFileName(
             self,
             "설정 내보내기",
             str(Path.home() / default_name),
-            "ZIP Files (*.zip)",
+            "카센더 설정 번들 (*.kcsbundle *.zip);;ZIP Files (*.zip)",
         )
         if not path:
             return
 
         try:
-            out = self.settings_bundle_service.export_bundle(path)
+            info = self.settings_bundle_service.export_bundle(path)
         except Exception as e:
             QMessageBox.critical(self, "오류", f"설정 내보내기 실패\n{e}")
             return
 
-        QMessageBox.information(self, "완료", f"설정 내보내기 완료\n{out}")
+        QMessageBox.information(
+            self,
+            "완료",
+            "설정보내기가 완료되었습니다.\n"
+            "다른 PC에서 로그인 후 [설정 가져오기]로 이 파일을 선택하면\n"
+            "대상자·그룹·캠페인·발송리스트가 덮어씌워집니다.\n\n"
+            f"파일: {info.bundle_path}\n"
+            f"연락처 {info.contacts_count}명 · 그룹 {info.groups_count}개 · "
+            f"캠페인 {info.campaigns_count}개 · 발송리스트 {info.send_lists_count}개",
+        )
 
     def import_settings_bundle(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
             self,
             "설정 가져오기",
             str(Path.home()),
-            "ZIP Files (*.zip)",
+            "카센더 설정 번들 (*.kcsbundle *.zip);;ZIP Files (*.zip)",
         )
         if not path:
+            return
+
+        try:
+            info = self.settings_bundle_service.inspect_bundle(path)
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"설정 파일을 읽을 수 없습니다.\n{e}")
             return
 
         reply = QMessageBox.question(
             self,
             "설정 가져오기",
-            "설정을 가져오면 앱이 종료 후 재시작됩니다.\n계속하시겠습니까?",
+            "아래 내용으로 이 PC의 로컬 데이터를 덮어씁니다.\n"
+            "(연락처·그룹·캠페인·발송리스트·캠페인 이미지 등)\n\n"
+            f"보낸 시각: {info.exported_at or '-'}\n"
+            f"연락처 {info.contacts_count}명\n"
+            f"그룹 {info.groups_count}개\n"
+            f"캠페인 {info.campaigns_count}개\n"
+            f"발송리스트 {info.send_lists_count}개\n\n"
+            "적용을 위해 앱이 종료된 뒤 자동으로 다시 실행됩니다.\n"
+            "계속하시겠습니까?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
@@ -382,8 +338,14 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            restart_cmd = [sys.executable, sys.argv[0]]
-            schedule_apply_settings_bundle_after_exit(path, restart_cmd)
+            relaunch_exe, relaunch_args, relaunch_cwd = relaunch_executable_and_args()
+            schedule_apply_settings_bundle_after_exit(
+                bundle_path=path,
+                wait_pid=os.getpid(),
+                relaunch_executable=relaunch_exe,
+                relaunch_args=relaunch_args,
+                relaunch_working_dir=relaunch_cwd,
+            )
             self._skip_finalize_pending_update_once = True
             QApplication.quit()
         except Exception as e:
@@ -404,7 +366,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            schedule_delete_all_local_data(sys.executable, [sys.argv[0]])
+            schedule_delete_all_local_data()
             self._skip_finalize_pending_update_once = True
             QApplication.quit()
         except Exception as e:

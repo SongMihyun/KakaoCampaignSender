@@ -86,7 +86,7 @@ def main() -> None:
     _splash_msg("업데이트 확인 중…")
     try:
         from app.version import __version__, LATEST_JSON_URL
-        from frontend.app.splash import check_and_prepare_update, set_pending_update
+        from backend.updates.updater import check_and_prepare_update, set_pending_update
 
         plan = check_and_prepare_update(LATEST_JSON_URL, __version__)
         if plan.available:

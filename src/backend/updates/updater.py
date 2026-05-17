@@ -200,6 +200,48 @@ def clear_pending_installer_marker(*, base_dir: Optional[Path] = None) -> None:
         pass
 
 
+@dataclass
+class UpdatePlan:
+    available: bool
+    latest: Optional[LatestManifest] = None
+    installer_path: Optional[str] = None
+    reason: str = ""
+
+
+def check_and_prepare_update(latest_json_url: str, current_version: str) -> UpdatePlan:
+    """
+    앱 시작 시 호출: 최신 manifest 조회 → 버전 비교 → 설치파일 다운로드·해시 검증.
+    """
+    try:
+        updater = Updater(latest_json_url, timeout_sec=7.0)
+        manifest = updater.fetch_latest_manifest()
+        if not manifest or not manifest.version or not manifest.url:
+            return UpdatePlan(False, reason="latest.json invalid")
+
+        if not is_newer(manifest.version, current_version):
+            return UpdatePlan(False, latest=manifest, reason="up_to_date")
+
+        installer_path = updater.download_installer(manifest.url)
+        if not updater.verify_sha256(installer_path, manifest.sha256):
+            return UpdatePlan(False, latest=manifest, reason="sha256 mismatch")
+
+        return UpdatePlan(
+            True,
+            latest=manifest,
+            installer_path=installer_path,
+            reason="prepared",
+        )
+    except Exception as e:
+        return UpdatePlan(False, reason=f"update_check_failed: {e}")
+
+
+def set_pending_update(plan: UpdatePlan) -> None:
+    """종료 시 설치할 업데이트를 marker 파일로 기록한다."""
+    if not plan.available or not plan.installer_path:
+        return
+    write_pending_installer_marker(plan.installer_path)
+
+
 def finalize_update_on_app_close(*, base_dir: Optional[Path] = None) -> bool:
     """
     앱 종료 시 호출되는 최종 업데이트 후처리 진입점.

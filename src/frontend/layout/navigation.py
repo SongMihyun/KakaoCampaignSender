@@ -9,7 +9,7 @@ class Navigation(QWidget):
         super().__init__()
         self.list = QListWidget()
         self.list.setObjectName("NavList")
-        self.list.setFixedWidth(220)
+        self.list.setFixedWidth(168)
 
         # ✅ 메뉴 5개 (스택 인덱스와 1:1 매칭)
         self._items = ["대상자", "그룹관리", "캠페인", "발송", "로그"]

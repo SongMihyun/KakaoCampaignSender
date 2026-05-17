@@ -35,6 +35,7 @@ from backend.domains.send_lists.dto import SendListCreateDTO
 from backend.domains.sending.service import SendingService
 
 from frontend.app.app_events import app_events
+from frontend.theme import style_button
 from frontend.pages.campaigns.preview_dialog import CampaignPreviewDialog
 from frontend.utils.contact_edit import edit_contact_by_id
 
@@ -203,7 +204,7 @@ class SendPage(QWidget):
 
         title = QLabel("발송")
         title.setObjectName("PageTitle")
-        desc = QLabel("발송리스트(그룹+캠페인)를 생성/관리하고, 리스트를 순차 발송합니다.")
+        desc = QLabel("그룹·캠페인으로 발송리스트를 만들고 순서대로 발송합니다.")
         desc.setObjectName("PageDesc")
 
         header_left.addWidget(title)
@@ -269,8 +270,8 @@ class SendPage(QWidget):
         lv.addLayout(form)
 
         form_btns = QHBoxLayout()
-        self.btn_create_send_list = QPushButton("발송리스트 생성")
-        self.btn_reload_sources = QPushButton("목록 새로고침")
+        self.btn_create_send_list = style_button(QPushButton("발송리스트 생성"), "primary")
+        self.btn_reload_sources = style_button(QPushButton("새로고침"), "ghost")
         form_btns.addWidget(self.btn_create_send_list)
         form_btns.addWidget(self.btn_reload_sources)
         form_btns.addStretch(1)
@@ -289,7 +290,7 @@ class SendPage(QWidget):
         lv.addWidget(self.lst_send_lists, 1)
 
         btn_row = QHBoxLayout()
-        self.btn_refresh_lists = QPushButton("새로고침")
+        self.btn_refresh_lists = style_button(QPushButton("새로고침"), "ghost")
 
         self.btn_move_up = QToolButton()
         self.btn_move_up.setText("▲")
@@ -297,8 +298,8 @@ class SendPage(QWidget):
         self.btn_move_down = QToolButton()
         self.btn_move_down.setText("▼")
 
-        self.btn_delete_list = QPushButton("삭제")
-        self.btn_save_order = QPushButton("순서 저장")
+        self.btn_delete_list = style_button(QPushButton("삭제"), "danger")
+        self.btn_save_order = style_button(QPushButton("순서 저장"), "secondary")
 
         btn_row.addWidget(self.btn_refresh_lists)
         btn_row.addWidget(self.btn_move_up)
@@ -349,11 +350,11 @@ class SendPage(QWidget):
 
         action = QHBoxLayout()
 
-        self.btn_send_start = QPushButton("발송 시작")
-        self.btn_send_pause = QPushButton("일시정지(F9)")
+        self.btn_send_start = style_button(QPushButton("발송 시작"), "primary")
+        self.btn_send_pause = style_button(QPushButton("일시정지 (F9)"), "secondary")
         self.btn_send_pause.setEnabled(False)
 
-        self.btn_send_stop = QPushButton("중지")
+        self.btn_send_stop = style_button(QPushButton("중지"), "danger")
         self.btn_send_stop.setEnabled(False)
 
         self.progress = QProgressBar()

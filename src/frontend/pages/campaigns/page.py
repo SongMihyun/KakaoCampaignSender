@@ -20,6 +20,7 @@ from frontend.utils.worker import run_bg
 
 from backend.integrations.windows.win_file_picker import pick_open_files, pick_open_file, Filter
 from frontend.app.app_events import app_events
+from frontend.theme import style_button
 
 
 @dataclass
@@ -41,31 +42,31 @@ class CampaignPage(QWidget):
         self._campaigns = []
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(18, 18, 18, 18)
-        root.setSpacing(12)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(10)
 
         title = QLabel("캠페인 설정")
         title.setObjectName("PageTitle")
-        desc = QLabel("이미지/문구를 원하는 순서로 배치한 뒤, 저장해서 하나의 캠페인으로 등록합니다.")
+        desc = QLabel("이미지·문구 순서를 정한 뒤 캠페인으로 저장합니다.")
         desc.setObjectName("PageDesc")
 
         top = QHBoxLayout()
         top.setSpacing(8)
 
-        top.addWidget(QLabel("저장된 캠페인"))
+        camp_lbl = QLabel("캠페인")
+        camp_lbl.setObjectName("SectionTitle")
+        top.addWidget(camp_lbl)
         self.cbo_campaigns = QComboBox()
-        self.cbo_campaigns.setMinimumWidth(360)
+        self.cbo_campaigns.setMinimumWidth(280)
 
-        self.btn_load = QPushButton("불러오기")
-        self.btn_delete_campaign = QPushButton("캠페인 삭제")
+        self.btn_load = style_button(QPushButton("불러오기"), "secondary")
+        self.btn_delete_campaign = style_button(QPushButton("삭제"), "danger")
+        self.btn_new = style_button(QPushButton("새로 만들기"), "ghost")
+        self.btn_save_campaign = style_button(QPushButton("저장"), "primary")
 
-        self.btn_new = QPushButton("새로 만들기")
-        self.btn_save_campaign = QPushButton("캠페인 저장(생성)")
-
-        top.addWidget(self.cbo_campaigns)
+        top.addWidget(self.cbo_campaigns, 1)
         top.addWidget(self.btn_load)
         top.addWidget(self.btn_delete_campaign)
-        top.addStretch(1)
         top.addWidget(self.btn_new)
         top.addWidget(self.btn_save_campaign)
 
@@ -78,11 +79,13 @@ class CampaignPage(QWidget):
         lv.setContentsMargins(12, 12, 12, 12)
         lv.setSpacing(8)
 
-        lv.addWidget(QLabel("캠페인 구성(순서 편집)"))
+        section = QLabel("구성 (순서)")
+        section.setObjectName("SectionTitle")
+        lv.addWidget(section)
 
         mode_row = QHBoxLayout()
         mode_row.setSpacing(8)
-        self.chk_multi_attach = QCheckBox("이미지 묶음 전송 모드")
+        self.chk_multi_attach = QCheckBox("이미지 묶음 전송")
         self.chk_multi_attach.setToolTip("체크 시 연속된 이미지가 카카오톡에서 묶음 첨부 방식으로 전송됩니다.")
         mode_row.addWidget(self.chk_multi_attach)
         mode_row.addStretch(1)
@@ -91,13 +94,13 @@ class CampaignPage(QWidget):
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
 
-        self.btn_add_images = QPushButton("이미지 추가(복수)")
-        self.btn_add_text = QPushButton("문구 추가")
-        self.btn_edit_item = QPushButton("선택 편집")
-        self.btn_preview = QPushButton("미리보기")
-        self.btn_del_item = QPushButton("삭제")
-        self.btn_up = QPushButton("▲")
-        self.btn_down = QPushButton("▼")
+        self.btn_add_images = style_button(QPushButton("이미지 추가"), "primary")
+        self.btn_add_text = style_button(QPushButton("문구 추가"), "secondary")
+        self.btn_edit_item = style_button(QPushButton("편집"), "secondary")
+        self.btn_preview = style_button(QPushButton("미리보기"), "ghost")
+        self.btn_del_item = style_button(QPushButton("삭제"), "danger")
+        self.btn_up = style_button(QPushButton("▲"), "icon")
+        self.btn_down = style_button(QPushButton("▼"), "icon")
 
         btn_row.addWidget(self.btn_add_images)
         btn_row.addWidget(self.btn_add_text)

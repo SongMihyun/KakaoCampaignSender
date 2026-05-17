@@ -57,10 +57,11 @@ class Header(QWidget):
         self.meta.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.meta.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
-        ver = __version__ if __version__ else ""
-        if ver and not str(ver).startswith("v"):
+        ver = (__version__ or "").strip()
+        if ver and ver != "__VERSION__" and not ver.startswith("v"):
             ver = f"v{ver}"
-        self.ver = QLabel(ver or "v-")
+        self.ver = QLabel(ver if ver and ver != "__VERSION__" else "")
+        self.ver.setVisible(bool(self.ver.text()))
         self.ver.setObjectName("Meta")
         self.ver.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.ver.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)

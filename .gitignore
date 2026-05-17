@@ -55,3 +55,8 @@ Thumbs.db
 # Local DB (앱 데이터가 루트에 생길 경우)
 # ---------------------------
 *.sqlite3
+
+# Debug / local artifacts
+kakao_not_found_recipients.csv
+*.patch
+pending_installer.json
