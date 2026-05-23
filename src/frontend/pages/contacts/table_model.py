@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt, QAbstractTableModel, QModelIndex
+from PySide6.QtGui import QColor, QFont
 
 
 @dataclass
@@ -46,6 +47,14 @@ class ContactsTableModel(QAbstractTableModel):
         # 체크박스
         if c == 0 and role == Qt.CheckStateRole:
             return Qt.Checked if item.id in self._checked_ids else Qt.Unchecked
+
+        if item.id in self._checked_ids:
+            if role == Qt.BackgroundRole:
+                return QColor("#e5e7eb")
+            if role == Qt.FontRole:
+                font = QFont()
+                font.setWeight(QFont.Medium)
+                return font
 
         if role == Qt.DisplayRole:
             if c == 1:  # 순번 (1부터)
@@ -92,7 +101,9 @@ class ContactsTableModel(QAbstractTableModel):
                 self._checked_ids.add(item.id)
             else:
                 self._checked_ids.discard(item.id)
-            self.dataChanged.emit(index, index, [Qt.CheckStateRole])
+            left = self.index(r, 0)
+            right = self.index(r, self.columnCount() - 1)
+            self.dataChanged.emit(left, right, [Qt.CheckStateRole, Qt.BackgroundRole, Qt.FontRole])
             return True
 
         # ✅ 사번 편집: "빈값 허용 + 값 있을 때만 중복 금지"

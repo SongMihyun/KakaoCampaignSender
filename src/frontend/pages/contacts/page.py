@@ -1,14 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from pathlib import Path
 from typing import Callable, Optional, List
 
-from PySide6.QtCore import Qt, QTimer, QEvent
-from PySide6.QtGui import QKeyEvent, QAction
+from PySide6.QtCore import Qt, QTimer, QEvent, QRect
+from PySide6.QtGui import QKeyEvent, QAction, QColor, QPen, QPainter
 from PySide6.QtWidgets import (
     QApplication,
     QWidget, QVBoxLayout, QLabel, QHBoxLayout, QPushButton, QLineEdit,
-    QTableView, QMessageBox, QDialog, QAbstractItemView, QMenu, QToolButton
+    QTableView, QMessageBox, QDialog, QAbstractItemView, QMenu, QToolButton,
+    QStyledItemDelegate
 )
 
 from backend.stores.contacts_store import ContactsStore
@@ -63,6 +64,39 @@ from frontend.app.app_events import app_events
 from frontend.theme import style_button, style_tool_button
 
 
+class ContactCheckDelegate(QStyledItemDelegate):
+    def paint(self, painter, option, index) -> None:  # type: ignore[override]
+        checked = index.data(Qt.CheckStateRole) == Qt.Checked
+
+        painter.save()
+        if checked:
+            painter.fillRect(option.rect, QColor("#e5e7eb"))
+
+        size = 18
+        rect = QRect(
+            option.rect.center().x() - size // 2,
+            option.rect.center().y() - size // 2,
+            size,
+            size,
+        )
+
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        if checked:
+            painter.setPen(QPen(QColor("#be185d"), 1.4))
+            painter.setBrush(QColor("#be185d"))
+        else:
+            painter.setPen(QPen(QColor("#9ca3af"), 1.2))
+            painter.setBrush(QColor("#ffffff"))
+        painter.drawRoundedRect(rect, 5, 5)
+
+        if checked:
+            painter.setPen(QPen(QColor("#ffffff"), 2.2, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            painter.drawLine(rect.left() + 5, rect.center().y(), rect.left() + 8, rect.bottom() - 5)
+            painter.drawLine(rect.left() + 8, rect.bottom() - 5, rect.right() - 4, rect.top() + 5)
+
+        painter.restore()
+
+
 class ContactsPage(QWidget):
 
     def __init__(
@@ -88,7 +122,7 @@ class ContactsPage(QWidget):
         title = QLabel("대상자 관리")
         title.setObjectName("PageTitle")
 
-        desc = QLabel("검색 · 추가/수정 · 파일 가져오기/보내기")
+        desc = QLabel("검색 · 추가 · 파일 작업")
         desc.setObjectName("PageDesc")
 
         search_row = QHBoxLayout()
@@ -96,23 +130,23 @@ class ContactsPage(QWidget):
         self.search = QLineEdit()
         self.search.setPlaceholderText("이름, 사번, 전화, 대리점, 지사")
         btn_search_clear = style_button(QPushButton("초기화"), "ghost")
+        self.btn_reload = style_button(QPushButton("새로고침"), "ghost")
+        self.btn_delete = style_button(QPushButton("선택 삭제"), "danger")
         search_row.addWidget(self.search, 1)
         search_row.addWidget(btn_search_clear)
+        search_row.addWidget(self.btn_reload)
+        search_row.addStretch(1)
+        search_row.addWidget(self.btn_delete)
 
         btn_row = QHBoxLayout()
         btn_row.setSpacing(8)
-
         self.btn_add = style_button(QPushButton("추가"), "primary")
-        self.btn_edit = style_button(QPushButton("수정"), "secondary")
-        self.btn_delete = style_button(QPushButton("삭제"), "danger")
-        self.btn_reload = style_button(QPushButton("새로고침"), "ghost")
-        self.btn_bulk_manage = self._create_bulk_manage_button()
-
-        for btn in [self.btn_add, self.btn_edit, self.btn_delete, self.btn_reload]:
-            btn_row.addWidget(btn)
-
+        self.btn_bulk_menu = self._create_bulk_add_button()
+        self.btn_file_menu = self._create_file_button()
         btn_row.addStretch(1)
-        btn_row.addWidget(self.btn_bulk_manage)
+        btn_row.addWidget(self.btn_add)
+        btn_row.addWidget(self.btn_bulk_menu)
+        btn_row.addWidget(self.btn_file_menu)
 
         self.table = QTableView()
         self.table.setAlternatingRowColors(True)
@@ -130,10 +164,8 @@ class ContactsPage(QWidget):
         self.proxy.setFilterKeyColumn(-1)
 
         self.table.setModel(self.proxy)
+        self.table.setItemDelegateForColumn(0, ContactCheckDelegate(self.table))
         self.table.verticalHeader().setVisible(False)
-
-        self.table.setColumnWidth(0, 36)
-        self.table.setColumnWidth(1, 56)
 
         self.table.clicked.connect(self._on_table_clicked)
         self.table.doubleClicked.connect(self._on_contact_double_clicked)
@@ -145,6 +177,7 @@ class ContactsPage(QWidget):
         hdr.setSectionsClickable(True)
         hdr.setStretchLastSection(True)
         hdr.toggled.connect(self._toggle_all_checked)
+        self._apply_table_column_widths()
 
         self.model.dataChanged.connect(lambda *_: self._sync_header_checkbox())
         self.model.layoutChanged.connect(lambda *_: self._sync_header_checkbox())
@@ -154,14 +187,13 @@ class ContactsPage(QWidget):
         layout.addWidget(title)
         layout.addWidget(desc)
         layout.addLayout(search_row)
-        layout.addLayout(btn_row)
         layout.addWidget(self.table, 1)
+        layout.addLayout(btn_row)
 
         self.search.textChanged.connect(self.proxy.setFilterFixedString)
         btn_search_clear.clicked.connect(self._clear_search)
 
         self.btn_add.clicked.connect(self._add)
-        self.btn_edit.clicked.connect(self._edit)
         self.btn_delete.clicked.connect(self._delete_checked)
         self.btn_reload.clicked.connect(self.reload)
 
@@ -174,62 +206,62 @@ class ContactsPage(QWidget):
         self.reload()
         QTimer.singleShot(0, self._sync_header_checkbox)
 
-    def _create_bulk_manage_button(self) -> QToolButton:
+    def _apply_table_column_widths(self) -> None:
+        widths = {
+            0: 42,
+            1: 56,
+            2: 120,
+            3: 260,
+            4: 150,
+            5: 140,
+        }
+        for col, width in widths.items():
+            self.table.setColumnWidth(col, width)
+
+    def _create_menu_button(self, text: str, role: str = "secondary") -> QToolButton:
         btn = QToolButton(self)
-        btn.setText("가져오기 / 보내기 ▾")
+        btn.setText(text)
         btn.setPopupMode(QToolButton.InstantPopup)
         btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
-        style_tool_button(btn, "secondary")
-        btn.setMenu(self._build_bulk_menu(btn))
+        style_tool_button(btn, role)
         return btn
 
-    def _build_bulk_menu(self, parent) -> QMenu:
-        menu = QMenu(parent)
-
-        upload_menu = menu.addMenu("업로드")
-        download_menu = menu.addMenu("다운로드")
-        sample_menu = menu.addMenu("샘플")
-        editor_menu = menu.addMenu("미리보기/편집")
-
-        act_upload_file = QAction("파일 업로드 (엑셀/워드/메모장)", menu)
-        act_upload_file.triggered.connect(lambda: self._pick_import_file("all"))
-        upload_menu.addAction(act_upload_file)
-        upload_menu.addSeparator()
-        act_paste = QAction("붙여넣기 업로드", menu)
+    def _create_bulk_add_button(self) -> QToolButton:
+        btn = self._create_menu_button("여러명 추가", "secondary")
+        menu = QMenu(btn)
+        act_file = QAction("파일 업로드", menu)
+        act_paste = QAction("붙여넣기 일괄 추가", menu)
+        act_file.triggered.connect(lambda: self._pick_import_file("all"))
         act_paste.triggered.connect(self._open_paste_dialog)
-        upload_menu.addAction(act_paste)
+        menu.addAction(act_file)
+        menu.addAction(act_paste)
+        btn.setMenu(menu)
+        return btn
 
-        act_download_excel = QAction("엑셀로 다운로드", menu)
-        act_download_word = QAction("워드로 다운로드", menu)
-        act_download_text = QAction("메모장으로 다운로드", menu)
-        act_download_excel.triggered.connect(lambda: self._export_contacts("excel"))
-        act_download_word.triggered.connect(lambda: self._export_contacts("word"))
-        act_download_text.triggered.connect(lambda: self._export_contacts("text"))
-        download_menu.addAction(act_download_excel)
-        download_menu.addAction(act_download_word)
-        download_menu.addAction(act_download_text)
-
-        act_sample_excel = QAction("엑셀 샘플 다운로드", menu)
-        act_sample_word = QAction("워드 샘플 다운로드", menu)
-        act_sample_text = QAction("메모장 샘플 다운로드", menu)
+    def _create_file_button(self) -> QToolButton:
+        btn = self._create_menu_button("파일", "secondary")
+        menu = QMenu(btn)
+        act_export_excel = QAction("엑셀로 내보내기", menu)
+        act_export_word = QAction("워드로 내보내기", menu)
+        act_export_text = QAction("메모장으로 내보내기", menu)
+        act_export_excel.triggered.connect(lambda: self._export_contacts("excel"))
+        act_export_word.triggered.connect(lambda: self._export_contacts("word"))
+        act_export_text.triggered.connect(lambda: self._export_contacts("text"))
+        menu.addAction(act_export_excel)
+        menu.addAction(act_export_word)
+        menu.addAction(act_export_text)
+        menu.addSeparator()
+        act_sample_excel = QAction("엑셀 샘플", menu)
+        act_sample_word = QAction("워드 샘플", menu)
+        act_sample_text = QAction("메모장 샘플", menu)
         act_sample_excel.triggered.connect(lambda: self._download_template("excel"))
         act_sample_word.triggered.connect(lambda: self._download_template("word"))
         act_sample_text.triggered.connect(lambda: self._download_template("text"))
-        sample_menu.addAction(act_sample_excel)
-        sample_menu.addAction(act_sample_word)
-        sample_menu.addAction(act_sample_text)
-
-        act_excel_editor = QAction("엑셀 미리보기/편집", menu)
-        act_word_editor = QAction("워드 미리보기/편집", menu)
-        act_text_editor = QAction("메모장 미리보기/편집", menu)
-        act_excel_editor.triggered.connect(self._open_excel_editor)
-        act_word_editor.triggered.connect(self._open_word_editor)
-        act_text_editor.triggered.connect(self._open_text_editor)
-        editor_menu.addAction(act_excel_editor)
-        editor_menu.addAction(act_word_editor)
-        editor_menu.addAction(act_text_editor)
-
-        return menu
+        menu.addAction(act_sample_excel)
+        menu.addAction(act_sample_word)
+        menu.addAction(act_sample_text)
+        btn.setMenu(menu)
+        return btn
 
     def eventFilter(self, watched, event):
         if watched in {self, self.table, self.table.viewport()}:
@@ -285,13 +317,19 @@ class ContactsPage(QWidget):
         path = files[0]
         event.acceptProposedAction()
         if len(files) > 1:
-            QMessageBox.information(self, "안내", f"여러 파일이 드롭되었습니다. 첫 번째 지원 파일만 처리합니다.\n\n{Path(path).name}")
-        self._import_file_from_path(path, source_label="드래그앤드롭")
+            QMessageBox.information(self, "안내", f"여러 파일을 받았습니다. 첫 번째 지원 파일만 처리합니다.\n\n{Path(path).name}")
+        self._import_file_from_path(path, source_label="드래그 앤 드롭")
         return True
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
-        for b in [self.btn_add, self.btn_edit, self.btn_delete, self.btn_reload, self.btn_bulk_manage]:
+        for b in [
+            self.btn_add,
+            self.btn_bulk_menu,
+            self.btn_file_menu,
+            self.btn_delete,
+            self.btn_reload,
+        ]:
             b.setEnabled(not busy)
 
     def _show_bg_error(self, tb: str) -> None:

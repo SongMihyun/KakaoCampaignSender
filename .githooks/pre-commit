@@ -1,0 +1,28 @@
+#!/bin/sh
+
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"
+if [ -z "$REPO_ROOT" ]; then
+  exit 0
+fi
+
+run_check() {
+  "$1" -c "import runpy, sys; sys.argv=['scripts/check_mojibake.py']; runpy.run_path('scripts/check_mojibake.py', run_name='__main__')"
+}
+
+if [ -x "$REPO_ROOT/.venv/Scripts/python.exe" ]; then
+  cd "$REPO_ROOT" && run_check "$REPO_ROOT/.venv/Scripts/python.exe"
+  exit $?
+fi
+
+if command -v py >/dev/null 2>&1; then
+  cd "$REPO_ROOT" && py -3 scripts/check_mojibake.py
+  exit $?
+fi
+
+if command -v python >/dev/null 2>&1; then
+  cd "$REPO_ROOT" && python scripts/check_mojibake.py
+  exit $?
+fi
+
+echo "Python not found; skipped mojibake check." >&2
+exit 0

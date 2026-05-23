@@ -1,4 +1,4 @@
-from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QProgressBar
+﻿from PySide6.QtWidgets import QWidget, QHBoxLayout, QLabel, QProgressBar
 from PySide6.QtCore import Qt
 
 
@@ -11,7 +11,7 @@ class StatusBar(QWidget):
         layout.setContentsMargins(16, 10, 16, 10)
         layout.setSpacing(10)
 
-        self.message = QLabel("—")
+        self.message = QLabel("준비 완료")
         self.message.setObjectName("Meta")
 
         self.progress = QProgressBar()

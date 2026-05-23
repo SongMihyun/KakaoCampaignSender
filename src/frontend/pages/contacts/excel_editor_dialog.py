@@ -1,4 +1,4 @@
-# FILE: src/frontend/pages/contacts/excel_editor_dialog.py
+﻿# FILE: src/frontend/pages/contacts/excel_editor_dialog.py
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -369,7 +369,7 @@ class ColumnFilterDialog(QDialog):
         title.setStyleSheet("font-size:15px; font-weight:700;")
         root.addWidget(title)
 
-        desc = QLabel("열을 선택하면 해당 열에 존재하는 값 목록을 확인하고 체크로 포함/제외할 수 있습니다.")
+        desc = QLabel("열을 선택하면 해당 열의 값을 확인하고 체크로 포함/제외할 수 있습니다.")
         desc.setStyleSheet("color:#6b7280;")
         desc.setWordWrap(True)
         root.addWidget(desc)
@@ -530,7 +530,7 @@ class CombinedColumnDialog(QDialog):
         root.addWidget(desc)
 
         form = QGridLayout()
-        form.setHorizontalSpacing(8)
+        form.setHorizontalSpacing(10)
         form.setVerticalSpacing(8)
 
         self.column_title_input = QLineEdit()
@@ -543,9 +543,16 @@ class CombinedColumnDialog(QDialog):
 
         form.addWidget(QLabel("새 열 제목"), 0, 0)
         form.addWidget(self.column_title_input, 0, 1)
-        form.addWidget(QLabel("값 구분자"), 1, 0)
-        form.addWidget(self.separator_input, 1, 1)
+        form.addWidget(QLabel("값 구분자"), 0, 2)
+        form.addWidget(self.separator_input, 0, 3)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(3, 1)
         root.addLayout(form)
+
+        self.preview_label = QLabel("미리보기: ")
+        self.preview_label.setObjectName("CombinedPreviewLabel")
+        self.preview_label.setWordWrap(True)
+        root.addWidget(self.preview_label)
 
         list_row = QHBoxLayout()
         list_row.setSpacing(10)
@@ -580,10 +587,6 @@ class CombinedColumnDialog(QDialog):
         order_btn_row.addWidget(self.btn_move_down)
         right_box.addLayout(order_btn_row)
 
-        self.preview_label = QLabel("미리보기: ")
-        self.preview_label.setStyleSheet("color:#6b7280;")
-        self.preview_label.setWordWrap(True)
-        right_box.addWidget(self.preview_label)
 
         list_row.addLayout(right_box, 1)
         root.addLayout(list_row, 1)
@@ -701,7 +704,7 @@ class CombinedColumnDialog(QDialog):
     def _build_preview_text(self) -> str:
         cols = self._selected_columns()
         if not cols:
-            return "미리보기: 선택된 열 없음"
+            return "미리보기: 선택한 열 없음"
         separator = self.separator_input.text()
         sample_values: list[str] = []
         for col in cols:
@@ -774,32 +777,45 @@ class ExcelEditorDialog(QDialog):
         self.sheet_combo.addItems(self._grid.sheetnames)
         top_bar.addWidget(self.sheet_combo)
 
-        self.btn_undo = QPushButton("되돌리기")
-        self.btn_redo = QPushButton("앞으로가기")
+        self.btn_undo = QPushButton("↶")
+        self.btn_undo.setToolTip("되돌리기")
+        self.btn_undo.setFixedWidth(42)
+        self.btn_redo = QPushButton("↷")
+        self.btn_redo.setToolTip("다시 실행")
+        self.btn_redo.setFixedWidth(42)
         self.btn_delete_rows = QPushButton("행 삭제")
         self.btn_delete_cols = QPushButton("열 삭제")
-        self.btn_move_col_left = QPushButton("열 ← 이동")
-        self.btn_move_col_right = QPushButton("열 → 이동")
-        self.btn_add_combined_col = QPushButton("조합 열 추가")
+        self.btn_move_col_left = QPushButton("←")
+        self.btn_move_col_left.setToolTip("열을 왼쪽으로 이동")
+        self.btn_move_col_left.setFixedWidth(42)
+        self.btn_move_col_right = QPushButton("→")
+        self.btn_move_col_right.setToolTip("열을 오른쪽으로 이동")
+        self.btn_move_col_right.setFixedWidth(42)
+        self.btn_add_combined_col = QPushButton("조합 추가")
         self.current_col_label = QLabel("현재 열: A")
         self.current_col_label.setStyleSheet("color:#6b7280;")
-        self.btn_filter = QPushButton("열 필터")
-        self.btn_clear_filters = QPushButton("필터 해제")
+        self.btn_filter = QPushButton("필터")
+        self.btn_clear_filters = QPushButton("해제")
+        self.btn_clear_filters.setToolTip("필터 해제")
         self.filter_summary_label = QLabel("필터 없음")
         self.filter_summary_label.setStyleSheet("color:#6b7280;")
-        self.btn_save = QPushButton("저장하기")
+        self.btn_save = QPushButton("저장")
         self.btn_export = QPushButton("내보내기")
         self.btn_close = QPushButton("닫기")
 
         top_bar.addSpacing(10)
         top_bar.addWidget(self.btn_undo)
         top_bar.addWidget(self.btn_redo)
+        top_bar.addSpacing(8)
         top_bar.addWidget(self.btn_delete_rows)
         top_bar.addWidget(self.btn_delete_cols)
+        top_bar.addSpacing(8)
+        top_bar.addWidget(QLabel("열"))
         top_bar.addWidget(self.btn_move_col_left)
         top_bar.addWidget(self.btn_move_col_right)
         top_bar.addWidget(self.btn_add_combined_col)
         top_bar.addWidget(self.current_col_label)
+        top_bar.addSpacing(8)
         top_bar.addWidget(self.btn_filter)
         top_bar.addWidget(self.btn_clear_filters)
         top_bar.addWidget(self.filter_summary_label)
@@ -945,7 +961,7 @@ class ExcelEditorDialog(QDialog):
             )
         )
         self._refresh_after_data_change()
-        self._set_status(f"셀 수정: {get_column_letter(col + 1)}{row + 1}")
+        self._set_status(f"값 수정: {get_column_letter(col + 1)}{row + 1}")
 
     def _focus_find(self) -> None:
         self.find_input.setFocus()
@@ -1083,7 +1099,7 @@ class ExcelEditorDialog(QDialog):
         self._select_cell(max(0, row), target_col)
         self._update_current_col_label()
         self._set_status(
-            f"열 이동 완료: {get_column_letter(source_col + 1)} → {get_column_letter(target_col + 1)} (필터 해제)"
+            f"열 이동 완료: {get_column_letter(source_col + 1)} -> {get_column_letter(target_col + 1)} (필터 해제)"
         )
 
     def _add_combined_column(self) -> None:
@@ -1153,7 +1169,7 @@ class ExcelEditorDialog(QDialog):
         self._set_status(self._sheet_summary_text(self._grid.sheets[index]))
 
     def _sheet_summary_text(self, sheet: SheetGrid) -> str:
-        return f"시트: {sheet.name} / {self.model.rowCount()}행 × {self.model.columnCount()}열"
+        return f"시트: {sheet.name} / {self.model.rowCount()}행 x {self.model.columnCount()}열"
 
     def _set_status(self, text: str) -> None:
         self.status_label.setText(text)
@@ -1273,7 +1289,7 @@ class ExcelEditorDialog(QDialog):
         self._undo_stack.append(command)
         self._update_history_buttons()
         label = "셀 수정" if isinstance(command, CellEditCommand) else command.label
-        self._set_status(f"앞으로가기 완료: {label}")
+        self._set_status(f"다시 실행 완료: {label}")
 
     def _delete_selected_rows(self) -> None:
         rows = self._selected_rows()
@@ -1347,7 +1363,7 @@ class ExcelEditorDialog(QDialog):
             ok = QMessageBox.question(
                 self,
                 "필터로 숨김",
-                "찾은 셀이 현재 필터 조건으로 숨겨져 있습니다.\n필터를 모두 해제하고 이동하시겠습니까?",
+                "찾은 값이 현재 필터 조건으로 숨겨져 있습니다.\n필터를 모두 해제하고 이동하시겠습니까?",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if ok == QMessageBox.Yes:
@@ -1355,7 +1371,7 @@ class ExcelEditorDialog(QDialog):
                 if self._select_cell(row, col):
                     self._set_status(f"찾음: {get_column_letter(col + 1)}{row + 1}")
                     return
-        QMessageBox.information(self, "찾기", "찾은 셀이 현재 화면에 표시되지 않습니다.")
+        QMessageBox.information(self, "찾기", "찾은 값이 현재 화면에 표시되지 않습니다.")
 
     def _replace_all(self) -> None:
         needle = self.find_input.text()
@@ -1369,16 +1385,16 @@ class ExcelEditorDialog(QDialog):
         self._record_snapshot_command(before_rows, after_rows, "일괄 수정")
         self._refresh_after_data_change()
         self._last_find_anchor = None
-        self._set_status(f"일괄 수정 완료: {changed}개 셀 변경")
-        QMessageBox.information(self, "완료", f"일괄 수정 완료: {changed}개 셀 변경")
+        self._set_status(f"일괄 수정 완료: {changed}개 값 변경")
+        QMessageBox.information(self, "완료", f"일괄 수정 완료: {changed}개 값 변경")
 
     def _confirm_value_only_save(self) -> bool:
         if self._warned_value_only:
             return True
         msg = (
             "현재 편집기는 값 기준 경량 편집 모드입니다.\n\n"
-            "저장/내보내기 시 서식, 병합, 매크로, 수식 계산 결과는 보존되지 않고\n"
-            "편집된 셀 값만 새 Excel 구조로 저장됩니다.\n\n"
+            "저장/내보내기 시 서식, 병합, 매크로, 수식 계산값은 보존하지 않고\n"
+            "편집된 값만 Excel 구조로 저장됩니다.\n\n"
             "계속 진행하시겠습니까?"
         )
         ok = QMessageBox.question(self, "저장 방식 안내", msg, QMessageBox.Yes | QMessageBox.No)

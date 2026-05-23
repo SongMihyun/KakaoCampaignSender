@@ -11,6 +11,8 @@ packages = [
 ]
 [tool.poetry.dependencies]
 python = ">=3.11,<3.15"
+kakao-win32 = { path = "packages/kakao_win32", develop = true }
+kakao-pc-driver = { path = "packages/kakao_pc_driver", develop = true }
 pyside6 = "^6.10.2"
 openpyxl = "^3.1.5"
 pywinauto = "^0.6.9"

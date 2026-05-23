@@ -1,3 +1,4 @@
 # FILE: .gitattributes
 .githooks/* text eol=lf
 *.sh text eol=lf
+*.py text working-tree-encoding=UTF-8

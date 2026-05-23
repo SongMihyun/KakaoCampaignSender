@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional, List, Callable, Dict, Any
 
 from PySide6.QtCore import Qt, QModelIndex
-from PySide6.QtGui import QStandardItemModel, QStandardItem
+from PySide6.QtGui import QAction, QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -22,11 +22,13 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QTextEdit,
     QSplitter,
+    QMenu,
+    QToolButton,
 )
 
 from app.paths import user_data_dir
 from frontend.pages.campaigns.preview_dialog import CampaignPreviewDialog
-from frontend.theme import style_button
+from frontend.theme import style_button, style_tool_button
 
 
 class LogsPage(QWidget):
@@ -165,10 +167,9 @@ class LogsPage(QWidget):
         self.btn_open_log_file = QPushButton("로그 파일 열기")
         self.btn_open_wipe_log = QPushButton("전체삭제 로그 보기")
         self.btn_show_selected_detail = QPushButton("선택 행 상세 보기")
+        self.btn_viewer_manage = self._create_viewer_manage_button()
         viewer_title_row.addStretch(1)
-        viewer_title_row.addWidget(self.btn_show_selected_detail)
-        viewer_title_row.addWidget(self.btn_open_wipe_log)
-        viewer_title_row.addWidget(self.btn_open_log_file)
+        viewer_title_row.addWidget(self.btn_viewer_manage)
 
         vv.addLayout(viewer_title_row)
 
@@ -196,11 +197,10 @@ class LogsPage(QWidget):
         btn_row.addStretch(1)
 
         self.reset_btn = style_button(QPushButton("로그·리포트 삭제"), "danger")
-        btn_row.addWidget(self.reset_btn)
-
         self.btn_reset_all = style_button(QPushButton("전체 초기화 후 종료"), "danger")
         self.btn_reset_all.setEnabled(self._on_reset_all is not None)
-        btn_row.addWidget(self.btn_reset_all)
+        self.btn_danger_manage = self._create_danger_manage_button()
+        btn_row.addWidget(self.btn_danger_manage)
 
         root.addLayout(btn_row)
 
@@ -226,6 +226,46 @@ class LogsPage(QWidget):
 
         self.refresh_reports()
         self.refresh()
+
+    def _create_viewer_manage_button(self) -> QToolButton:
+        btn = QToolButton(self)
+        btn.setText("보기")
+        btn.setPopupMode(QToolButton.InstantPopup)
+        btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        style_tool_button(btn, "ghost")
+
+        menu = QMenu(btn)
+        act_detail = QAction("선택 행 상세 보기", menu)
+        act_wipe_log = QAction("전체삭제 로그 보기", menu)
+        act_log_file = QAction("로그 파일 열기", menu)
+        menu.addAction(act_detail)
+        menu.addSeparator()
+        menu.addAction(act_wipe_log)
+        menu.addAction(act_log_file)
+        act_detail.triggered.connect(self.show_selected_detail)
+        act_wipe_log.triggered.connect(self.open_wipe_log)
+        act_log_file.triggered.connect(self.open_log_file)
+        btn.setMenu(menu)
+        return btn
+
+    def _create_danger_manage_button(self) -> QToolButton:
+        btn = QToolButton(self)
+        btn.setText("삭제")
+        btn.setPopupMode(QToolButton.InstantPopup)
+        btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        style_tool_button(btn, "danger")
+
+        menu = QMenu(btn)
+        act_reset_logs = QAction("로그·리포트 삭제", menu)
+        act_reset_all = QAction("전체 초기화 후 종료", menu)
+        act_reset_all.setEnabled(self._on_reset_all is not None)
+        menu.addAction(act_reset_logs)
+        menu.addSeparator()
+        menu.addAction(act_reset_all)
+        act_reset_logs.triggered.connect(self.reset_logs_and_reports)
+        act_reset_all.triggered.connect(self.reset_all_app)
+        btn.setMenu(menu)
+        return btn
 
     def _reports_dir(self) -> Path:
         d = Path(user_data_dir()) / "Reports"

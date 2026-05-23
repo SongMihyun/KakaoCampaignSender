@@ -11,7 +11,7 @@ if [ -z "$REPO_ROOT" ]; then
   exit 0
 fi
 
-if [ -e /dev/tty ]; then
+if [ -t 0 ] && [ -r /dev/tty ] && [ -w /dev/tty ]; then
   if command -v py >/dev/null 2>&1; then
     py -3 "$REPO_ROOT/scripts/commit_message_helper.py" "$MSG_FILE" "$SOURCE" < /dev/tty > /dev/tty 2>&1
     exit $?

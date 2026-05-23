@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QItemSelection, QItemSelectionModel, QModelIndex, QTimer
+from PySide6.QtCore import Qt, QItemSelection, QItemSelectionModel, QModelIndex, QTimer, Signal
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
     QWidget,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QComboBox,
     QHeaderView,
+    QToolButton,
 )
 
 from backend.domains.contacts.service import ContactsService
@@ -31,6 +32,32 @@ from frontend.utils.contact_edit import edit_contact_by_id
 from frontend.utils.worker import run_bg
 from frontend.app.app_events import app_events
 from frontend.theme import style_button
+
+
+class GroupComboBox(QComboBox):
+    delete_requested = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setObjectName("GroupCombo")
+
+        self.delete_button = QToolButton(self)
+        self.delete_button.setObjectName("ComboDeleteButton")
+        self.delete_button.setText("X")
+        self.delete_button.setToolTip("선택한 그룹 삭제")
+        self.delete_button.setCursor(Qt.PointingHandCursor)
+        self.delete_button.setFixedSize(28, 28)
+        self.delete_button.clicked.connect(self.delete_requested.emit)
+
+    def set_delete_enabled(self, enabled: bool) -> None:
+        self.delete_button.setEnabled(enabled)
+        self.delete_button.setVisible(enabled)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        x = self.width() - 56
+        y = int((self.height() - self.delete_button.height()) / 2)
+        self.delete_button.move(max(0, x), max(0, y))
 
 
 class GroupsPage(QWidget):
@@ -79,17 +106,16 @@ class GroupsPage(QWidget):
         grp_lbl = QLabel("그룹")
         grp_lbl.setObjectName("SectionTitle")
         top.addWidget(grp_lbl)
-        self.cbo_groups = QComboBox()
+        self.cbo_groups = GroupComboBox()
         self.cbo_groups.setMinimumWidth(220)
 
         self.btn_group_add = style_button(QPushButton("새 그룹"), "primary")
-        self.btn_group_edit = style_button(QPushButton("이름 변경"), "secondary")
+        self.btn_group_edit = style_button(QPushButton("수정"), "secondary")
         self.btn_group_del = style_button(QPushButton("삭제"), "danger")
 
         top.addWidget(self.cbo_groups, 1)
         top.addWidget(self.btn_group_add)
         top.addWidget(self.btn_group_edit)
-        top.addWidget(self.btn_group_del)
 
         main = QHBoxLayout()
         main.setSpacing(12)
@@ -192,6 +218,7 @@ class GroupsPage(QWidget):
         )
 
         self.cbo_groups.currentIndexChanged.connect(self._on_group_combo_changed)
+        self.cbo_groups.delete_requested.connect(self._delete_group)
 
         self.btn_group_add.clicked.connect(self._create_group)
         self.btn_group_edit.clicked.connect(self._edit_group)
@@ -219,6 +246,7 @@ class GroupsPage(QWidget):
         has_group = self._current_group is not None
         self.btn_group_edit.setEnabled(has_group)
         self.btn_group_del.setEnabled(has_group)
+        self.cbo_groups.set_delete_enabled(has_group)
         self.btn_add_to_group.setEnabled(has_group)
         self.btn_remove_from_group.setEnabled(has_group)
 

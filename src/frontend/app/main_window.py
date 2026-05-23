@@ -48,6 +48,7 @@ from frontend.layout.navigation import Navigation
 from frontend.layout.statusbar import StatusBar
 from frontend.pages.campaigns.page import CampaignPage
 from frontend.pages.contacts.page import ContactsPage
+from frontend.pages.editor_tools.page import EditorToolsPage
 from frontend.pages.groups.page import GroupsPage
 from frontend.pages.logs.page import LogsPage
 from frontend.pages.sending.page import SendPage
@@ -67,7 +68,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
 
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(12, 12, 12, 12)
+        root_layout.setContentsMargins(16, 14, 16, 14)
         root_layout.setSpacing(10)
 
         self.header = Header()
@@ -75,10 +76,13 @@ class MainWindow(QMainWindow):
         self.header.import_settings_requested.connect(self.import_settings_bundle)
         self.header.logout_requested.connect(self.logout)
         self.header.uninstall_requested.connect(self.uninstall_application)
+        self.header.home_requested.connect(self._show_sender_mode)
+        self.header.editor_requested.connect(self._show_editor_mode)
 
         self.nav = Navigation()
         self.status = StatusBar()
         self.stack = QStackedWidget()
+        self.center_modes = QStackedWidget()
 
         db_path = contacts_db_path()
 
@@ -181,6 +185,8 @@ class MainWindow(QMainWindow):
             on_reset_all=self.reset_application,
         )
 
+        self.editor_page = EditorToolsPage(on_status=self.status.set_message)
+
         self.stack.addWidget(self.contacts_page)
         self.stack.addWidget(self.groups_page)
         self.stack.addWidget(self.campaign_page)
@@ -189,12 +195,15 @@ class MainWindow(QMainWindow):
 
         center = QWidget()
         center.setLayout(self.nav.build_layout(self.stack))
+        self.center_modes.addWidget(center)
+        self.center_modes.addWidget(self.editor_page)
 
         root_layout.addWidget(self.header)
-        root_layout.addWidget(center, 1)
+        root_layout.addWidget(self.center_modes, 1)
         root_layout.addWidget(self.status)
 
         self.nav.page_changed.connect(self._go_page)
+        self._show_sender_mode()
         self._go_page(0)
         self._apply_style()
 
@@ -222,16 +231,35 @@ class MainWindow(QMainWindow):
             pass
 
     def _go_page(self, index: int) -> None:
+        self._show_sender_mode(update_subtitle=False)
         self.stack.setCurrentIndex(index)
         title = self.TITLES[index] if 0 <= index < len(self.TITLES) else __display_name__
         self.header.set_subtitle(title)
 
         try:
+            if index == 0 and hasattr(self, "contacts_page") and self.contacts_page:
+                try:
+                    self.status.set_message(f"대상자 로드: {self.contacts_page.model.rowCount()}건")
+                except Exception:
+                    pass
             if index == 4 and hasattr(self, "logs_page") and self.logs_page:
                 if hasattr(self.logs_page, "refresh"):
                     self.logs_page.refresh()
         except Exception:
             pass
+
+    def _show_sender_mode(self, *, update_subtitle: bool = True) -> None:
+        self.center_modes.setCurrentIndex(0)
+        self.header.set_mode("home")
+        if update_subtitle:
+            index = self.stack.currentIndex()
+            title = self.TITLES[index] if 0 <= index < len(self.TITLES) else __display_name__
+            self.header.set_subtitle(title)
+
+    def _show_editor_mode(self) -> None:
+        self.center_modes.setCurrentIndex(1)
+        self.header.set_mode("editor")
+        self.header.set_subtitle("편집 도구")
 
     def _apply_style(self) -> None:
         self.setStyleSheet(APP_STYLESHEET)

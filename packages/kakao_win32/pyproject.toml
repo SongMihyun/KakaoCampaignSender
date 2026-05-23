@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "kakao-win32"
+version = "0.1.0"
+description = "Windows HWND/clipboard helpers for Kakao PC automation"
+authors = ["idbla <idbla@example.com>"]
+readme = "README.md"
+packages = [{ include = "kakao_win32", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.15"
+pywinauto = "^0.6.9"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"

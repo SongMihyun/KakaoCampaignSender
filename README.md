@@ -25,6 +25,28 @@ src/
 
 레이어 책임·발송 흐름은 [ARCHITECTURE.md](ARCHITECTURE.md)를 참고하세요.
 
+## 재사용 패키지 (팩스센더 등)
+
+| 패키지 | 설명 |
+|--------|------|
+| `packages/kakao_win32` | Windows HWND·클립보드 |
+| `packages/kakao_pc_driver` | 카카오톡 PC 발송 (`send_self_message`) |
+
+팩스센더 `pyproject.toml` 예:
+
+```toml
+kakao-pc-driver = { path = "../KakaoCampaignSender/packages/kakao_pc_driver", develop = true }
+```
+
+```python
+from kakao_pc_driver import send_self_message
+send_self_message("팩스 처리 완료", my_name="본인이름")
+```
+
+예제: `examples/send_self.py` · 문서: `packages/kakao_pc_driver/README.md`
+
+---
+
 ## 로컬 실행
 
 ```powershell

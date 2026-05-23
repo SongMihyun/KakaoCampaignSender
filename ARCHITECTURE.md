@@ -2,6 +2,17 @@
 
 ## 1. 전체 구조
 
+재사용 패키지 (팩스센더 등 외부 Python 프로젝트용):
+
+```
+packages/
+ ├── kakao_win32/      # Windows HWND·클립보드
+ └── kakao_pc_driver/  # 카카오톡 PC 발송 (send_self_message API)
+```
+
+카센더 앱:
+
+```
 src/
  ├── backend/
  │    ├── core/

@@ -1,19 +1,22 @@
-# FILE: src/frontend/pages/sending/page.py
+﻿# FILE: src/frontend/pages/sending/page.py
 from __future__ import annotations
 
 import time
 from datetime import datetime
 from typing import Callable, Optional
 
-from PySide6.QtCore import Qt, QAbstractNativeEventFilter, QModelIndex, QTimer, QDateTime
+from PySide6.QtCore import Qt, QAbstractNativeEventFilter, QModelIndex, QTimer, QDateTime, QSize
 from PySide6.QtGui import QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QLabel,
     QPushButton,
     QMessageBox,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QListWidget,
     QListWidgetItem,
@@ -35,7 +38,7 @@ from backend.domains.send_lists.dto import SendListCreateDTO
 from backend.domains.sending.service import SendingService
 
 from frontend.app.app_events import app_events
-from frontend.theme import style_button
+from frontend.theme import style_button, style_tool_button
 from frontend.pages.campaigns.preview_dialog import CampaignPreviewDialog
 from frontend.utils.contact_edit import edit_contact_by_id
 
@@ -166,6 +169,7 @@ class SendPage(QWidget):
         self._is_pause_ui: bool = False
         self._active_scheduled_send_id: Optional[int] = None
         self._latest_schedule_id: Optional[int] = None
+        self._send_mode_schedule: bool = False
 
         self._hotkey_mgr: Optional[GlobalHotkeyManager] = None
         self._init_global_hotkey()
@@ -215,7 +219,7 @@ class SendPage(QWidget):
         header_left.addWidget(self.lbl_priv)
         self._refresh_priv_label()
 
-        self.lbl_pause_badge = QLabel("일시정지됨 · 카카오톡 사용 가능 · 다음 대상은 검색창부터 재개")
+        self.lbl_pause_badge = QLabel("일시정지 중 · 카카오톡 사용 가능 · 다음 대상자는 재개 후 발송")
         self.lbl_pause_badge.setVisible(False)
         self.lbl_pause_badge.setStyleSheet(
             "background:#b91c1c; color:white; font-weight:700; "
@@ -230,6 +234,24 @@ class SendPage(QWidget):
         header_right.setSpacing(8)
         header_right.setAlignment(Qt.AlignTop | Qt.AlignRight)
 
+        mode_wrap = QFrame()
+        mode_wrap.setObjectName("SendModeSwitch")
+        mode_layout = QHBoxLayout(mode_wrap)
+        mode_layout.setContentsMargins(4, 4, 4, 4)
+        mode_layout.setSpacing(4)
+
+        self.btn_mode_now = QPushButton("즉시")
+        self.btn_mode_now.setObjectName("SendModeButton")
+        self.btn_mode_now.setCheckable(True)
+        self.btn_mode_now.setChecked(True)
+
+        self.btn_mode_schedule = QPushButton("예약")
+        self.btn_mode_schedule.setObjectName("SendModeButton")
+        self.btn_mode_schedule.setCheckable(True)
+
+        mode_layout.addWidget(self.btn_mode_now)
+        mode_layout.addWidget(self.btn_mode_schedule)
+
         lbl_speed = QLabel("속도")
         lbl_speed.setStyleSheet("color:#6b7280; font-weight:600;")
 
@@ -240,6 +262,7 @@ class SendPage(QWidget):
         self.cbo_speed.addItem("FAST(빠름)", "fast")
         self.cbo_speed.setCurrentIndex(1)
 
+        header_right.addWidget(mode_wrap)
         header_right.addWidget(lbl_speed)
         header_right.addWidget(self.cbo_speed)
         header_row.addLayout(header_right)
@@ -256,26 +279,26 @@ class SendPage(QWidget):
 
         lv.addWidget(QLabel("발송리스트 생성"))
 
-        form = QHBoxLayout()
-        form.setSpacing(8)
+        form = QGridLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
 
-        form.addWidget(QLabel("그룹"))
+        form.addWidget(QLabel("그룹"), 0, 0)
         self.cbo_groups = QComboBox()
-        form.addWidget(self.cbo_groups, 2)
+        form.addWidget(self.cbo_groups, 0, 1)
 
-        form.addWidget(QLabel("캠페인"))
+        form.addWidget(QLabel("캠페인"), 1, 0)
         self.cbo_campaigns = QComboBox()
-        form.addWidget(self.cbo_campaigns, 3)
+        form.addWidget(self.cbo_campaigns, 1, 1)
 
+        self.btn_create_send_list = style_button(QPushButton("발송리스트 생성"), "primary")
+        self.btn_create_send_list.setMinimumHeight(74)
+        form.addWidget(self.btn_create_send_list, 0, 2, 2, 1)
+        form.setColumnStretch(1, 1)
         lv.addLayout(form)
 
-        form_btns = QHBoxLayout()
-        self.btn_create_send_list = style_button(QPushButton("발송리스트 생성"), "primary")
-        self.btn_reload_sources = style_button(QPushButton("새로고침"), "ghost")
-        form_btns.addWidget(self.btn_create_send_list)
-        form_btns.addWidget(self.btn_reload_sources)
-        form_btns.addStretch(1)
-        lv.addLayout(form_btns)
+        self.btn_reload_sources = style_button(QPushButton("그룹/캠페인 새로고침"), "ghost")
+        lv.addWidget(self.btn_reload_sources, 0, Qt.AlignLeft)
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
@@ -284,33 +307,46 @@ class SendPage(QWidget):
         lv.addWidget(QLabel("발송리스트 관리"))
 
         self.lst_send_lists = QListWidget()
-        self.lst_send_lists.setMinimumWidth(380)
+        self.lst_send_lists.setMinimumWidth(430)
+        self.lst_send_lists.setMinimumHeight(190)
         self.lst_send_lists.setDragDropMode(QListWidget.InternalMove)
         self.lst_send_lists.setDefaultDropAction(Qt.MoveAction)
-        lv.addWidget(self.lst_send_lists, 1)
+        self.lst_send_lists.model().rowsMoved.connect(
+            lambda *_: QTimer.singleShot(0, self._refresh_visible_numbers_only)
+        )
 
         btn_row = QHBoxLayout()
         self.btn_refresh_lists = style_button(QPushButton("새로고침"), "ghost")
 
         self.btn_move_up = QToolButton()
         self.btn_move_up.setText("▲")
+        self.btn_move_up.setToolTip("위로 이동")
+        self.btn_move_up.setFixedSize(36, 32)
+        style_tool_button(self.btn_move_up, "secondary")
 
         self.btn_move_down = QToolButton()
         self.btn_move_down.setText("▼")
+        self.btn_move_down.setToolTip("아래로 이동")
+        self.btn_move_down.setFixedSize(36, 32)
+        style_tool_button(self.btn_move_down, "secondary")
 
-        self.btn_delete_list = style_button(QPushButton("삭제"), "danger")
         self.btn_save_order = style_button(QPushButton("순서 저장"), "secondary")
 
         btn_row.addWidget(self.btn_refresh_lists)
+        btn_row.addStretch(1)
         btn_row.addWidget(self.btn_move_up)
         btn_row.addWidget(self.btn_move_down)
-        btn_row.addWidget(self.btn_delete_list)
-        btn_row.addWidget(self.btn_save_order)
-        btn_row.addStretch(1)
         lv.addLayout(btn_row)
 
-        main.addWidget(left_card, 3)
-        left_card.setMaximumWidth(520)
+        lv.addWidget(self.lst_send_lists, 1)
+
+        order_row = QHBoxLayout()
+        order_row.addStretch(1)
+        order_row.addWidget(self.btn_save_order)
+        lv.addLayout(order_row)
+
+        main.addWidget(left_card, 5)
+        left_card.setMinimumWidth(520)
 
         right_card = QFrame()
         right_card.setObjectName("Card")
@@ -346,7 +382,7 @@ class SendPage(QWidget):
         self.lbl_footer.setStyleSheet("color:#6b7280;")
         rv.addWidget(self.lbl_footer)
 
-        main.addWidget(right_card, 9)
+        main.addWidget(right_card, 6)
 
         action = QHBoxLayout()
 
@@ -373,29 +409,30 @@ class SendPage(QWidget):
         schedule_row = QHBoxLayout()
         schedule_row.setSpacing(8)
 
-        schedule_row.addWidget(QLabel("예약 시각"))
+        self.lbl_schedule_time_caption = QLabel("예약")
+        self.lbl_schedule_time_caption.hide()
+        schedule_row.addWidget(self.lbl_schedule_time_caption)
 
         self.dte_schedule = QDateTimeEdit()
         self.dte_schedule.setCalendarPopup(True)
         self.dte_schedule.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
         self.dte_schedule.setDateTime(QDateTime.currentDateTime().addSecs(600))
 
-        self.btn_schedule_save = QPushButton("예약 저장")
-        self.btn_schedule_cancel = QPushButton("예약 취소")
+        self.btn_schedule_save = style_button(QPushButton("예약 저장"), "secondary")
+        self.btn_schedule_cancel = style_button(QPushButton("예약 취소"), "ghost")
         self.lbl_schedule_status = QLabel("예약 없음")
         self.lbl_schedule_status.setStyleSheet("color:#6b7280;")
 
-        schedule_row.addWidget(self.dte_schedule)
-        schedule_row.addWidget(self.btn_schedule_save)
-        schedule_row.addWidget(self.btn_schedule_cancel)
+        self.dte_schedule.hide()
+        self.btn_schedule_save.hide()
         schedule_row.addWidget(self.lbl_schedule_status, 1)
+        schedule_row.addWidget(self.btn_schedule_cancel)
         root.addLayout(schedule_row)
 
         self.btn_reload_sources.clicked.connect(self.reload_sources)
         self.btn_create_send_list.clicked.connect(self._create_send_list)
 
         self.btn_refresh_lists.clicked.connect(self.reload_send_lists)
-        self.btn_delete_list.clicked.connect(self._delete_selected_send_list)
         self.btn_save_order.clicked.connect(self._save_send_list_order)
 
         self.btn_move_up.clicked.connect(self._move_selected_send_list_up)
@@ -404,11 +441,13 @@ class SendPage(QWidget):
         self.lst_send_lists.currentRowChanged.connect(self._on_send_list_selected)
         self.lst_send_lists.itemDoubleClicked.connect(self._on_send_list_double_clicked)
 
-        self.btn_send_start.clicked.connect(self._start_send_all_lists)
+        self.btn_send_start.clicked.connect(self._start_send_from_mode)
         self.btn_send_pause.clicked.connect(self._toggle_pause_send)
         self.btn_send_stop.clicked.connect(self._stop_send)
         self.btn_schedule_save.clicked.connect(self._create_scheduled_send)
         self.btn_schedule_cancel.clicked.connect(self._cancel_latest_schedule)
+        self.btn_mode_now.clicked.connect(self._set_immediate_mode)
+        self.btn_mode_schedule.clicked.connect(self._choose_schedule_mode)
 
         self.tbl_preview.doubleClicked.connect(self._on_preview_double_clicked)
 
@@ -429,6 +468,64 @@ class SendPage(QWidget):
         self.reload_send_lists()
         self.refresh_schedule_status()
 
+    def _set_immediate_mode(self) -> None:
+        self._send_mode_schedule = False
+        self.btn_mode_now.setChecked(True)
+        self.btn_mode_schedule.setChecked(False)
+        self.btn_send_start.setText("발송 시작")
+        self._on_status("즉시 발송 모드")
+
+    def _choose_schedule_mode(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("예약 발송 시간 선택")
+        dlg.setModal(True)
+
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(14, 14, 14, 14)
+        layout.setSpacing(10)
+
+        title = QLabel("예약 날짜와 시간을 선택하세요.")
+        title.setObjectName("SectionTitle")
+        layout.addWidget(title)
+
+        editor = QDateTimeEdit(dlg)
+        editor.setCalendarPopup(True)
+        editor.setDisplayFormat("yyyy-MM-dd HH:mm:ss")
+        base_dt = self.dte_schedule.dateTime()
+        if base_dt.toPython() <= datetime.now():
+            base_dt = QDateTime.currentDateTime().addSecs(600)
+        editor.setDateTime(base_dt)
+        layout.addWidget(editor)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dlg)
+        buttons.button(QDialogButtonBox.Ok).setText("예약 선택")
+        buttons.button(QDialogButtonBox.Cancel).setText("취소")
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            self._set_immediate_mode()
+            return
+
+        planned_at = editor.dateTime().toPython()
+        if planned_at <= datetime.now():
+            QMessageBox.warning(self, "안내", "현재 시각 이후로 예약해주세요.")
+            self._set_immediate_mode()
+            return
+
+        self.dte_schedule.setDateTime(editor.dateTime())
+        self._send_mode_schedule = True
+        self.btn_mode_now.setChecked(False)
+        self.btn_mode_schedule.setChecked(True)
+        self.btn_send_start.setText("예약 저장")
+        self._on_status(f"예약 발송 모드: {planned_at.strftime('%Y-%m-%d %H:%M:%S')}")
+
+    def _start_send_from_mode(self) -> None:
+        if self._send_mode_schedule:
+            self._create_scheduled_send()
+            return
+        self._start_send_all_lists()
 
     def refresh_schedule_status(self) -> None:
         if self.scheduled_sends_service is None:
@@ -597,12 +694,12 @@ class SendPage(QWidget):
         try:
             if self._worker and self._worker.isRunning():
                 self._worker.request_stop()
-                self._on_status("⚠️ 강제 중지(F11) 실행됨")
+                self._on_status("강제 중지(F11) 실행")
         except Exception:
             pass
 
     def _refresh_priv_label(self) -> None:
-        self.lbl_priv.setText("F9: 현재 열린 대화 발송 후 안전 정지/재개  |  F11: 강제 중지  |  일시정지됨 표시 후 카카오톡 사용 가능")
+        self.lbl_priv.setText("F9: 현재 열린 대화 발송 후 안전 정지/재개  |  F11: 강제 중지  |  일시정지 표시 후 카카오톡 사용 가능")
 
     def _refresh_progress_format(self) -> None:
         if not self._current_sending_title:
@@ -644,13 +741,16 @@ class SendPage(QWidget):
         self.btn_reload_sources.setEnabled(not sending)
 
         self.btn_refresh_lists.setEnabled(not sending)
-        self.btn_delete_list.setEnabled(not sending)
+        self.btn_move_up.setEnabled(not sending)
+        self.btn_move_down.setEnabled(not sending)
         self.btn_save_order.setEnabled(not sending)
         self.lst_send_lists.setEnabled(not sending)
 
         self.cbo_groups.setEnabled(not sending)
         self.cbo_campaigns.setEnabled(not sending)
         self.cbo_speed.setEnabled(not sending)
+        self.btn_mode_now.setEnabled(not sending)
+        self.btn_mode_schedule.setEnabled(not sending)
         self.dte_schedule.setEnabled(not sending)
         self.btn_schedule_save.setEnabled(not sending)
         self.btn_schedule_cancel.setEnabled(not sending)
@@ -662,6 +762,42 @@ class SendPage(QWidget):
         campaign_name = (campaign_name or "").strip()
         return f"{group_name} + {campaign_name}".strip(" +")
 
+    def _attach_send_list_row_widget(self, item: QListWidgetItem, index: int, title: str) -> None:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(12, 4, 8, 4)
+        layout.setSpacing(10)
+
+        num = QLabel(f"{index}.")
+        num.setFixedWidth(30)
+        num.setStyleSheet("color:#64748b;")
+        num.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        title_label = QLabel(title)
+        title_label.setTextInteractionFlags(Qt.NoTextInteraction)
+        title_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+
+        delete_btn = QToolButton(row)
+        delete_btn.setObjectName("InlineDeleteButton")
+        delete_btn.setText("X")
+        delete_btn.setToolTip("발송리스트 삭제")
+        delete_btn.setFixedSize(30, 28)
+        delete_btn.clicked.connect(lambda: self._delete_send_list_item(item))
+
+        layout.addWidget(num)
+        layout.addWidget(title_label, 1)
+        layout.addWidget(delete_btn)
+        row.mousePressEvent = lambda _event: self.lst_send_lists.setCurrentItem(item)  # type: ignore[method-assign]
+        row.mouseDoubleClickEvent = lambda _event: self._on_send_list_double_clicked(item)  # type: ignore[method-assign]
+        self.lst_send_lists.setItemWidget(item, row)
+
+    def _delete_send_list_item(self, item: QListWidgetItem) -> None:
+        row = self.lst_send_lists.row(item)
+        if row < 0:
+            return
+        self.lst_send_lists.setCurrentRow(row)
+        self._delete_selected_send_list()
+
     def _refresh_visible_numbers_only(self) -> None:
         for idx in range(self.lst_send_lists.count()):
             item = self.lst_send_lists.item(idx)
@@ -671,7 +807,8 @@ class SendPage(QWidget):
             if not isinstance(data, dict):
                 continue
             title = data.get("title", "")
-            item.setText(f"{idx + 1}. {title}")
+            item.setText("")
+            self._attach_send_list_row_widget(item, idx + 1, str(title or ""))
 
     def _current_send_list_data(self) -> Optional[dict]:
         item = self.lst_send_lists.currentItem()
@@ -809,9 +946,7 @@ class SendPage(QWidget):
                 group_id = None
 
             title = self._format_title(group_name, campaign_name)
-            visible = f"{idx}. {title}"
-
-            item = QListWidgetItem(visible)
+            item = QListWidgetItem()
             item.setData(
                 Qt.UserRole,
                 {
@@ -824,7 +959,9 @@ class SendPage(QWidget):
                     "group_id": group_id,
                 },
             )
+            item.setSizeHint(QSize(0, 46))
             self.lst_send_lists.addItem(item)
+            self._attach_send_list_row_widget(item, idx, title)
 
             if select_send_list_id is not None and send_list_id == int(select_send_list_id):
                 selected_row_to_set = idx - 1
@@ -1005,7 +1142,7 @@ class SendPage(QWidget):
             return
 
         self._sync_after_contact_change()
-        self._on_status("대상자 수정 반영됨 (참조형: 즉시 최신 반영)")
+        self._on_status("대상자 수정 반영됨 (참조값 즉시 최신 반영)")
 
     def _build_contact_preset_from_preview_row(self, row: int):
         return {

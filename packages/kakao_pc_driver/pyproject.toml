@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "kakao-pc-driver"
+version = "0.1.0"
+description = "KakaoTalk PC desktop automation (send to name, self chat, images)"
+authors = ["idbla <idbla@example.com>"]
+readme = "README.md"
+packages = [{ include = "kakao_pc_driver", from = "src" }]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<3.15"
+kakao-win32 = { path = "../kakao_win32", develop = true }
+pywinauto = "^0.6.9"
+pillow = "^12.1.1"
+
+[tool.poetry.scripts]
+kakao-send-self = "kakao_pc_driver.cli:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0"]
+build-backend = "poetry.core.masonry.api"
