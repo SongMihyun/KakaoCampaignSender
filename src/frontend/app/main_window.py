@@ -208,9 +208,35 @@ class MainWindow(QMainWindow):
         self._apply_style()
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if not self._confirm_pending_update_on_close():
+            event.ignore()
+            return
         self._cleanup_before_close()
         self._finalize_pending_update()
         super().closeEvent(event)
+
+    def _confirm_pending_update_on_close(self) -> bool:
+        if getattr(self, "_skip_finalize_pending_update_once", False):
+            return True
+        try:
+            from backend.updates.updater import read_pending_installer_marker
+
+            pending = read_pending_installer_marker()
+        except Exception:
+            pending = None
+        if pending is None:
+            return True
+
+        reply = QMessageBox.question(
+            self,
+            "업데이트 설치",
+            "다운로드된 업데이트가 있습니다.\n\n"
+            "앱을 종료하면 설치가 자동으로 진행되고, 설치가 끝나면 카센더가 다시 실행됩니다.\n"
+            "지금 종료하고 업데이트를 설치할까요?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        return reply == QMessageBox.Yes
 
     def _cleanup_before_close(self) -> None:
         try:
@@ -226,7 +252,13 @@ class MainWindow(QMainWindow):
         try:
             from backend.updates.updater import finalize_update_on_app_close
 
-            finalize_update_on_app_close()
+            started = finalize_update_on_app_close()
+            if started:
+                QMessageBox.information(
+                    self,
+                    "업데이트 설치",
+                    "업데이트 설치를 시작합니다.\n설치가 끝나면 카센더가 다시 실행됩니다.",
+                )
         except Exception:
             pass
 

@@ -35,6 +35,104 @@ def _com_init_sta_main_best_effort() -> bool:
     return False
 
 
+def _prepare_update_with_ui(app, splash_msg) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QMessageBox, QProgressDialog
+
+    from app.relaunch import relaunch_executable_and_args
+    from app.version import __version__, LATEST_JSON_URL
+    from backend.updates.updater import UpdatePlan, Updater, is_newer, set_pending_update
+
+    splash_msg("업데이트 확인 중...")
+
+    updater = Updater(LATEST_JSON_URL, timeout_sec=7.0)
+    manifest = updater.fetch_latest_manifest()
+    if not manifest or not manifest.version or not manifest.url:
+        return
+    if not is_newer(manifest.version, __version__):
+        return
+
+    reply = QMessageBox.question(
+        None,
+        "업데이트 발견",
+        f"새 버전 {manifest.version}이 있습니다.\n"
+        f"현재 버전: {__version__}\n\n"
+        "지금 설치 파일을 다운로드해 둘까요?\n"
+        "다운로드가 끝나면 앱 종료 시 자동으로 설치하고 다시 실행합니다.",
+        QMessageBox.Yes | QMessageBox.No,
+        QMessageBox.Yes,
+    )
+    if reply != QMessageBox.Yes:
+        return
+
+    cancelled = {"value": False}
+    progress = QProgressDialog("업데이트 설치 파일 다운로드 중...", "취소", 0, 100)
+    progress.setWindowTitle("업데이트 다운로드")
+    progress.setWindowModality(Qt.ApplicationModal)
+    progress.setMinimumDuration(0)
+    progress.setValue(0)
+
+    def on_progress(downloaded: int, total: int) -> None:
+        if total > 0:
+            percent = max(0, min(100, int(downloaded * 100 / total)))
+            progress.setMaximum(100)
+            progress.setValue(percent)
+            progress.setLabelText(
+                f"업데이트 {manifest.version} 다운로드 중...\n"
+                f"{downloaded / (1024 * 1024):.1f}MB / {total / (1024 * 1024):.1f}MB"
+            )
+        else:
+            progress.setMaximum(0)
+            progress.setLabelText(f"업데이트 {manifest.version} 다운로드 중...")
+        app.processEvents()
+        if progress.wasCanceled():
+            cancelled["value"] = True
+
+    def cancel_flag() -> bool:
+        return bool(cancelled["value"])
+
+    try:
+        installer_path = updater.download_installer(
+            manifest.url,
+            on_progress=on_progress,
+            cancel_flag=cancel_flag,
+        )
+        progress.setValue(100)
+    except Exception as e:
+        progress.close()
+        if cancelled["value"]:
+            QMessageBox.information(None, "업데이트 취소", "업데이트 다운로드를 취소했습니다.")
+        else:
+            QMessageBox.warning(None, "업데이트 실패", f"업데이트 다운로드에 실패했습니다.\n{e}")
+        return
+    finally:
+        progress.close()
+
+    if not updater.verify_sha256(installer_path, manifest.sha256):
+        QMessageBox.warning(None, "업데이트 실패", "설치 파일 검증에 실패했습니다. 다음 실행 때 다시 시도합니다.")
+        return
+
+    relaunch_exe, relaunch_args, relaunch_cwd = relaunch_executable_and_args()
+    set_pending_update(
+        UpdatePlan(
+            True,
+            latest=manifest,
+            installer_path=installer_path,
+            relaunch_executable=relaunch_exe,
+            relaunch_args=tuple(relaunch_args),
+            relaunch_working_dir=relaunch_cwd,
+            reason="prepared",
+        )
+    )
+
+    QMessageBox.information(
+        None,
+        "업데이트 준비 완료",
+        f"버전 {manifest.version} 설치 파일을 다운로드했습니다.\n\n"
+        "앱을 종료하면 자동으로 설치가 진행되고, 설치가 끝나면 카센더를 다시 실행합니다.",
+    )
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
@@ -83,16 +181,19 @@ def main() -> None:
         except Exception:
             pass
 
-    _splash_msg("업데이트 확인 중…")
     try:
-        from app.version import __version__, LATEST_JSON_URL
-        from backend.updates.updater import check_and_prepare_update, set_pending_update
-
-        plan = check_and_prepare_update(LATEST_JSON_URL, __version__)
-        if plan.available:
-            set_pending_update(plan)
+        if splash is not None:
+            splash.hide()
+        _prepare_update_with_ui(app, _splash_msg)
     except Exception:
         pass
+    finally:
+        if splash is not None:
+            try:
+                splash.show()
+                app.processEvents()
+            except Exception:
+                pass
 
     _splash_msg("데이터베이스 초기화 중…")
     try:

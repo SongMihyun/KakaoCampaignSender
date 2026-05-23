@@ -9,7 +9,7 @@ import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 import requests
 
@@ -153,19 +153,37 @@ def _pending_marker_path(base_dir: Optional[Path] = None) -> Path:
     return root / "pending_installer.json"
 
 
-def write_pending_installer_marker(installer_path: str, *, base_dir: Optional[Path] = None) -> Path:
+def write_pending_installer_marker(
+    installer_path: str,
+    *,
+    relaunch_executable: str = "",
+    relaunch_args: tuple[str, ...] | list[str] = (),
+    relaunch_working_dir: str = "",
+    base_dir: Optional[Path] = None,
+) -> Path:
     """
     종료 후 실행할 installer 경로를 marker 파일로 기록한다.
     """
     marker = _pending_marker_path(base_dir)
     payload = {
         "installer_path": str(Path(installer_path).resolve()),
+        "relaunch_executable": str(relaunch_executable or ""),
+        "relaunch_args": list(relaunch_args or ()),
+        "relaunch_working_dir": str(relaunch_working_dir or ""),
     }
     marker.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return marker
 
 
-def read_pending_installer_marker(*, base_dir: Optional[Path] = None) -> Optional[Path]:
+@dataclass(frozen=True)
+class PendingInstaller:
+    installer_path: Path
+    relaunch_executable: str = ""
+    relaunch_args: tuple[str, ...] = ()
+    relaunch_working_dir: str = ""
+
+
+def read_pending_installer_marker(*, base_dir: Optional[Path] = None) -> Optional[PendingInstaller]:
     """
     pending_installer.json을 읽어 installer 경로를 반환한다.
     """
@@ -187,7 +205,17 @@ def read_pending_installer_marker(*, base_dir: Optional[Path] = None) -> Optiona
         if not path.exists() or not path.is_file():
             return None
 
-        return path
+        relaunch_executable = str(data.get("relaunch_executable", "") or "").strip()
+        raw_args = data.get("relaunch_args", []) or []
+        relaunch_args = tuple(str(x) for x in raw_args if str(x).strip())
+        relaunch_working_dir = str(data.get("relaunch_working_dir", "") or "").strip()
+
+        return PendingInstaller(
+            installer_path=path,
+            relaunch_executable=relaunch_executable,
+            relaunch_args=relaunch_args,
+            relaunch_working_dir=relaunch_working_dir,
+        )
     except Exception:
         return None
 
@@ -200,15 +228,96 @@ def clear_pending_installer_marker(*, base_dir: Optional[Path] = None) -> None:
         pass
 
 
+CREATE_NO_WINDOW = 0x08000000
+
+
+def _ps_quote(text: str) -> str:
+    return str(text).replace("`", "``").replace('"', '`"')
+
+
+def _ps_array(values: Sequence[str]) -> str:
+    return "@(" + ", ".join(f'"{_ps_quote(v)}"' for v in values) + ")"
+
+
+def _schedule_install_after_exit(
+    *,
+    wait_pid: int,
+    pending: PendingInstaller,
+) -> None:
+    installer = pending.installer_path
+    exe = Path(pending.relaunch_executable) if pending.relaunch_executable else None
+    work_dir = Path(pending.relaunch_working_dir) if pending.relaunch_working_dir else (exe.parent if exe else Path.cwd())
+    installer_args = _ps_array(["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART"])
+    relaunch_args = _ps_array(list(pending.relaunch_args))
+
+    ps = rf'''
+$ErrorActionPreference = "Stop"
+$waitPid = {int(wait_pid)}
+$installer = "{_ps_quote(str(installer))}"
+$exe = "{_ps_quote(str(exe or ''))}"
+$installerArgs = {installer_args}
+$relaunchArgs = {relaunch_args}
+$workDir = "{_ps_quote(str(work_dir))}"
+
+for ($i = 1; $i -le 120; $i++) {{
+    try {{
+        $null = Get-Process -Id $waitPid -ErrorAction Stop
+        Start-Sleep -Milliseconds 500
+    }} catch {{
+        break
+    }}
+}}
+
+Start-Sleep -Seconds 2
+if (Test-Path -LiteralPath $installer) {{
+    Start-Process -FilePath $installer -ArgumentList $installerArgs -Wait
+}}
+Start-Sleep -Seconds 2
+if (Test-Path -LiteralPath $exe) {{
+    Start-Process -FilePath $exe -ArgumentList $relaunchArgs -WorkingDirectory $workDir
+}}
+'''
+
+    try:
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                ps,
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+            close_fds=True,
+        )
+    except Exception:
+        pass
+
+
 @dataclass
 class UpdatePlan:
     available: bool
     latest: Optional[LatestManifest] = None
     installer_path: Optional[str] = None
+    relaunch_executable: str = ""
+    relaunch_args: tuple[str, ...] = ()
+    relaunch_working_dir: str = ""
     reason: str = ""
 
 
-def check_and_prepare_update(latest_json_url: str, current_version: str) -> UpdatePlan:
+def check_and_prepare_update(
+    latest_json_url: str,
+    current_version: str,
+    *,
+    on_progress=None,
+    cancel_flag=None,
+) -> UpdatePlan:
     """
     앱 시작 시 호출: 최신 manifest 조회 → 버전 비교 → 설치파일 다운로드·해시 검증.
     """
@@ -221,7 +330,11 @@ def check_and_prepare_update(latest_json_url: str, current_version: str) -> Upda
         if not is_newer(manifest.version, current_version):
             return UpdatePlan(False, latest=manifest, reason="up_to_date")
 
-        installer_path = updater.download_installer(manifest.url)
+        installer_path = updater.download_installer(
+            manifest.url,
+            on_progress=on_progress,
+            cancel_flag=cancel_flag,
+        )
         if not updater.verify_sha256(installer_path, manifest.sha256):
             return UpdatePlan(False, latest=manifest, reason="sha256 mismatch")
 
@@ -239,7 +352,12 @@ def set_pending_update(plan: UpdatePlan) -> None:
     """종료 시 설치할 업데이트를 marker 파일로 기록한다."""
     if not plan.available or not plan.installer_path:
         return
-    write_pending_installer_marker(plan.installer_path)
+    write_pending_installer_marker(
+        plan.installer_path,
+        relaunch_executable=plan.relaunch_executable,
+        relaunch_args=plan.relaunch_args,
+        relaunch_working_dir=plan.relaunch_working_dir,
+    )
 
 
 def finalize_update_on_app_close(*, base_dir: Optional[Path] = None) -> bool:
@@ -255,19 +373,12 @@ def finalize_update_on_app_close(*, base_dir: Optional[Path] = None) -> bool:
     - 실행 시도 성공: True
     - 실행 대상 없음 / 실패: False
     """
-    installer = read_pending_installer_marker(base_dir=base_dir)
-    if installer is None:
+    pending = read_pending_installer_marker(base_dir=base_dir)
+    if pending is None:
         return False
 
-    args = [
-        str(installer),
-        "/VERYSILENT",
-        "/SUPPRESSMSGBOXES",
-        "/NORESTART",
-    ]
-
     try:
-        subprocess.Popen(args, close_fds=True)
+        _schedule_install_after_exit(wait_pid=os.getpid(), pending=pending)
         clear_pending_installer_marker(base_dir=base_dir)
         return True
     except Exception:
