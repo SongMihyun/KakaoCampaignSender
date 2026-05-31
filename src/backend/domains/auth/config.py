@@ -11,8 +11,8 @@ from app.paths import project_root
 DEFAULT_KAKAO_CLIENT_ID = "85aecf352ab2bbdf6fcdaffb812212c9"
 DEFAULT_KAKAO_REDIRECT_URI = "http://localhost:8765/auth/kakao/callback"
 DEFAULT_KAKAO_LOGIN_PROMPT = "login"
-DEFAULT_BETA_LOGIN_PASSWORD_SALT = ""
-DEFAULT_BETA_LOGIN_PASSWORD_HASH = ""
+DEFAULT_BETA_LOGIN_PASSWORD_SALT = "DjVaJxCA78z7rmmQrvjrpA=="
+DEFAULT_BETA_LOGIN_PASSWORD_HASH = "h2RLhrxXBsG3PPfKc2lj0SZNdU1AKk7PoFPkIM+AvLg="
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
