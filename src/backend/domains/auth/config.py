@@ -8,6 +8,9 @@ from pathlib import Path
 from app.paths import project_root
 
 
+DEFAULT_KAKAO_CLIENT_ID = "85aecf352ab2bbdf6fcdaffb812212c9"
+DEFAULT_KAKAO_REDIRECT_URI = "http://localhost:8765/auth/kakao/callback"
+DEFAULT_KAKAO_LOGIN_PROMPT = "login"
 DEFAULT_BETA_LOGIN_PASSWORD_SALT = ""
 DEFAULT_BETA_LOGIN_PASSWORD_HASH = ""
 
@@ -34,10 +37,10 @@ def _load_dotenv(path: Path) -> dict[str, str]:
 
 @dataclass(frozen=True)
 class AuthConfig:
-    kakao_client_id: str
-    kakao_redirect_uri: str
+    kakao_client_id: str = DEFAULT_KAKAO_CLIENT_ID
+    kakao_redirect_uri: str = DEFAULT_KAKAO_REDIRECT_URI
     kakao_client_secret: str = ""
-    kakao_login_prompt: str = "login"
+    kakao_login_prompt: str = DEFAULT_KAKAO_LOGIN_PROMPT
     auth_mode: str = "no_db"
     auth_provider: str = "kakao"
     persist_session: bool = False
@@ -64,10 +67,10 @@ class AuthConfig:
             return value in {"1", "true", "yes", "y", "on"}
 
         return cls(
-            kakao_client_id=get("KAKAO_CLIENT_ID"),
-            kakao_redirect_uri=get("KAKAO_REDIRECT_URI"),
+            kakao_client_id=get("KAKAO_CLIENT_ID", DEFAULT_KAKAO_CLIENT_ID),
+            kakao_redirect_uri=get("KAKAO_REDIRECT_URI", DEFAULT_KAKAO_REDIRECT_URI),
             kakao_client_secret=get("KAKAO_CLIENT_SECRET"),
-            kakao_login_prompt=get("KAKAO_LOGIN_PROMPT", "login"),
+            kakao_login_prompt=get("KAKAO_LOGIN_PROMPT", DEFAULT_KAKAO_LOGIN_PROMPT),
             auth_mode=get("AUTH_MODE", "no_db").lower(),
             auth_provider=get("AUTH_PROVIDER", "kakao").lower(),
             persist_session=get_bool("AUTH_PERSIST_SESSION", False),
