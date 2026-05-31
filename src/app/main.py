@@ -43,33 +43,25 @@ def _prepare_update_with_ui(app, splash_msg) -> None:
     from app.version import __version__, LATEST_JSON_URL
     from backend.updates.updater import UpdatePlan, Updater, is_newer, set_pending_update
 
+    current_version = (__version__ or "").strip()
+    is_release_build = bool(getattr(sys, "frozen", False)) and current_version and current_version != "__VERSION__"
+    if not is_release_build:
+        return
+
     splash_msg("업데이트 확인 중...")
 
     updater = Updater(LATEST_JSON_URL, timeout_sec=7.0)
     manifest = updater.fetch_latest_manifest()
     if not manifest or not manifest.version or not manifest.url:
         return
-    if not is_newer(manifest.version, __version__):
+    if not is_newer(manifest.version, current_version):
         return
 
-    reply = QMessageBox.question(
-        None,
-        "업데이트 발견",
-        f"새 버전 {manifest.version}이 있습니다.\n"
-        f"현재 버전: {__version__}\n\n"
-        "지금 설치 파일을 다운로드해 둘까요?\n"
-        "다운로드가 끝나면 앱 종료 시 자동으로 설치하고 다시 실행합니다.",
-        QMessageBox.Yes | QMessageBox.No,
-        QMessageBox.Yes,
-    )
-    if reply != QMessageBox.Yes:
-        return
-
-    cancelled = {"value": False}
-    progress = QProgressDialog("업데이트 설치 파일 다운로드 중...", "취소", 0, 100)
+    progress = QProgressDialog("새 버전 설치 파일 다운로드 중...", "", 0, 100)
     progress.setWindowTitle("업데이트 다운로드")
     progress.setWindowModality(Qt.ApplicationModal)
     progress.setMinimumDuration(0)
+    progress.setCancelButton(None)
     progress.setValue(0)
 
     def on_progress(downloaded: int, total: int) -> None:
@@ -85,25 +77,16 @@ def _prepare_update_with_ui(app, splash_msg) -> None:
             progress.setMaximum(0)
             progress.setLabelText(f"업데이트 {manifest.version} 다운로드 중...")
         app.processEvents()
-        if progress.wasCanceled():
-            cancelled["value"] = True
-
-    def cancel_flag() -> bool:
-        return bool(cancelled["value"])
 
     try:
         installer_path = updater.download_installer(
             manifest.url,
             on_progress=on_progress,
-            cancel_flag=cancel_flag,
         )
         progress.setValue(100)
     except Exception as e:
         progress.close()
-        if cancelled["value"]:
-            QMessageBox.information(None, "업데이트 취소", "업데이트 다운로드를 취소했습니다.")
-        else:
-            QMessageBox.warning(None, "업데이트 실패", f"업데이트 다운로드에 실패했습니다.\n{e}")
+        QMessageBox.warning(None, "업데이트 실패", f"업데이트 다운로드에 실패했습니다.\n{e}")
         return
     finally:
         progress.close()
@@ -150,12 +133,19 @@ def main() -> None:
 
     # 로그인 화면이 스플래시에 가려지지 않도록 먼저 로그인 후 스플래시를 띄운다.
     try:
+        from backend.domains.auth import AuthService
         from frontend.dialogs.login_dialog import LoginDialog
 
-        ok = LoginDialog.run_login()
-        if not ok:
+        auth_service = AuthService()
+        session = auth_service.current_session()
+        if session is None:
+            session = LoginDialog.run_login(auth_service=auth_service)
+        if session is None:
             sys.exit(0)
+        if not auth_service.config.persist_session:
+            app.aboutToQuit.connect(auth_service.clear_session)
     except Exception:
+        logging.getLogger("main").exception("Authentication failed")
         sys.exit(0)
 
     splash = None

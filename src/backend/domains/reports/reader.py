@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List
 
+from backend.core.status_codes import status_from_result
+
 
 class SendReportReader:
     """
@@ -182,6 +184,10 @@ class SendReportReader:
 
         status = str(recipient_obj.get("status", "") or "").upper()
         reason = str(recipient_obj.get("reason", "") or "")
+        info = status_from_result(status, reason)
+        status_code = int(recipient_obj.get("status_code", 0) or info.code)
+        status_message = str(recipient_obj.get("status_message", "") or info.message)
+        step = str(recipient_obj.get("step", "") or info.step)
         attempt = int(recipient_obj.get("attempt", 0) or 0)
         ts = str(recipient_obj.get("ts", "") or ts_base)
         channel = group_name or title or campaign_name
@@ -194,6 +200,9 @@ class SendReportReader:
             "channel": channel,
             "recipient": recipient,
             "status": status,
+            "status_code": status_code,
+            "status_message": status_message,
+            "step": step,
             "reason": reason,
             "attempt": attempt,
             "message_len": message_len,

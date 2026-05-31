@@ -11,6 +11,9 @@ class SendLog:
     channel: str
     recipient: str
     status: str
+    status_code: int
+    status_message: str
+    step: str
     reason: str
     attempt: int
     message_len: int

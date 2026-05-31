@@ -40,6 +40,7 @@ class LogsPage(QWidget):
         "채널",
         "수신자",
         "상태",
+        "코드",
         "사유",
         "시도",
         "메시지길이",
@@ -69,13 +70,18 @@ class LogsPage(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(10)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
         title = QLabel("로그/리포트")
         title.setObjectName("PageTitle")
-        desc = QLabel("발송 결과 조회 · CSV 저장 · 실패 건 재시도")
+        desc = QLabel("- 발송 결과 조회 · CSV 저장 · 실패 건 재시도")
         desc.setObjectName("PageDesc")
+        desc.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        title_row.addWidget(title)
+        title_row.addWidget(desc)
+        title_row.addStretch(1)
 
-        root.addWidget(title)
-        root.addWidget(desc)
+        root.addLayout(title_row)
 
         report_row = QHBoxLayout()
         report_row.setSpacing(8)
@@ -371,6 +377,7 @@ class LogsPage(QWidget):
                     self._item(row.get("channel", "")),
                     self._item(row.get("recipient", "")),
                     self._item(row.get("status", "")),
+                    self._item(row.get("status_code", "")),
                     self._item(row.get("reason", "")),
                     self._item(row.get("attempt", "")),
                     self._item(row.get("message_len", "")),
@@ -406,6 +413,9 @@ class LogsPage(QWidget):
                     "channel": report_row.get("channel", ""),
                     "recipient": report_row.get("recipient", ""),
                     "status": report_row.get("status", ""),
+                    "status_code": report_row.get("status_code", ""),
+                    "status_message": report_row.get("status_message", ""),
+                    "step": report_row.get("step", ""),
                     "reason": report_row.get("reason", ""),
                     "attempt": report_row.get("attempt", ""),
                     "message_len": report_row.get("message_len", ""),
@@ -424,6 +434,9 @@ class LogsPage(QWidget):
                 "channel": selected.get("channel", ""),
                 "recipient": selected.get("recipient", ""),
                 "status": selected.get("status", ""),
+                "status_code": selected.get("status_code", ""),
+                "status_message": selected.get("status_message", ""),
+                "step": selected.get("step", ""),
                 "reason": selected.get("reason", ""),
                 "attempt": selected.get("attempt", ""),
                 "message_len": selected.get("message_len", ""),
@@ -547,6 +560,9 @@ class LogsPage(QWidget):
                         "channel",
                         "recipient",
                         "status",
+                        "status_code",
+                        "status_message",
+                        "step",
                         "reason",
                         "attempt",
                         "message_len",
@@ -563,6 +579,9 @@ class LogsPage(QWidget):
                             row.get("channel", ""),
                             row.get("recipient", ""),
                             row.get("status", ""),
+                            row.get("status_code", ""),
+                            row.get("status_message", ""),
+                            row.get("step", ""),
                             row.get("reason", ""),
                             row.get("attempt", 0),
                             row.get("message_len", 0),
@@ -674,10 +693,13 @@ class LogsPage(QWidget):
             "channel": g(4),
             "recipient": g(5),
             "status": g(6),
-            "reason": g(7),
-            "attempt": g(8),
-            "message_len": g(9),
-            "image_count": g(10),
+            "status_code": g(7),
+            "status_message": g(8),
+            "step": g(9),
+            "reason": g(10),
+            "attempt": g(11),
+            "message_len": g(12),
+            "image_count": g(13),
         }
 
     def _auto_show_reason_preview(self) -> None:

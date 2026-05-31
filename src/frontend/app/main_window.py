@@ -10,11 +10,15 @@ from pathlib import Path
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
+    QLabel,
     QMainWindow,
     QMessageBox,
-    QStackedWidget,
     QVBoxLayout,
+    QStackedWidget,
     QWidget,
 )
 
@@ -23,6 +27,13 @@ from app.relaunch import relaunch_executable_and_args
 from app.version import __display_name__
 from backend.core.lifecycle.apply_settings_bundle import schedule_apply_settings_bundle_after_exit
 from backend.core.lifecycle.reset_app import schedule_delete_all_local_data
+from backend.core.app_settings import get_setting, set_setting
+from backend.core.backup_service import backups_dir, create_db_backup
+from backend.core.backup_service import delete_backups
+from backend.core.support_package import build_support_package
+from backend.core.support_package import delete_support_packages
+from backend.core.support_sender import open_support_chat_url, send_summary_to_operator
+from backend.domains.auth import AuthService
 from backend.domains.campaigns.repository import CampaignsRepo
 from backend.domains.campaigns.service import CampaignsService
 from backend.domains.contacts.repository import ContactsRepo
@@ -74,6 +85,11 @@ class MainWindow(QMainWindow):
         self.header = Header()
         self.header.export_settings_requested.connect(self.export_settings_bundle)
         self.header.import_settings_requested.connect(self.import_settings_bundle)
+        self.header.environment_changed.connect(self.set_pc_environment)
+        self.header.open_logs_requested.connect(self.open_logs_folder)
+        self.header.open_backups_requested.connect(self.open_backups_folder)
+        self.header.send_support_requested.connect(self.send_support_package)
+        self.header.open_support_chat_requested.connect(self.open_support_chat)
         self.header.logout_requested.connect(self.logout)
         self.header.uninstall_requested.connect(self.uninstall_application)
         self.header.home_requested.connect(self._show_sender_mode)
@@ -115,6 +131,8 @@ class MainWindow(QMainWindow):
             repo=self.send_lists_repo,
         )
         self.settings_bundle_service = SettingsBundleService()
+        self.header.set_environment(str(get_setting("pc_environment", "public")))
+        self._backup_on_lifecycle("startup")
         self.scheduled_sends_service = ScheduledSendsService(
             repo=self.scheduled_sends_repo,
         )
@@ -208,40 +226,30 @@ class MainWindow(QMainWindow):
         self._apply_style()
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if not self._confirm_pending_update_on_close():
-            event.ignore()
-            return
         self._cleanup_before_close()
+        self._clear_auth_session_if_needed()
+        self._backup_on_lifecycle("shutdown")
         self._finalize_pending_update()
         super().closeEvent(event)
 
-    def _confirm_pending_update_on_close(self) -> bool:
-        if getattr(self, "_skip_finalize_pending_update_once", False):
-            return True
+    def _backup_on_lifecycle(self, reason: str) -> None:
         try:
-            from backend.updates.updater import read_pending_installer_marker
-
-            pending = read_pending_installer_marker()
+            create_db_backup(reason=reason)
         except Exception:
-            pending = None
-        if pending is None:
-            return True
-
-        reply = QMessageBox.question(
-            self,
-            "업데이트 설치",
-            "다운로드된 업데이트가 있습니다.\n\n"
-            "앱을 종료하면 설치가 자동으로 진행되고, 설치가 끝나면 카센더가 다시 실행됩니다.\n"
-            "지금 종료하고 업데이트를 설치할까요?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.Yes,
-        )
-        return reply == QMessageBox.Yes
+            pass
 
     def _cleanup_before_close(self) -> None:
         try:
             if hasattr(self, "send_page") and self.send_page:
                 self.send_page.cleanup()
+        except Exception:
+            pass
+
+    def _clear_auth_session_if_needed(self) -> None:
+        try:
+            auth_service = AuthService()
+            if not auth_service.config.persist_session:
+                auth_service.clear_session()
         except Exception:
             pass
 
@@ -411,21 +419,128 @@ class MainWindow(QMainWindow):
         except Exception as e:
             QMessageBox.critical(self, "오류", f"설정 가져오기 예약 실패\n{e}")
 
-    def logout(self) -> None:
-        QMessageBox.information(self, "로그아웃", "로그아웃 기능은 준비 중입니다.")
+    def set_pc_environment(self, mode: str) -> None:
+        mode = "personal" if mode == "personal" else "public"
+        set_setting("pc_environment", mode)
+        self.header.set_environment(mode)
+        if mode == "personal":
+            self.status.set_message("사용 환경: 개인 PC | 시작/종료 백업, 최근 7개 유지")
+        else:
+            self.status.set_message("사용 환경: 공용 PC | 최신 백업 1개만 유지")
+        try:
+            create_db_backup(reason=f"mode_{mode}", mode=mode)
+        except Exception:
+            pass
 
-    def reset_application(self) -> None:
-        reply = QMessageBox.warning(
+    def open_logs_folder(self) -> None:
+        path = Path(contacts_db_path()).parent / "logs"
+        path.mkdir(parents=True, exist_ok=True)
+        self._open_folder(path)
+
+    def open_backups_folder(self) -> None:
+        self._open_folder(backups_dir())
+
+    def _open_folder(self, path: Path) -> None:
+        try:
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        except Exception as e:
+            QMessageBox.warning(self, "오류", f"폴더를 열 수 없습니다.\n{path}\n\n{e}")
+
+    def send_support_package(self) -> None:
+        box = QMessageBox(self)
+        box.setWindowTitle("오류내용 운영자에게 보내기")
+        box.setText("DB에는 대상자 정보가 포함될 수 있습니다.\n\n운영자가 요청한 경우에만 포함하세요.")
+        btn_exclude = box.addButton("DB 제외하고 보내기", QMessageBox.AcceptRole)
+        btn_include = box.addButton("DB 포함하고 보내기", QMessageBox.DestructiveRole)
+        box.addButton("취소", QMessageBox.RejectRole)
+        box.setDefaultButton(btn_exclude)
+        box.exec()
+
+        clicked = box.clickedButton()
+        if clicked is None or clicked.text() == "취소":
+            return
+
+        include_db = clicked == btn_include
+        try:
+            result = build_support_package(include_db=include_db)
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"오류 신고 패키지 생성 실패\n{e}")
+            return
+
+        send_result = send_summary_to_operator(result.summary_message)
+        self._open_folder(result.zip_path.parent)
+
+        if send_result.ok:
+            QMessageBox.information(
+                self,
+                "오류 신고 준비 완료",
+                "운영자에게 오류 요약을 전송했습니다.\n\n"
+                "ZIP 자동 첨부가 실패할 수 있으니 열린 폴더의 ZIP 파일도 운영자에게 전달해 주세요.\n\n"
+                f"{result.zip_path}",
+            )
+        else:
+            QMessageBox.warning(
+                self,
+                "수동 전달 필요",
+                "오류 신고 패키지를 만들었지만 운영자 채팅 전송은 실패했습니다.\n\n"
+                f"사유: {send_result.reason}\n\n"
+                "열린 폴더의 ZIP 파일을 운영자에게 전달해 주세요.\n\n"
+                f"{result.zip_path}",
+            )
+
+    def open_support_chat(self) -> None:
+        result = open_support_chat_url()
+        if not result.ok:
+            QMessageBox.information(self, "1:1 문의하기", result.reason or "문의 채널이 아직 설정되지 않았습니다.")
+
+    def logout(self) -> None:
+        ok = QMessageBox.question(
             self,
-            "초기화 확인",
-            "앱의 로컬 데이터(DB/로그/설정)를 모두 삭제하고 종료합니다.\n계속하시겠습니까?",
+            "로그아웃",
+            "현재 로그인 세션을 삭제하고 로그인 화면으로 돌아갈까요?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
-        if reply != QMessageBox.Yes:
+        if ok != QMessageBox.Yes:
+            return
+        try:
+            AuthService().logout()
+            self._skip_finalize_pending_update_once = True
+            exe, args, cwd = relaunch_executable_and_args()
+            subprocess.Popen([exe, *args], cwd=cwd or None)
+            QApplication.quit()
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"로그아웃 실패\n{e}")
+
+    def reset_application(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("초기화 옵션")
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel("삭제할 항목을 선택하세요. DB/설정 전체 초기화는 앱 종료 후 진행됩니다."))
+        chk_logs = QCheckBox("로그 삭제")
+        chk_backups = QCheckBox("백업 삭제")
+        chk_support = QCheckBox("오류신고파일 삭제")
+        chk_logs.setChecked(True)
+        lay.addWidget(chk_logs)
+        lay.addWidget(chk_backups)
+        lay.addWidget(chk_support)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        lay.addWidget(buttons)
+        if dlg.exec() != QDialog.Accepted:
             return
 
         try:
+            if chk_logs.isChecked():
+                try:
+                    self.logs_service.reset_all()
+                except Exception:
+                    pass
+            if chk_backups.isChecked():
+                delete_backups()
+            if chk_support.isChecked():
+                delete_support_packages()
             schedule_delete_all_local_data()
             self._skip_finalize_pending_update_once = True
             QApplication.quit()
@@ -454,6 +569,7 @@ class MainWindow(QMainWindow):
             return
 
         try:
+            AuthService().logout()
             flags = 0
             try:
                 flags = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]

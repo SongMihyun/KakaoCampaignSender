@@ -19,6 +19,20 @@ ICON_PATH = os.path.join(REPO_DIR, "installer", "KakaoSender.ico")
 if not os.path.exists(ICON_PATH):
     raise SystemExit(f"[spec] icon not found: {ICON_PATH} (cwd={os.getcwd()})")
 
+for rel in [
+    os.path.join("installer", "logo.png"),
+    os.path.join("src", "frontend", "assets", "auth", "kakao_talk_logo.png"),
+    os.path.join("src", "frontend", "assets", "auth", "google_logo.png"),
+    os.path.join("src", "frontend", "assets", "auth", "naver_logo.png"),
+]:
+    src = os.path.join(REPO_DIR, rel)
+    if os.path.exists(src):
+        if rel.startswith("src" + os.sep):
+            dest = os.path.dirname(rel.removeprefix("src" + os.sep))
+        else:
+            dest = os.path.dirname(rel)
+        datas.append((src, dest))
+
 a = Analysis(
     ["src/app/main.py"],
     pathex=["src"],

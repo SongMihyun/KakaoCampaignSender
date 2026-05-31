@@ -12,6 +12,9 @@ class ReportRecipient:
     agency: str = ""
     branch: str = ""
     status: str = ""
+    status_code: int = 0
+    status_message: str = ""
+    step: str = ""
     reason: str = ""
     attempt: int = 0
 
@@ -48,4 +51,5 @@ class SendReport:
     success: int = 0
     fail: int = 0
     stopped: bool = False
+    paused: bool = False
     lists: List[ReportList] = field(default_factory=list)

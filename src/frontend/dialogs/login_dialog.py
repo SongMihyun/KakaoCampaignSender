@@ -1,311 +1,537 @@
-﻿# src/frontend/dialogs/login_dialog.py
 from __future__ import annotations
 
+import subprocess
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSettings
-from PySide6.QtGui import QIcon, QColor
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QPixmap
 from PySide6.QtWidgets import (
-    QDialog, QWidget, QVBoxLayout, QHBoxLayout,
-    QComboBox, QLineEdit, QPushButton, QMessageBox,
-    QGraphicsDropShadowEffect, QLabel, QCheckBox
+    QDialog,
+    QDialogButtonBox,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QMessageBox,
+    QPushButton,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
 )
 
-# ✅ 하드코딩 계정
-LOGIN_ID = "mimi"
-LOGIN_PW = "qwer1234!!"
+from app.version import __version__
+from backend.domains.auth import AuthError, AuthService, AuthSession
 
 
 def _app_base_dir() -> Path:
-    # ✅ 설치형(PyInstaller)이면 exe 기준, 개발이면 repo 기준 추정
     if getattr(sys, "frozen", False):
         return Path(sys.executable).resolve().parent
-    # src/frontend/dialogs/login_dialog.py -> repo root 추정
     return Path(__file__).resolve().parents[3]
 
 
 def resolve_icon_path() -> str:
     base = _app_base_dir()
-
     candidates = [
-        # ✅ 개발환경(레포)
         base / "installer" / "dist" / "KakaoSender.ico",
         base / "installer" / "KakaoSender.ico",
-
-        # ✅ 설치환경(설치 폴더에 복사된 아이콘)
         base / "KakaoSender.ico",
         base / "KakaoCampaignSender.ico",
     ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return ""
 
-    for p in candidates:
-        if p.exists():
-            return str(p)
+
+def resolve_logo_path() -> str:
+    base = _app_base_dir()
+    candidates = [
+        base / "installer" / "logo.png",
+        base / "_internal" / "installer" / "logo.png",
+        base / "logo.png",
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
+    return ""
+
+
+def resolve_auth_logo_path(name: str) -> str:
+    base = _app_base_dir()
+    candidates = [
+        base / "src" / "frontend" / "assets" / "auth" / name,
+        base / "_internal" / "frontend" / "assets" / "auth" / name,
+        base / "frontend" / "assets" / "auth" / name,
+    ]
+    for path in candidates:
+        if path.exists():
+            return str(path)
     return ""
 
 
 ICON_PATH = resolve_icon_path()
+LOGO_PATH = resolve_logo_path()
 
 
-def load_icon_pixmap(size: int = 180):
-    """
-    ✅ ICO는 QIcon(path).pixmap(...)로 뽑는 방식이 가장 안정적입니다.
-    """
-    if not ICON_PATH:
-        return None
-    ico = QIcon(ICON_PATH)
-    pm = ico.pixmap(size, size)
-    return None if pm.isNull() else pm
-
-
-# -----------------------------
-# Logo widget (ICO image)
-# -----------------------------
 class LogoWidget(QWidget):
     def __init__(self, size: int = 210, parent=None) -> None:
         super().__init__(parent)
-
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        self.label = QLabel()
-        self.label.setAlignment(Qt.AlignCenter)
+        label = QLabel("카센더")
+        label.setObjectName("LogoFallback")
+        label.setAlignment(Qt.AlignCenter)
 
-        pm = load_icon_pixmap(size)
-        if pm is not None:
-            self.label.setPixmap(pm)
-        else:
-            self.label.setText("카센더")
+        pixmap = QPixmap()
+        if LOGO_PATH:
+            pixmap = QPixmap(LOGO_PATH)
+        elif ICON_PATH:
+            pixmap = QIcon(ICON_PATH).pixmap(size, size)
 
-        layout.addWidget(self.label)
+        if not pixmap.isNull():
+            label.setPixmap(
+                pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+        layout.addWidget(label)
 
 
-# -----------------------------
-# Main dialog
-# -----------------------------
-class LoginDialog(QDialog):
-    # ✅ 설정 저장 키(QSettings)
-    # 회사/앱명은 충돌만 안 나면 됩니다.
-    ORG_NAME = "Kasender"
-    APP_NAME = "Kasender"
+class ProviderButton(QFrame):
+    clicked = Signal()
 
-    KEY_REMEMBER = "login/remember"
-    KEY_ID = "login/id"
-    KEY_PW = "login/pw"
-
-    def __init__(self, parent=None) -> None:
+    def __init__(
+        self,
+        *,
+        title: str,
+        provider: str,
+        icon_path: str,
+        trailing: str,
+        parent=None,
+    ) -> None:
         super().__init__(parent)
+        self.setObjectName("ProviderButton")
+        self.setProperty("provider", provider)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setMinimumHeight(72)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        # ✅ 창 아이콘
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(22, 12, 20, 12)
+        layout.setSpacing(18)
+
+        icon = QLabel()
+        icon.setObjectName("ProviderIcon")
+        icon.setFixedSize(48, 48)
+        icon.setAlignment(Qt.AlignCenter)
+        if icon_path:
+            pixmap = QPixmap(icon_path)
+            if not pixmap.isNull():
+                icon.setPixmap(
+                    pixmap.scaled(44, 44, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                )
+
+        text = QLabel(title)
+        text.setObjectName("ProviderTitle")
+        text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+
+        right = QLabel(trailing)
+        right.setObjectName("ProviderTrailing")
+        right.setFixedWidth(74)
+        right.setAlignment(Qt.AlignCenter)
+
+        layout.addWidget(icon)
+        layout.addWidget(text)
+        layout.addWidget(right)
+
+    def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.LeftButton and self.rect().contains(event.position().toPoint()):
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
+
+class LoginDialog(QDialog):
+    def __init__(self, auth_service: AuthService | None = None, parent=None) -> None:
+        super().__init__(parent)
+        self.auth_service = auth_service or AuthService()
+        self.session: AuthSession | None = None
+        self._beta_fail_count = 0
+        self._beta_locked_until: datetime | None = None
+
         if ICON_PATH:
             self.setWindowIcon(QIcon(ICON_PATH))
 
-        # ✅ frameless like screenshot
+        self.setWindowTitle("카센더 로그인")
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-
-        # ✅ 카톡 느낌: 살짝 더 세로로
-        self.setFixedSize(560, 800)
+        self.setFixedSize(540, 860)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 16, 16, 16)
-        outer.setSpacing(0)
+        outer.setContentsMargins(22, 22, 22, 22)
 
         self.card = QWidget()
         self.card.setObjectName("LoginCard")
         outer.addWidget(self.card)
 
-        sh = QGraphicsDropShadowEffect(self)
-        sh.setBlurRadius(30)
-        sh.setOffset(0, 10)
-        sh.setColor(QColor(0, 0, 0, 80))
-        self.card.setGraphicsEffect(sh)
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(34)
+        shadow.setOffset(0, 12)
+        shadow.setColor(QColor(15, 23, 42, 46))
+        self.card.setGraphicsEffect(shadow)
 
         root = QVBoxLayout(self.card)
-        # ✅ 내부 여백 줄여서 전체가 위로 올라오게
-        root.setContentsMargins(26, 18, 26, 22)
-        root.setSpacing(10)
+        root.setContentsMargins(0, 0, 0, 34)
+        root.setSpacing(0)
 
-        # top close row (X 버튼)
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        top.addStretch(1)
+        root.addWidget(self._build_top_controls())
 
-        self.btn_close = QPushButton("✕")
-        self.btn_close.setObjectName("CloseBtn")
-        self.btn_close.setFixedSize(40, 34)
-        self.btn_close.clicked.connect(self.reject)
+        content = QWidget()
+        content.setObjectName("LoginContent")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(46, 6, 46, 0)
+        content_layout.setSpacing(14)
 
-        top.addWidget(self.btn_close)
-        root.addLayout(top)
+        content_layout.addWidget(LogoWidget(size=380), 0, Qt.AlignHCenter)
+        content_layout.addSpacing(18)
 
-        # ✅ 상단 여백(중앙 정렬용)
-        root.addStretch(1)
+        self.btn_kakao = ProviderButton(
+            title="카카오톡 로그인",
+            provider="kakao",
+            icon_path=resolve_auth_logo_path("kakao_talk_logo.png"),
+            trailing=">",
+        )
+        self.btn_google = ProviderButton(
+            title="구글 로그인",
+            provider="google",
+            icon_path=resolve_auth_logo_path("google_logo.png"),
+            trailing="준비중",
+        )
+        self.btn_naver = ProviderButton(
+            title="네이버 로그인",
+            provider="naver",
+            icon_path=resolve_auth_logo_path("naver_logo.png"),
+            trailing="준비중",
+        )
 
-        root.addSpacing(4)
-        root.addWidget(LogoWidget(size=210), 0, Qt.AlignHCenter)  # 로고도 조금 키움
-        root.addSpacing(12)
+        self.btn_kakao.clicked.connect(self._login)
+        self.btn_google.clicked.connect(lambda: self._show_coming_soon("구글 로그인"))
+        self.btn_naver.clicked.connect(lambda: self._show_coming_soon("네이버 로그인"))
 
-        # inputs area (가로 폭/위치 조정)
-        form = QVBoxLayout()
-        form.setSpacing(12)
-        form.setContentsMargins(72, 0, 72, 0)
+        content_layout.addWidget(self.btn_kakao)
+        content_layout.addWidget(self.btn_google)
+        content_layout.addWidget(self.btn_naver)
 
-        self.cbo_id = QComboBox()
-        self.cbo_id.setEditable(True)
-        self.cbo_id.setObjectName("IdBox")
-        self.cbo_id.setInsertPolicy(QComboBox.NoInsert)
-        self.cbo_id.setMinimumHeight(64)
-        self.cbo_id.setPlaceholderText("아이디")
+        self.status = QLabel("")
+        self.status.setObjectName("LoginStatus")
+        self.status.setAlignment(Qt.AlignCenter)
+        self.status.setWordWrap(True)
+        content_layout.addWidget(self.status)
 
-        self.txt_pw = QLineEdit()
-        self.txt_pw.setObjectName("PwBox")
-        self.txt_pw.setEchoMode(QLineEdit.Password)
-        self.txt_pw.setPlaceholderText("비밀번호")
-        self.txt_pw.setMinimumHeight(64)
+        notice_line = QWidget()
+        notice_line.setObjectName("NoticeLine")
+        notice_line.setFixedHeight(1)
+        content_layout.addWidget(notice_line)
 
-        # ✅ 저장 체크박스 추가
-        self.chk_remember = QCheckBox("아이디/비밀번호 저장")
-        self.chk_remember.setObjectName("RememberChk")
+        notice = QLabel(
+            "카센더는 카카오톡 공식서비스가 아닙니다.\n"
+            "로그인은 사용자인증 관리 목적으로만 사용됩니다."
+        )
+        notice.setObjectName("LoginNotice")
+        notice.setAlignment(Qt.AlignCenter)
+        notice.setWordWrap(True)
+        content_layout.addWidget(notice)
 
-        self.btn_login = QPushButton("로그인")
-        self.btn_login.setObjectName("LoginBtn")
-        self.btn_login.setMinimumHeight(68)
+        version = (__version__ or "").strip()
+        if version and version != "__VERSION__" and not version.startswith("v"):
+            version = f"v{version}"
+        version_label = QLabel(f"{version or 'v1.0.5'} Beta")
+        version_label.setObjectName("VersionLabel")
+        version_label.setAlignment(Qt.AlignCenter)
+        content_layout.addWidget(version_label)
 
-        form.addWidget(self.cbo_id)
-        form.addWidget(self.txt_pw)
-        form.addWidget(self.chk_remember)
-        form.addWidget(self.btn_login)
-
-        root.addLayout(form)
-
-        # ✅ 하단 여백(중앙 정렬 + 노란 영역 확보)
-        root.addStretch(2)
-
-        # wire
-        self.btn_login.clicked.connect(self._try_login)
-        if self.cbo_id.lineEdit():
-            self.cbo_id.lineEdit().returnPressed.connect(self._try_login)
-        self.txt_pw.returnPressed.connect(self._try_login)
-
+        root.addWidget(content)
         self._apply_style()
 
-        # ✅ 저장된 값 로드(여기서 자동 채움)
-        self._load_saved_login()
+    def _build_top_controls(self) -> QWidget:
+        bar = QWidget()
+        bar.setObjectName("LoginTopControls")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(0, 10, 18, 0)
+        layout.setSpacing(4)
+        layout.addStretch(1)
 
-        # 포커스: 아이디가 있으면 비번으로, 없으면 아이디로
-        if (self.cbo_id.currentText() or "").strip():
-            self.txt_pw.setFocus()
-        else:
-            self.cbo_id.setFocus()
+        self.btn_settings = QPushButton("⚙")
+        self.btn_settings.setObjectName("TopIconBtn")
+        self.btn_settings.setCursor(Qt.PointingHandCursor)
+        self.btn_settings.clicked.connect(self._show_settings_menu)
 
-    # -------------------------
-    # Settings
-    # -------------------------
-    def _settings(self) -> QSettings:
-        return QSettings(self.ORG_NAME, self.APP_NAME)
+        self.settings_menu = QMenu(self)
+        if self.auth_service.config.beta_password_login_enabled:
+            act_beta = QAction("비상용", self)
+            act_beta.triggered.connect(self._open_beta_login)
+            self.settings_menu.addAction(act_beta)
+        act_uninstall = QAction("프로그램 삭제", self)
+        act_uninstall.triggered.connect(self._uninstall_application)
+        self.settings_menu.addAction(act_uninstall)
 
-    def _load_saved_login(self) -> None:
-        s = self._settings()
-        remember = bool(s.value(self.KEY_REMEMBER, False, type=bool))
-        saved_id = str(s.value(self.KEY_ID, "", type=str) or "")
-        saved_pw = str(s.value(self.KEY_PW, "", type=str) or "")
+        self.btn_close = QPushButton("×")
+        self.btn_close.setObjectName("TopIconBtn")
+        self.btn_close.setCursor(Qt.PointingHandCursor)
+        self.btn_close.clicked.connect(self.reject)
 
-        self.chk_remember.setChecked(remember)
+        layout.addWidget(self.btn_settings)
+        layout.addWidget(self.btn_close)
+        return bar
 
-        if saved_id:
-            # 콤보에 없으면 추가 후 세팅
-            if self.cbo_id.findText(saved_id) < 0:
-                self.cbo_id.addItem(saved_id)
-            self.cbo_id.setCurrentText(saved_id)
-
-        # 비밀번호는 체크된 경우에만 복원
-        if remember and saved_pw:
-            self.txt_pw.setText(saved_pw)
-
-    def _save_or_clear_login(self) -> None:
-        s = self._settings()
-
-        uid = (self.cbo_id.currentText() or "").strip()
-        pw = (self.txt_pw.text() or "").strip()
-        remember = self.chk_remember.isChecked()
-
-        # 아이디는 편의상 항상 저장
-        s.setValue(self.KEY_ID, uid)
-
-        if remember:
-            s.setValue(self.KEY_REMEMBER, True)
-            s.setValue(self.KEY_PW, pw)   # ✅ 요청대로 비번도 저장(평문)
-        else:
-            s.setValue(self.KEY_REMEMBER, False)
-            s.setValue(self.KEY_PW, "")   # 저장 해제 시 비번 제거
+    def _show_settings_menu(self) -> None:
+        pos = self.btn_settings.mapToGlobal(self.btn_settings.rect().bottomLeft())
+        self.settings_menu.exec(pos)
 
     def _apply_style(self) -> None:
-        self.setStyleSheet("""
+        self.setStyleSheet(
+            """
             QWidget#LoginCard {
-                background: #FEE500;
+                background: #ffffff;
+                border: 1px solid #d9dee7;
                 border-radius: 18px;
             }
-
-            QPushButton#CloseBtn {
-                background: rgba(255,255,255,0.40);
-                border: 1px solid rgba(0,0,0,0.10);
-                border-radius: 10px;
-                color: #111;
-                font-weight: 900;
+            QWidget#LoginTopControls {
+                background: transparent;
             }
-            QPushButton#CloseBtn:hover { background: rgba(255,255,255,0.60); }
-
-            /* Input-like boxes */
-            QComboBox#IdBox, QLineEdit#PwBox {
-                background: #ffffff;
-                border: 1px solid rgba(0,0,0,0.12);
-                border-radius: 12px;
-                padding: 12px 16px;
-                font-size: 15px;
+            QPushButton#TopIconBtn {
+                background: transparent;
+                border: none;
+                border-radius: 8px;
                 color: #111827;
+                font-size: 22px;
+                font-weight: 800;
+                min-width: 38px;
+                min-height: 34px;
+                max-width: 38px;
+                max-height: 34px;
             }
-
-            QComboBox#IdBox::drop-down { border: none; width: 38px; }
-            QComboBox#IdBox::down-arrow { width: 10px; height: 10px; }
-
-            QCheckBox#RememberChk {
-                spacing: 8px;
-                padding-left: 2px;
-                font-size: 13px;
-                color: rgba(0,0,0,0.65);
+            QPushButton#TopIconBtn:hover {
+                background: #f3f4f6;
             }
-
-            QPushButton#LoginBtn {
-                background: rgba(255,255,255,0.55);
-                border: 1px solid rgba(0,0,0,0.12);
-                border-radius: 12px;
-                font-size: 18px;
+            QMenu {
+                background: #ffffff;
+                border: 1px solid #d1d5db;
+                border-radius: 8px;
+                padding: 6px;
+                color: #111827;
+                font-size: 14px;
+            }
+            QMenu::item {
+                padding: 9px 18px;
+                border-radius: 6px;
+            }
+            QMenu::item:selected {
+                background: #f3f4f6;
+            }
+            QLabel#LoginTitle {
+                color: #111827;
+                font-size: 38px;
                 font-weight: 900;
-                color: rgba(0,0,0,0.55);
             }
-            QPushButton#LoginBtn:hover { background: rgba(255,255,255,0.75); }
-            QPushButton#LoginBtn:pressed { background: rgba(255,255,255,0.65); }
-        """)
+            QLabel#LoginDesc {
+                color: #3f4652;
+                font-size: 18px;
+                line-height: 1.5;
+            }
+            QLabel#SectionLabel {
+                color: #6b7280;
+                font-size: 13px;
+                font-weight: 800;
+                margin-top: 8px;
+            }
+            QLabel#LogoFallback {
+                color: #111827;
+                font-size: 28px;
+                font-weight: 900;
+            }
+            QFrame#ProviderButton {
+                background: #ffffff;
+                border: 1px solid #e0e3e9;
+                border-radius: 18px;
+            }
+            QFrame#ProviderButton[provider="kakao"] {
+                border: 2px solid #f2c300;
+            }
+            QFrame#ProviderButton[provider="kakao"]:hover {
+                background: #fffdf2;
+            }
+            QFrame#ProviderButton[provider="google"]:hover,
+            QFrame#ProviderButton[provider="naver"]:hover {
+                background: #f9fafb;
+            }
+            QLabel#ProviderTitle {
+                background: transparent;
+                color: #111827;
+                font-size: 21px;
+                font-weight: 900;
+            }
+            QLabel#ProviderTrailing {
+                background: transparent;
+                color: #111827;
+                font-size: 20px;
+                font-weight: 900;
+            }
+            QLabel#ProviderIcon {
+                background: transparent;
+            }
+            QLabel#LoginStatus {
+                min-height: 28px;
+                color: #6b7280;
+                font-size: 13px;
+            }
+            QWidget#NoticeLine {
+                background: #e5e7eb;
+                margin-top: 6px;
+            }
+            QLabel#LoginNotice {
+                color: #6b7280;
+                font-size: 14px;
+                line-height: 1.5;
+            }
+            QLabel#VersionLabel {
+                color: #8a93a3;
+                font-size: 15px;
+                font-weight: 800;
+                margin-top: 8px;
+            }
+            """
+        )
 
-    def _try_login(self) -> None:
-        uid = (self.cbo_id.currentText() or "").strip()
-        pw = (self.txt_pw.text() or "").strip()
+    def _login(self) -> None:
+        self.btn_kakao.setEnabled(False)
+        self.status.setText("브라우저에서 카카오 로그인을 진행해 주세요.")
+        try:
+            self.session = self.auth_service.login_with_kakao()
+        except AuthError as e:
+            self.status.setText("")
+            QMessageBox.warning(self, "로그인 실패", _friendly_login_error(str(e)))
+            self.btn_kakao.setEnabled(True)
+            return
+        self.accept()
 
-        if uid == LOGIN_ID and pw == LOGIN_PW:
-            # ✅ 로그인 성공 시 저장/해제 처리
-            self._save_or_clear_login()
-            self.accept()
+    def _show_coming_soon(self, name: str) -> None:
+        QMessageBox.information(self, "준비중", f"{name}은 준비중입니다.")
+
+    def _open_beta_login(self) -> None:
+        now = datetime.now()
+        if self._beta_locked_until and now < self._beta_locked_until:
+            remain = max(1, int((self._beta_locked_until - now).total_seconds() // 60) + 1)
+            QMessageBox.warning(self, "비상 로그인 잠금", f"로그인 실패가 반복되어 잠시 잠금되었습니다.\n{remain}분 후 다시 시도해 주세요.")
             return
 
-        QMessageBox.warning(self, "로그인 실패", "아이디 또는 비밀번호가 올바르지 않습니다.")
-        self.txt_pw.selectAll()
-        self.txt_pw.setFocus()
+        dlg = QDialog(self)
+        dlg.setWindowTitle("비상 로그인")
+        dlg.setModal(True)
+        dlg.setMinimumWidth(360)
+        layout = QVBoxLayout(dlg)
+        layout.setContentsMargins(22, 20, 22, 18)
+        layout.setSpacing(12)
+
+        desc = QLabel("카카오 로그인에 문제가 있는 베타 사용자를 위한 임시 로그인입니다.")
+        desc.setWordWrap(True)
+        layout.addWidget(desc)
+
+        txt_id = QLineEdit()
+        txt_id.setPlaceholderText("아이디")
+        txt_id.setMinimumHeight(42)
+        layout.addWidget(txt_id)
+
+        txt_pw = QLineEdit()
+        txt_pw.setPlaceholderText("비밀번호")
+        txt_pw.setEchoMode(QLineEdit.Password)
+        txt_pw.setMinimumHeight(42)
+        layout.addWidget(txt_pw)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("로그인")
+        buttons.button(QDialogButtonBox.Cancel).setText("취소")
+        layout.addWidget(buttons)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        try:
+            self.session = self.auth_service.login_with_beta_password(
+                txt_id.text().strip(),
+                txt_pw.text(),
+            )
+        except AuthError as e:
+            self._beta_fail_count += 1
+            if self._beta_fail_count >= 5:
+                self._beta_locked_until = datetime.now() + timedelta(minutes=5)
+                QMessageBox.warning(self, "비상 로그인 실패", "5회 실패하여 5분 동안 잠금되었습니다.")
+            else:
+                left = 5 - self._beta_fail_count
+                QMessageBox.warning(self, "비상 로그인 실패", f"{e}\n남은 시도 횟수: {left}회")
+            return
+
+        self._beta_fail_count = 0
+        self._beta_locked_until = None
+        self.accept()
+
+    def _uninstall_application(self) -> None:
+        root = Path(getattr(sys, "_MEIPASS", _app_base_dir()))
+        ps1 = root / "uninstall.ps1"
+        if not ps1.exists():
+            QMessageBox.information(self, "안내", f"삭제 스크립트를 찾을 수 없습니다.\n{ps1}")
+            return
+
+        reply = QMessageBox.warning(
+            self,
+            "프로그램 삭제",
+            "프로그램 삭제를 시작합니다.\n진행 중 앱이 종료될 수 있습니다.\n계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            self.auth_service.clear_session()
+            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+            subprocess.Popen(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(ps1),
+                ],
+                cwd=str(root),
+                creationflags=flags,
+            )
+            self.reject()
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"삭제 실행 실패\n{e}")
 
     @staticmethod
-    def run_login(parent=None) -> bool:
-        dlg = LoginDialog(parent)
-        return dlg.exec() == QDialog.Accepted
+    def run_login(auth_service: AuthService | None = None, parent=None) -> AuthSession | None:
+        dlg = LoginDialog(auth_service=auth_service, parent=parent)
+        if dlg.exec() == QDialog.Accepted:
+            return dlg.session
+        return None
 
 
-__all__ = ["LoginDialog"]
+def _friendly_login_error(message: str) -> str:
+    text = (message or "").strip()
+    if not text:
+        return "네트워크 상태를 확인해 주세요."
+    if "access_denied" in text or "cancel" in text.lower():
+        return "로그인이 취소되었습니다."
+    if "KAKAO_CLIENT_ID" in text or "KAKAO_REDIRECT_URI" in text:
+        return text
+    return text
+
+
+__all__ = ["LoginDialog", "resolve_icon_path", "resolve_logo_path"]

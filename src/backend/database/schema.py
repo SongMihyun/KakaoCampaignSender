@@ -19,6 +19,9 @@ def ensure_send_logs_schema(conn: sqlite3.Connection) -> None:
             channel     TEXT NOT NULL DEFAULT '',
             recipient   TEXT NOT NULL DEFAULT '',
             status      TEXT NOT NULL DEFAULT '',
+            status_code INTEGER NOT NULL DEFAULT 0,
+            status_message TEXT NOT NULL DEFAULT '',
+            step        TEXT NOT NULL DEFAULT '',
             reason      TEXT NOT NULL DEFAULT '',
             attempt     INTEGER NOT NULL DEFAULT 0,
             message_len INTEGER NOT NULL DEFAULT 0,
@@ -27,8 +30,21 @@ def ensure_send_logs_schema(conn: sqlite3.Connection) -> None:
         """
     )
 
+    for col, ddl in {
+        "status_code": "ALTER TABLE send_logs ADD COLUMN status_code INTEGER NOT NULL DEFAULT 0;",
+        "status_message": "ALTER TABLE send_logs ADD COLUMN status_message TEXT NOT NULL DEFAULT '';",
+        "step": "ALTER TABLE send_logs ADD COLUMN step TEXT NOT NULL DEFAULT '';",
+    }.items():
+        try:
+            cur = conn.execute("PRAGMA table_info(send_logs);")
+            if col not in {str(row[1]) for row in cur.fetchall()}:
+                conn.execute(ddl)
+        except Exception:
+            pass
+
     conn.execute("CREATE INDEX IF NOT EXISTS idx_send_logs_ts ON send_logs(ts);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_send_logs_status ON send_logs(status);")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_send_logs_status_code ON send_logs(status_code);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_send_logs_recipient ON send_logs(recipient);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_send_logs_campaign_id ON send_logs(campaign_id);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_send_logs_batch_id ON send_logs(batch_id);")

@@ -119,11 +119,16 @@ class ContactsPage(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
         title = QLabel("대상자 관리")
         title.setObjectName("PageTitle")
-
-        desc = QLabel("검색 · 추가 · 파일 작업")
+        desc = QLabel("- 검색 · 추가 · 파일 작업")
         desc.setObjectName("PageDesc")
+        desc.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        title_row.addWidget(title)
+        title_row.addWidget(desc)
+        title_row.addStretch(1)
 
         search_row = QHBoxLayout()
         search_row.setSpacing(8)
@@ -184,8 +189,7 @@ class ContactsPage(QWidget):
 
         self.table.sortByColumn(1, Qt.AscendingOrder)
 
-        layout.addWidget(title)
-        layout.addWidget(desc)
+        layout.addLayout(title_row)
         layout.addLayout(search_row)
         layout.addWidget(self.table, 1)
         layout.addLayout(btn_row)

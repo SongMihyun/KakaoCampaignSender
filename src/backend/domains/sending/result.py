@@ -9,3 +9,4 @@ class SendRunResult:
     success: int
     fail: int
     stopped: bool = False
+    paused: bool = False

@@ -16,6 +16,9 @@ class SendLogRow:
     channel: str
     recipient: str
     status: str
+    status_code: int
+    status_message: str
+    step: str
     reason: str
     attempt: int
     message_len: int
@@ -71,7 +74,8 @@ class SendLogsRepo:
 
         where_sql = (" WHERE " + " AND ".join(where)) if where else ""
         sql = f"""
-            SELECT id, ts, campaign_id, batch_id, channel, recipient, status, reason, attempt, message_len, image_count
+            SELECT id, ts, campaign_id, batch_id, channel, recipient, status,
+                   status_code, status_message, step, reason, attempt, message_len, image_count
             FROM send_logs
             {where_sql}
             ORDER BY id DESC
@@ -92,6 +96,9 @@ class SendLogsRepo:
                 channel=str(r["channel"] or ""),
                 recipient=str(r["recipient"] or ""),
                 status=str(r["status"] or ""),
+                status_code=int(r["status_code"] or 0),
+                status_message=str(r["status_message"] or ""),
+                step=str(r["step"] or ""),
                 reason=str(r["reason"] or ""),
                 attempt=int(r["attempt"]),
                 message_len=int(r["message_len"]),
@@ -108,6 +115,9 @@ class SendLogsRepo:
         channel: str = "",
         recipient: str = "",
         status: str = "",
+        status_code: int = 0,
+        status_message: str = "",
+        step: str = "",
         reason: str = "",
         attempt: int = 0,
         message_len: int = 0,
@@ -122,8 +132,9 @@ class SendLogsRepo:
             cur = con.execute(
                 """
                 INSERT INTO send_logs(
-                    campaign_id, batch_id, channel, recipient, status, reason, attempt, message_len, image_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    campaign_id, batch_id, channel, recipient, status,
+                    status_code, status_message, step, reason, attempt, message_len, image_count
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     int(campaign_id),
@@ -131,6 +142,9 @@ class SendLogsRepo:
                     str(channel or ""),
                     str(recipient or ""),
                     str(status or ""),
+                    int(status_code or 0),
+                    str(status_message or ""),
+                    str(step or ""),
                     str(reason or ""),
                     int(attempt),
                     int(message_len),

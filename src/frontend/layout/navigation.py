@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QListWidget, QListWidgetItem, QVBoxLayout, QWidget
 
 
 class Navigation(QWidget):
@@ -7,9 +7,6 @@ class Navigation(QWidget):
 
     def __init__(self) -> None:
         super().__init__()
-
-        self.caption = QLabel("작업 메뉴")
-        self.caption.setObjectName("NavCaption")
 
         self.list = QListWidget()
         self.list.setObjectName("NavList")
@@ -30,7 +27,6 @@ class Navigation(QWidget):
         side_layout = QVBoxLayout(side)
         side_layout.setContentsMargins(0, 0, 0, 0)
         side_layout.setSpacing(8)
-        side_layout.addWidget(self.caption)
         side_layout.addWidget(self.list, 1)
 
         wrap = QHBoxLayout()

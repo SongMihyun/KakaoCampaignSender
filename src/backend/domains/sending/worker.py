@@ -28,6 +28,7 @@ class MultiSendWorker(QThread):
     status = Signal(str)
     list_changed = Signal(str, int, int)
     pause_changed = Signal(bool)
+    pipeline_paused = Signal(str)
     finished_ok = Signal(int, int, int)
 
     def __init__(
@@ -134,6 +135,18 @@ class MultiSendWorker(QThread):
         self._error_reporter = bundle.error_reporter
 
         result = bundle.executor.execute()
+        if bool(getattr(result, "paused", False)):
+            with self._state_lock:
+                self._paused = True
+                self._pause_requested = False
+                self._resume_event.clear()
+            self.pause_changed.emit(True)
+            self.pipeline_paused.emit(
+                "파일 업로드가 지연되고 있습니다.\n\n"
+                "카카오톡을 다시 로그인한 후\n"
+                "F9를 눌러 발송을 재개해 주세요.\n\n"
+                "※ 현재 발송은 일시정지 상태입니다."
+            )
         self.finished_ok.emit(result.list_done, result.success, result.fail)
 
     def _build_execution_bundle(self):

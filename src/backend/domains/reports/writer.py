@@ -14,6 +14,7 @@ from backend.domains.reports.models import (
     ReportRecipient,
     ReportItem,
 )
+from backend.core.status_codes import status_from_result
 
 
 def _now_ts() -> str:
@@ -125,6 +126,9 @@ class SendReportWriter:
         agency: str,
         branch: str,
         status: str,
+        status_code: int = 0,
+        status_message: str = "",
+        step: str = "",
         reason: str = "",
         attempt: int = 0,
     ) -> None:
@@ -133,6 +137,8 @@ class SendReportWriter:
             if idx is None:
                 return
 
+            info = status_from_result(status, reason)
+            actual_code = _safe_int(status_code, 0) or info.code
             rr = ReportRecipient(
                 emp_id=str(emp_id or ""),
                 name=str(name or ""),
@@ -140,18 +146,22 @@ class SendReportWriter:
                 agency=str(agency or ""),
                 branch=str(branch or ""),
                 status=str(status or "").upper().strip(),
+                status_code=actual_code,
+                status_message=str(status_message or info.message),
+                step=str(step or info.step),
                 reason=str(reason or ""),
                 attempt=_safe_int(attempt, 0),
             )
             self._report.lists[idx].recipients.append(rr)
 
-    def finish(self, *, list_done: int, success: int, fail: int, stopped: bool) -> None:
+    def finish(self, *, list_done: int, success: int, fail: int, stopped: bool, paused: bool = False) -> None:
         with self._lock:
             self._report.ended_at = _now_ts()
             self._report.list_done = _safe_int(list_done)
             self._report.success = _safe_int(success)
             self._report.fail = _safe_int(fail)
             self._report.stopped = bool(stopped)
+            self._report.paused = bool(paused)
 
     def save(self) -> Path:
         with self._lock:

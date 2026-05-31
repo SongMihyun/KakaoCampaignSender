@@ -95,10 +95,16 @@ class GroupsPage(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(10)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
         title = QLabel("그룹 관리")
         title.setObjectName("PageTitle")
-        desc = QLabel("그룹을 선택한 뒤, 검색 결과에서 멤버를 추가·제거합니다.")
+        desc = QLabel("- 그룹을 선택한 뒤, 검색 결과에서 멤버를 추가·제거합니다.")
         desc.setObjectName("PageDesc")
+        desc.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        title_row.addWidget(title)
+        title_row.addWidget(desc)
+        title_row.addStretch(1)
 
         top = QHBoxLayout()
         top.setSpacing(8)
@@ -199,8 +205,7 @@ class GroupsPage(QWidget):
         main.addLayout(left, 5)
         main.addLayout(right, 5)
 
-        root.addWidget(title)
-        root.addWidget(desc)
+        root.addLayout(title_row)
         root.addLayout(top)
         root.addLayout(main, 1)
 

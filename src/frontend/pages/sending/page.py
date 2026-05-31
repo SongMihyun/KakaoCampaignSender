@@ -164,6 +164,7 @@ class SendPage(QWidget):
 
         self.sender_driver: Optional[KakaoSenderDriver] = None
         self._worker = None
+        self._pipeline_paused = False
         self._run_logger: Optional[SendRunLogger] = None
         self._current_sending_title: str = ""
         self._is_pause_ui: bool = False
@@ -206,13 +207,18 @@ class SendPage(QWidget):
         header_left = QVBoxLayout()
         header_left.setSpacing(6)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
         title = QLabel("발송")
         title.setObjectName("PageTitle")
-        desc = QLabel("그룹·캠페인으로 발송리스트를 만들고 순서대로 발송합니다.")
+        desc = QLabel("- 그룹·캠페인으로 발송리스트를 만들고 순서대로 발송합니다.")
         desc.setObjectName("PageDesc")
+        desc.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        title_row.addWidget(title)
+        title_row.addWidget(desc)
+        title_row.addStretch(1)
 
-        header_left.addWidget(title)
-        header_left.addWidget(desc)
+        header_left.addLayout(title_row)
 
         self.lbl_priv = QLabel("")
         self.lbl_priv.setStyleSheet("color:#b45309; font-weight:600;")
@@ -1323,6 +1329,8 @@ class SendPage(QWidget):
         )
         self._worker.list_changed.connect(self._on_worker_list_changed)
         self._worker.pause_changed.connect(self._on_worker_pause_changed)
+        if hasattr(self._worker, "pipeline_paused"):
+            self._worker.pipeline_paused.connect(self._on_pipeline_paused)
         self._worker.progress.connect(self.progress.setValue)
         self._worker.progress.connect(self._on_progress)
         self._worker.status.connect(self._on_status)
@@ -1404,6 +1412,12 @@ class SendPage(QWidget):
         else:
             self._on_status("발송 재개됨(F9) | 다음 대상자를 카카오톡 메인창 검색부터 다시 시작합니다.")
 
+    def _on_pipeline_paused(self, message: str) -> None:
+        self._pipeline_paused = True
+        self._set_pause_ui(True)
+        self._on_status("업로드 지연 감지 | 현재 발송은 일시정지 상태입니다.")
+        QMessageBox.warning(self, "업로드 지연", message)
+
     def _toggle_pause_send(self) -> None:
         if not self._worker or not self._worker.isRunning():
             return
@@ -1432,8 +1446,12 @@ class SendPage(QWidget):
         self._on_status("중지 요청됨(F11 또는 버튼)")
 
     def _on_send_finished(self, list_done: int, success: int, fail: int) -> None:
-        self._set_pause_ui(False)
-        self._set_sending_ui(False)
+        if self._pipeline_paused:
+            self._set_pause_ui(True)
+            self._set_sending_ui(False)
+        else:
+            self._set_pause_ui(False)
+            self._set_sending_ui(False)
         self._set_progress_title("")
         self.progress.setValue(100 if (success + fail) > 0 else 0)
 
@@ -1455,21 +1473,24 @@ class SendPage(QWidget):
 
         self.refresh_schedule_status()
 
+        state_label = "업로드 지연으로 일시정지" if self._pipeline_paused else "발송 종료"
         summary = (
-            f"발송 종료 | 리스트 {list_done}개 완료 | 성공 {success} / 실패 {fail}"
+            f"{state_label} | 리스트 {list_done}개 완료 | 성공 {success} / 실패 {fail}"
             + (f" | 로그: {log_path}" if log_path else "")
         )
         self._on_status(summary)
 
         if active_schedule_id:
+            self._pipeline_paused = False
             return
 
         QMessageBox.information(
             self,
-            "발송 종료",
-            f"발송 종료\n- 완료 리스트: {list_done}개\n- 성공: {success}\n- 실패: {fail}"
+            state_label,
+            f"{state_label}\n- 완료 리스트: {list_done}개\n- 성공: {success}\n- 실패: {fail}"
             + (f"\n\n로그 파일:\n{log_path}" if log_path else ""),
         )
+        self._pipeline_paused = False
 
     def _move_selected_send_list_up(self) -> None:
         row = self.lst_send_lists.currentRow()

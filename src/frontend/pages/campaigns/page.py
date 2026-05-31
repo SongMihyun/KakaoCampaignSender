@@ -81,10 +81,16 @@ class CampaignPage(QWidget):
         root.setContentsMargins(16, 16, 16, 16)
         root.setSpacing(10)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
         title = QLabel("캠페인 설정")
         title.setObjectName("PageTitle")
-        desc = QLabel("이미지와 문구를 순서대로 구성해 캠페인으로 저장합니다.")
+        desc = QLabel("- 이미지와 문구를 순서대로 구성해 캠페인으로 저장합니다.")
         desc.setObjectName("PageDesc")
+        desc.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        title_row.addWidget(title)
+        title_row.addWidget(desc)
+        title_row.addStretch(1)
 
         top = QHBoxLayout()
         top.setSpacing(8)
@@ -148,8 +154,7 @@ class CampaignPage(QWidget):
 
         main.addWidget(left_card, 1)
 
-        root.addWidget(title)
-        root.addWidget(desc)
+        root.addLayout(title_row)
         root.addLayout(top)
         root.addLayout(main, 1)
 

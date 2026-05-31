@@ -233,6 +233,11 @@ class CloseForcedByConfirm(RuntimeError):
     pass
 
 
+class UploadPipelineStalled(RuntimeError):
+    """파일 업로드/창 닫기 교착으로 다음 대상 발송을 멈춰야 하는 케이스."""
+    pass
+
+
 class KakaoPcDriver(KakaoSenderDriver):
     def __init__(
         self,
@@ -1872,11 +1877,11 @@ class KakaoPcDriver(KakaoSenderDriver):
                 continue
 
             if pop_result == "CONFIRM":
-                raise CloseForcedByConfirm("close 단계에서 '확인'으로 강제 종료됨(실패로 기록)")
+                raise UploadPipelineStalled("UPLOAD_PIPELINE_STALLED: file upload is still pending while closing chat")
 
             self._sleep_abs(0.10)
 
-        raise RuntimeError("개인창 닫기 재시도 초과: ESC 6회 수행 후에도 창이 닫히지 않습니다.")
+        raise UploadPipelineStalled("CHAT_CLOSE_TIMEOUT: chat window did not close after repeated ESC attempts")
 
     def _close_chat(self) -> None:
         self._check_stop()
@@ -2405,11 +2410,13 @@ class KakaoPcDriver(KakaoSenderDriver):
                         b = bytes(b)
                     except Exception:
                         pass
+                    if not b and p and not os.path.exists(p):
+                        raise FileNotFoundError(f"IMAGE_FILE_NOT_FOUND: {p}")
                     prepared.append(("IMG", "", b, p))
 
             opened = self._open_chat_by_name(name)
             if not opened:
-                return
+                raise ChatNotFound(f"'{name}' chat not found")
 
             failures: List[str] = []
             sent_any = False
@@ -3088,4 +3095,5 @@ __all__ = [
     "SpeedProfile",
     "TransferAbortedByClose",
     "CloseForcedByConfirm",
+    "UploadPipelineStalled",
 ]

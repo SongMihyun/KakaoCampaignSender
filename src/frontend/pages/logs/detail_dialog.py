@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 )
 
 from frontend.pages.campaigns.preview_dialog import CampaignPreviewDialog
+from backend.core.status_codes import detail_text
 
 
 class ClickableLabel(QLabel):
@@ -67,8 +68,9 @@ class LogDetailDialog(QDialog):
         self.lbl_channel = QLabel(f"채널/그룹: {self._detail.get('channel', '')}")
         self.lbl_recipient = QLabel(f"수신자: {self._detail.get('recipient', '')}")
         self.lbl_status = QLabel(
-            f"상태: {self._detail.get('status', '')}  |  시도: {self._detail.get('attempt', '')}"
+            f"상태: {self._detail.get('status', '')}  |  코드: {self._detail.get('status_code', '')}  |  시도: {self._detail.get('attempt', '')}"
         )
+        self.lbl_step = QLabel(f"STEP: {self._detail.get('step', '')}  |  메시지: {self._detail.get('status_message', '')}")
         self.lbl_counts = QLabel(
             f"메시지길이: {self._detail.get('message_len', '')}  |  이미지수: {self._detail.get('image_count', '')}"
         )
@@ -77,6 +79,7 @@ class LogDetailDialog(QDialog):
         head.addWidget(self.lbl_channel)
         head.addWidget(self.lbl_recipient)
         head.addWidget(self.lbl_status)
+        head.addWidget(self.lbl_step)
         head.addWidget(self.lbl_counts)
 
         root.addLayout(head)
@@ -114,10 +117,24 @@ class LogDetailDialog(QDialog):
         btns.addStretch(1)
 
         close = QPushButton("닫기")
+        btn_code = QPushButton("오류코드 설명")
+        btn_code.clicked.connect(self._show_status_detail)
+        btns.addWidget(btn_code)
         close.clicked.connect(self.accept)
         btns.addWidget(close)
 
         root.addLayout(btns)
+
+    def _show_status_detail(self) -> None:
+        try:
+            code = int(self._detail.get("status_code") or 0)
+        except Exception:
+            code = 0
+        if not code:
+            code = 9000
+        from PySide6.QtWidgets import QMessageBox
+
+        QMessageBox.information(self, "오류코드 상세 설명", detail_text(code))
 
     def _open_campaign_preview(self) -> None:
         """

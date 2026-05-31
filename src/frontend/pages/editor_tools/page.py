@@ -53,10 +53,15 @@ class EditorToolsPage(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
         title = QLabel("편집 도구")
         title.setObjectName("PageTitle")
-        desc = QLabel("엑셀, 워드, 메모장 파일을 열어 미리보고 편집합니다.")
+        desc = QLabel("- 엑셀, 워드, 메모장 파일을 열어 미리보고 편집합니다.")
         desc.setObjectName("PageDesc")
+        title_row.addWidget(title)
+        title_row.addWidget(desc)
+        title_row.addStretch(1)
 
         card = QFrame()
         card.setObjectName("Card")
@@ -80,8 +85,7 @@ class EditorToolsPage(QWidget):
         card_layout.addLayout(row)
         card_layout.addWidget(note)
 
-        layout.addWidget(title)
-        layout.addWidget(desc)
+        layout.addLayout(title_row)
         layout.addWidget(card)
         layout.addStretch(1)
 

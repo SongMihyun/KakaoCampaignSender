@@ -618,10 +618,23 @@ class CombinedColumnDialog(QDialog):
 
     def _column_item_text(self, col: int) -> str:
         header = self._model.index(0, col).data(Qt.DisplayRole) or ""
-        sample = self._model.index(1, col).data(Qt.DisplayRole) or ""
         header_disp = str(header).strip() or "(제목없음)"
-        sample_disp = str(sample).strip() or "(빈값)"
+        sample_disp = self._sample_value_for_header(header_disp)
         return f"{get_column_letter(col + 1)} | {header_disp} | 예시: {sample_disp}"
+
+    def _sample_value_for_header(self, header: str) -> str:
+        normalized = header.replace(" ", "").lower()
+        if "사번" in normalized or "사원" in normalized or normalized in {"empid", "emp_id", "id"}:
+            return "77777777"
+        if "이름" in normalized or "성명" in normalized or normalized in {"name"}:
+            return "홍길동"
+        if "전화" in normalized or "연락" in normalized or "phone" in normalized:
+            return "010-1234-5678"
+        if "대리점" in normalized or "매장" in normalized or "agency" in normalized:
+            return "멜츠"
+        if "지사" in normalized or "branch" in normalized:
+            return "분당"
+        return "(빈값)"
 
     def _make_item(self, col: int) -> QListWidgetItem:
         item = QListWidgetItem(self._column_item_text(col))
@@ -708,13 +721,12 @@ class CombinedColumnDialog(QDialog):
         separator = self.separator_input.text()
         sample_values: list[str] = []
         for col in cols:
-            value = self._model.index(1, col).data(Qt.DisplayRole) or ""
-            value = str(value).strip()
+            header = self._model.index(0, col).data(Qt.DisplayRole) or ""
+            value = self._sample_value_for_header(str(header).strip())
             if value:
                 sample_values.append(value)
         preview = separator.join(sample_values) if sample_values else ""
-        title = (self.column_title_input.text() or "").strip() or "카카오검색명"
-        return f"미리보기: [{title}] {preview}"
+        return f"미리보기: {preview}"
 
     def _update_preview(self) -> None:
         self.preview_label.setText(self._build_preview_text())

@@ -5,6 +5,7 @@ import time
 from typing import Callable, Optional
 
 from backend.domains.sending.result import SendRunResult
+from backend.core.status_codes import status_from_result
 from backend.integrations.kakaotalk.hooks import ChatNotFound
 
 
@@ -63,6 +64,7 @@ class SendExecutor:
 
         self._StopNow = None
         self._TransferAbortedByClose = None
+        self._UploadPipelineStalled = None
         self._load_driver_exceptions()
 
     def execute(self) -> SendRunResult:
@@ -133,12 +135,15 @@ class SendExecutor:
             from backend.integrations.kakaotalk.driver import (
                 StopNow as _StopNow,
                 TransferAbortedByClose as _TransferAbortedByClose,
+                UploadPipelineStalled as _UploadPipelineStalled,
             )
             self._StopNow = _StopNow
             self._TransferAbortedByClose = _TransferAbortedByClose
+            self._UploadPipelineStalled = _UploadPipelineStalled
         except Exception:
             self._StopNow = None
             self._TransferAbortedByClose = None
+            self._UploadPipelineStalled = None
 
     def _prepare_driver(self) -> bool:
         try:
@@ -202,6 +207,12 @@ class SendExecutor:
             )
 
             if send_outcome["stopped"]:
+                if send_outcome.get("count_as_fail"):
+                    result.fail += 1
+                return tail_retry, True
+            if send_outcome.get("paused"):
+                result.paused = True
+                result.fail += 1
                 return tail_retry, True
 
             if send_outcome["tail_retry_scheduled"]:
@@ -229,12 +240,20 @@ class SendExecutor:
 
         for attempt in range(0, self._max_retry + 1):
             if self._is_stop_requested():
+                self._report_add_recipient_result(
+                    list_index=list_index,
+                    recipient=recipient,
+                    status="STOPPED_BY_USER",
+                    reason="USER_STOP",
+                    attempt=used_attempt,
+                )
                 return {
                     "ok": False,
                     "stopped": True,
                     "tail_retry_scheduled": False,
                     "attempt": used_attempt,
                     "last_err": last_err,
+                    "count_as_fail": True,
                 }
 
             used_attempt = attempt + 1
@@ -243,27 +262,32 @@ class SendExecutor:
                 raw_name = str(getattr(recipient, "name", "") or "")
                 name = raw_name.strip().replace("\u200b", "").replace("\ufeff", "")
                 if not name:
-                    self._status_cb(f"스킵(이름 비어있음) | {job.title} | emp_id={recipient.emp_id}")
+                    self._status_cb(f"대상자 정보 오류(이름 비어 있음) | {job.title} | emp_id={recipient.emp_id}")
                     self._report_add_recipient_result(
                         list_index=list_index,
                         recipient=recipient,
-                        status="SKIP",
+                        status="FAIL",
                         reason="EMPTY_NAME",
                         attempt=used_attempt,
                     )
                     return {
-                        "ok": True,
+                        "ok": False,
                         "stopped": False,
                         "tail_retry_scheduled": False,
                         "attempt": used_attempt,
                         "last_err": None,
                     }
 
-                self._driver.send_campaign_items(
+                driver_result = self._driver.send_campaign_items(
                     name,
                     job.campaign_items,
                     send_mode=str(getattr(job, "send_mode", "clipboard") or "clipboard"),
                 )
+                failure_reason = self._driver_result_failure_reason(driver_result)
+                if failure_reason:
+                    if "NOT_FOUND" in failure_reason.upper():
+                        raise ChatNotFound(failure_reason)
+                    raise RuntimeError(failure_reason)
                 self._report_add_recipient_result(
                     list_index=list_index,
                     recipient=recipient,
@@ -300,12 +324,20 @@ class SendExecutor:
                 msg = str(e)
 
                 if self._StopNow is not None and isinstance(e, self._StopNow):
+                    self._report_add_recipient_result(
+                        list_index=list_index,
+                        recipient=recipient,
+                        status="STOPPED_BY_USER",
+                        reason="USER_STOP",
+                        attempt=used_attempt,
+                    )
                     return {
                         "ok": False,
                         "stopped": True,
                         "tail_retry_scheduled": False,
                         "attempt": used_attempt,
                         "last_err": e,
+                        "count_as_fail": True,
                     }
 
                 if self._TransferAbortedByClose is not None and isinstance(e, self._TransferAbortedByClose):
@@ -327,6 +359,29 @@ class SendExecutor:
                         "last_err": e,
                     }
 
+                if self._UploadPipelineStalled is not None and isinstance(e, self._UploadPipelineStalled):
+                    self._status_cb(
+                        "파일 업로드가 지연되고 있습니다.\n\n"
+                        "카카오톡을 다시 로그인한 후\n"
+                        "F9를 눌러 발송을 재개해 주세요.\n\n"
+                        "※ 현재 발송은 일시정지 상태입니다."
+                    )
+                    self._report_add_recipient_result(
+                        list_index=list_index,
+                        recipient=recipient,
+                        status="PAUSED",
+                        reason=str(e) or "UPLOAD_PIPELINE_STALLED",
+                        attempt=used_attempt,
+                    )
+                    return {
+                        "ok": False,
+                        "stopped": False,
+                        "paused": True,
+                        "tail_retry_scheduled": False,
+                        "attempt": used_attempt,
+                        "last_err": e,
+                    }
+
                 lowered = msg.lower()
 
                 if ("파일 열기" in msg) or ("경로가 없습니다" in msg) or ("bing" in lowered) or ("open" in lowered):
@@ -341,12 +396,20 @@ class SendExecutor:
                 last_err = e
 
                 if self._sleep_with_stop_only(self._retry_sleep_ms):
+                    self._report_add_recipient_result(
+                        list_index=list_index,
+                        recipient=recipient,
+                        status="STOPPED_BY_USER",
+                        reason="USER_STOP",
+                        attempt=used_attempt,
+                    )
                     return {
                         "ok": False,
                         "stopped": True,
                         "tail_retry_scheduled": False,
                         "attempt": used_attempt,
                         "last_err": e,
+                        "count_as_fail": True,
                     }
 
                 try:
@@ -417,11 +480,16 @@ class SendExecutor:
                 used_attempt = attempt + 1
 
                 try:
-                    self._driver.send_campaign_items(
+                    driver_result = self._driver.send_campaign_items(
                         recipient.name,
                         job.campaign_items,
                         send_mode=str(getattr(job, "send_mode", "clipboard") or "clipboard"),
                     )
+                    failure_reason = self._driver_result_failure_reason(driver_result)
+                    if failure_reason:
+                        if "NOT_FOUND" in failure_reason.upper():
+                            raise ChatNotFound(failure_reason)
+                        raise RuntimeError(failure_reason)
                     final_ok = True
                     break
 
@@ -540,6 +608,7 @@ class SendExecutor:
             return
 
         try:
+            info = status_from_result(status, reason)
             self._report_writer.add_recipient_result(
                 list_index=list_index,
                 emp_id=recipient.emp_id,
@@ -548,6 +617,9 @@ class SendExecutor:
                 agency=recipient.agency,
                 branch=recipient.branch,
                 status=status,
+                status_code=info.code,
+                status_message=info.message,
+                step=info.step,
                 reason=reason,
                 attempt=attempt,
             )
@@ -562,6 +634,7 @@ class SendExecutor:
                     success=result.success,
                     fail=result.fail,
                     stopped=result.stopped,
+                    paused=result.paused,
                 )
                 self._report_writer.save()
         except Exception:
@@ -679,3 +752,26 @@ class SendExecutor:
 
     def _recipient_key(self, recipient) -> str:
         return f"{recipient.emp_id}|{recipient.name}|{recipient.phone}"
+
+    def _driver_result_failure_reason(self, result) -> str:
+        if result is None:
+            return ""
+        try:
+            ok = getattr(result, "ok", None)
+            status = str(getattr(result, "status", "") or "").upper()
+            reason = str(getattr(result, "reason", "") or "")
+            error = str(getattr(result, "error", "") or "")
+            chat_hwnd = getattr(result, "chat_hwnd", None)
+        except Exception:
+            return ""
+
+        status_blob = f"{status} {reason} {error}".upper()
+        if ok is False:
+            return reason or error or status or "DRIVER_RESULT_FAILED"
+        if "NOT_FOUND" in status_blob:
+            return "NOT_FOUND"
+        if "FAILED" in status_blob or "FAIL" in status_blob:
+            return reason or error or status or "DRIVER_RESULT_FAILED"
+        if chat_hwnd == 0 and ("OPEN_CHAT" in status_blob or "CHAT" in status_blob):
+            return reason or error or "OPEN_CHAT_FAIL"
+        return ""
