@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.version import __version__
+from backend.core.app_settings import get_setting, set_setting
 from backend.domains.auth import AuthError, AuthService, AuthSession
 
 
@@ -167,7 +168,7 @@ class LoginDialog(QDialog):
         self.setWindowTitle("카센더 로그인")
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setAttribute(Qt.WA_TranslucentBackground, True)
-        self.setFixedSize(540, 860)
+        self.setFixedSize(540, 900)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(22, 22, 22, 22)
@@ -191,7 +192,7 @@ class LoginDialog(QDialog):
         content = QWidget()
         content.setObjectName("LoginContent")
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(46, 6, 46, 0)
+        content_layout.setContentsMargins(46, 28, 46, 0)
         content_layout.setSpacing(14)
 
         content_layout.addWidget(LogoWidget(size=380), 0, Qt.AlignHCenter)
@@ -259,8 +260,25 @@ class LoginDialog(QDialog):
         bar = QWidget()
         bar.setObjectName("LoginTopControls")
         layout = QHBoxLayout(bar)
-        layout.setContentsMargins(0, 10, 18, 0)
-        layout.setSpacing(4)
+        layout.setContentsMargins(18, 12, 18, 0)
+        layout.setSpacing(8)
+
+        env_wrap = QWidget()
+        env_wrap.setObjectName("PcModeSelector")
+        env_layout = QHBoxLayout(env_wrap)
+        env_layout.setContentsMargins(4, 4, 4, 4)
+        env_layout.setSpacing(4)
+        self.btn_env_public = QPushButton("공용")
+        self.btn_env_public.setObjectName("PcModeButton")
+        self.btn_env_public.setCheckable(True)
+        self.btn_env_public.setCursor(Qt.PointingHandCursor)
+        self.btn_env_personal = QPushButton("개인")
+        self.btn_env_personal.setObjectName("PcModeButton")
+        self.btn_env_personal.setCheckable(True)
+        self.btn_env_personal.setCursor(Qt.PointingHandCursor)
+        env_layout.addWidget(self.btn_env_public)
+        env_layout.addWidget(self.btn_env_personal)
+        layout.addWidget(env_wrap, 0, Qt.AlignLeft | Qt.AlignTop)
         layout.addStretch(1)
 
         self.btn_settings = QPushButton("⚙")
@@ -284,7 +302,34 @@ class LoginDialog(QDialog):
 
         layout.addWidget(self.btn_settings)
         layout.addWidget(self.btn_close)
+        self.btn_env_public.clicked.connect(lambda: self._select_pc_environment("public"))
+        self.btn_env_personal.clicked.connect(lambda: self._select_pc_environment("personal"))
+        self._apply_pc_environment(str(get_setting("pc_environment", "public") or "public"))
         return bar
+
+    def _select_pc_environment(self, mode: str) -> None:
+        mode = "personal" if mode == "personal" else "public"
+        if mode == "personal":
+            reply = QMessageBox.warning(
+                self,
+                "개인 PC 로그인 안내",
+                "<b>개인 PC로 선택하면 로그인 유지 기간이 1주일로 설정됩니다.</b><br><br>"
+                "<span style='color:#dc2626; font-weight:900;'>중요: 공용 PC에서는 절대 사용하지 마세요.</span><br><br>"
+                "이 PC가 본인만 사용하는 개인 PC가 맞습니까?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                mode = "public"
+        set_setting("pc_environment", mode)
+        if mode == "public":
+            self.auth_service.clear_session()
+        self._apply_pc_environment(mode)
+
+    def _apply_pc_environment(self, mode: str) -> None:
+        mode = "personal" if mode == "personal" else "public"
+        self.btn_env_public.setChecked(mode == "public")
+        self.btn_env_personal.setChecked(mode == "personal")
 
     def _show_settings_menu(self) -> None:
         pos = self.btn_settings.mapToGlobal(self.btn_settings.rect().bottomLeft())
@@ -300,6 +345,34 @@ class LoginDialog(QDialog):
             }
             QWidget#LoginTopControls {
                 background: transparent;
+            }
+            QWidget#PcModeSelector {
+                background: #f8fafc;
+                border: 1px solid #e5e7eb;
+                border-radius: 12px;
+            }
+            QPushButton#PcModeButton {
+                background: transparent;
+                border: none;
+                border-radius: 9px;
+                color: #64748b;
+                font-size: 13px;
+                font-weight: 800;
+                min-width: 48px;
+                min-height: 28px;
+                max-height: 28px;
+            }
+            QPushButton#PcModeButton:checked {
+                background: #111827;
+                color: #ffffff;
+            }
+            QPushButton#PcModeButton:hover {
+                background: #e5e7eb;
+                color: #111827;
+            }
+            QPushButton#PcModeButton:checked:hover {
+                background: #111827;
+                color: #ffffff;
             }
             QPushButton#TopIconBtn {
                 background: transparent;

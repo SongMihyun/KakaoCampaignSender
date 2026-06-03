@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
     def _clear_auth_session_if_needed(self) -> None:
         try:
             auth_service = AuthService()
-            if not auth_service.config.persist_session:
+            if not auth_service.should_persist_session():
                 auth_service.clear_session()
         except Exception:
             pass
@@ -422,6 +422,8 @@ class MainWindow(QMainWindow):
     def set_pc_environment(self, mode: str) -> None:
         mode = "personal" if mode == "personal" else "public"
         set_setting("pc_environment", mode)
+        if mode == "public":
+            AuthService().clear_session()
         self.header.set_environment(mode)
         if mode == "personal":
             self.status.set_message("사용 환경: 개인 PC | 시작/종료 백업, 최근 7개 유지")
