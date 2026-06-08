@@ -80,3 +80,91 @@ poetry run python .\src\app\main.py
 ## 회귀 테스트
 
 기능 변경 후 [REGRESSION_CHECKLIST.md](REGRESSION_CHECKLIST.md) 기준으로 확인합니다.
+
+## Auth API 로그인 연동
+
+KakaoCampaignSender는 카카오 OAuth 성공 후 자체적으로 앱 진입을 허용하지 않고, `kasender-auth-api`의 로그인 판정 endpoint를 호출합니다.
+
+```text
+KakaoCampaignSender
+↓
+POST /auth/kakao/login
+↓
+kasender-auth-api
+↓
+local D1 또는 Cloudflare D1
+```
+
+로컬 기본값:
+
+```text
+AUTH_API_MODE=local
+AUTH_API_BASE_URL_LOCAL=http://127.0.0.1:8787
+PROJECT_CODE=kasender
+```
+
+운영 기본값:
+
+```text
+AUTH_API_MODE=production
+AUTH_API_BASE_URL_PRODUCTION=https://auth.kasender.com
+PROJECT_CODE=kasender
+```
+
+요청에는 다음 값이 포함됩니다.
+
+- `provider_user_id`: 카카오 사용자 id
+- `device_id`: `%LOCALAPPDATA%\kakao_campaign_sender\device_id`에 저장되는 PC별 UUID
+- `app_version`: 앱 버전. 개발 빌드는 `dev`
+- `project_code`: `kasender`
+
+판정 결과 처리:
+
+- `ALLOWED`: 앱 진입 허용
+- `SIGNUP_REQUIRED`: 등록되지 않은 계정 안내 후 차단
+- `DENIED / USER_PENDING`: 승인 대기 안내 후 차단
+- `DENIED / USER_BLOCKED`: 차단 계정 안내 후 차단
+- `DENIED / USER_EXPIRED`: 사용 기간 만료 안내 후 차단
+- `DENIED / PROJECT_PENDING`: 카센더 권한 승인 대기 안내 후 차단
+- `DENIED / PROJECT_BLOCKED`: 카센더 권한 차단 안내 후 차단
+- `DENIED / PROJECT_EXPIRED`: 카센더 권한 만료 안내 후 차단
+- `DENIED / PROJECT_NOT_ALLOWED`: 카센더 사용 권한 없음 안내 후 차단
+
+Auth API 연결 실패 시 자동 허용하지 않습니다. 기존 비상 로그인은 별도 흐름으로 유지됩니다.
+
+로컬 테스트 순서:
+
+```powershell
+cd D:\01_DEV\kasender-auth-api
+npm run dev
+```
+
+그 다음 KakaoCampaignSender를 실행합니다.
+
+```powershell
+cd D:\01_DEV\KakaoCampaignSender
+poetry run python .\src\app\main.py
+```
+
+개발 중 특정 provider id를 강제로 테스트하려면 `.env`에 아래 값을 넣을 수 있습니다. 운영 빌드에서는 사용하지 않습니다.
+
+```text
+KASENDER_DEV_KAKAO_PROVIDER_USER_ID=kakao_10001
+```
+
+로그인 시도 결과는 Project Portal Admin의 `Membership / Login Logs` 또는 `GET /admin/login-logs`에서 확인합니다.
+
+## Auth API 로그인 실패 메시지
+
+카카오 OAuth 성공 후 `kasender-auth-api`의 `/auth/kakao/login` 판정 결과를 반드시 확인합니다.
+
+실패 메시지는 `src/backend/domains/auth/auth_messages.py`에서 중앙 관리합니다. `AuthError`는 화면 제목과 본문을 분리해서 전달하며, 로그에는 토큰 없이 `result`, `reason`, `user_uuid`, `project_code`, `device_id`, `app_version`만 기록합니다.
+
+대표 결과:
+
+- `SIGNUP_REQUIRED`: 등록되지 않은 계정
+- `DENIED / USER_PENDING`: 승인 대기
+- `DENIED / USER_BLOCKED`: 계정 차단
+- `DENIED / USER_EXPIRED`: 계정 만료
+- `DENIED / PROJECT_NOT_ALLOWED`: 카센더 권한 없음
+- `DENIED / PROJECT_EXPIRED`: 카센더 권한 만료

@@ -10,6 +10,9 @@ class ContactMem:
     phone: str
     agency: str
     branch: str
+    last_assigned_code: str | None = None
+    last_assigned_label: str | None = None
+    last_assigned_at: str | None = None
 
 
 class ContactsStore:
@@ -39,6 +42,9 @@ class ContactsStore:
                 phone=str(getattr(r, "phone", "") or ""),
                 agency=str(getattr(r, "agency", "") or ""),
                 branch=str(getattr(r, "branch", "") or ""),
+                last_assigned_code=getattr(r, "last_assigned_code", None),
+                last_assigned_label=getattr(r, "last_assigned_label", None),
+                last_assigned_at=getattr(r, "last_assigned_at", None),
             )
         self._loaded = True
 
@@ -50,6 +56,9 @@ class ContactsStore:
             phone=(m.phone or ""),
             agency=(m.agency or ""),
             branch=(m.branch or ""),
+            last_assigned_code=getattr(m, "last_assigned_code", None),
+            last_assigned_label=getattr(m, "last_assigned_label", None),
+            last_assigned_at=getattr(m, "last_assigned_at", None),
         )
         self._loaded = True
 
@@ -79,7 +88,10 @@ class ContactsStore:
         name: str,
         phone: str,
         agency: str,
-        branch: str
+        branch: str,
+        last_assigned_code: str | None = None,
+        last_assigned_label: str | None = None,
+        last_assigned_at: str | None = None,
     ) -> None:
         cid = int(contact_id)
         cur = self._by_id.get(cid)
@@ -91,15 +103,30 @@ class ContactsStore:
                 phone=phone or "",
                 agency=agency or "",
                 branch=branch or "",
+                last_assigned_code=last_assigned_code,
+                last_assigned_label=last_assigned_label,
+                last_assigned_at=last_assigned_at,
             )
             self._loaded = True
             return
 
+        existing_last_assigned_code = cur.last_assigned_code
+        existing_last_assigned_label = cur.last_assigned_label
+        existing_last_assigned_at = cur.last_assigned_at
         cur.emp_id = emp_id or ""
         cur.name = name or ""
         cur.phone = phone or ""
         cur.agency = agency or ""
         cur.branch = branch or ""
+        cur.last_assigned_code = (
+            last_assigned_code if last_assigned_code is not None else existing_last_assigned_code
+        )
+        cur.last_assigned_label = (
+            last_assigned_label if last_assigned_label is not None else existing_last_assigned_label
+        )
+        cur.last_assigned_at = (
+            last_assigned_at if last_assigned_at is not None else existing_last_assigned_at
+        )
 
     def search(self, keyword: str) -> List[ContactMem]:
         kw = (keyword or "").strip().lower()

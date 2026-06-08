@@ -4,6 +4,156 @@ from __future__ import annotations
 import sqlite3
 
 
+CONTACTS_COLUMNS: dict[str, str] = {
+    "search_name": "TEXT",
+    "title": "TEXT",
+    "honorific": "TEXT",
+    "nickname": "TEXT",
+    "company": "TEXT",
+    "department": "TEXT",
+    "team": "TEXT",
+    "position": "TEXT",
+    "birth_date": "TEXT",
+    "birth_calendar_type": "TEXT",
+    "birth_memo": "TEXT",
+    "gender": "TEXT",
+    "customer_type": "TEXT",
+    "customer_status": "TEXT",
+    "lead_status": "TEXT",
+    "priority": "TEXT",
+    "interest_products": "TEXT",
+    "contract_status": "TEXT",
+    "policy_memo": "TEXT",
+    "renewal_date": "TEXT",
+    "last_contacted_at": "TEXT",
+    "next_contact_at": "TEXT",
+    "followup_memo": "TEXT",
+    "do_not_send": "INTEGER NOT NULL DEFAULT 0",
+    "is_active": "INTEGER NOT NULL DEFAULT 1",
+    "is_favorite": "INTEGER NOT NULL DEFAULT 0",
+    "last_sent_at": "TEXT",
+    "last_send_status": "TEXT",
+    "last_campaign_name": "TEXT",
+    "send_count": "INTEGER NOT NULL DEFAULT 0",
+    "fail_count": "INTEGER NOT NULL DEFAULT 0",
+    "kakao_room_type": "TEXT",
+    "kakao_room_memo": "TEXT",
+    "tags": "TEXT",
+    "memo2": "TEXT",
+    "custom_field_1": "TEXT",
+    "custom_field_2": "TEXT",
+    "custom_field_3": "TEXT",
+    "custom_field_4": "TEXT",
+    "custom_field_5": "TEXT",
+    "extra_json": "TEXT",
+    "last_assigned_code": "TEXT",
+    "last_assigned_label": "TEXT",
+    "last_assigned_at": "TEXT",
+    "source": "TEXT",
+    "external_id": "TEXT",
+    "import_batch_id": "TEXT",
+    "created_by": "TEXT",
+    "updated_by": "TEXT",
+    "registered_at": "TEXT",
+    "status_changed_at": "TEXT",
+    "updated_at": "TEXT",
+}
+
+
+def ensure_contacts_schema(conn: sqlite3.Connection) -> None:
+    """
+    contacts CRM extension migration.
+
+    This function is intentionally idempotent. It runs on app startup and
+    repository init so an installed update can safely migrate an existing DB
+    before the next screen or send workflow touches the new fields.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS contacts
+        (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            emp_id TEXT NOT NULL,
+            name TEXT NOT NULL,
+            phone TEXT,
+            agency TEXT,
+            branch TEXT,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        """
+    )
+
+    cols = _table_columns(conn, "contacts")
+    for name, ddl in CONTACTS_COLUMNS.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE contacts ADD COLUMN {name} {ddl};")
+            cols.add(name)
+
+    conn.execute(
+        """
+        UPDATE contacts
+        SET search_name = name
+        WHERE search_name IS NULL
+           OR TRIM(search_name) = '';
+        """
+    )
+    conn.execute(
+        """
+        UPDATE contacts
+        SET registered_at = COALESCE(NULLIF(TRIM(registered_at), ''), NULLIF(TRIM(created_at), ''), datetime('now','localtime'))
+        WHERE registered_at IS NULL
+           OR TRIM(registered_at) = '';
+        """
+    )
+    conn.execute(
+        """
+        UPDATE contacts
+        SET status_changed_at = COALESCE(NULLIF(TRIM(status_changed_at), ''), NULLIF(TRIM(updated_at), ''), datetime('now','localtime'))
+        WHERE status_changed_at IS NULL
+           OR TRIM(status_changed_at) = '';
+        """
+    )
+    conn.execute(
+        """
+        UPDATE contacts
+        SET updated_at = COALESCE(NULLIF(TRIM(updated_at), ''), NULLIF(TRIM(created_at), ''), datetime('now','localtime'))
+        WHERE updated_at IS NULL
+           OR TRIM(updated_at) = '';
+        """
+    )
+
+    for index_name, column in {
+        "idx_contacts_search_name": "search_name",
+        "idx_contacts_title": "title",
+        "idx_contacts_company": "company",
+        "idx_contacts_department": "department",
+        "idx_contacts_team": "team",
+        "idx_contacts_branch": "branch",
+        "idx_contacts_birth_date": "birth_date",
+        "idx_contacts_customer_status": "customer_status",
+        "idx_contacts_lead_status": "lead_status",
+        "idx_contacts_next_contact_at": "next_contact_at",
+        "idx_contacts_registered_at": "registered_at",
+        "idx_contacts_status_changed_at": "status_changed_at",
+        "idx_contacts_do_not_send": "do_not_send",
+        "idx_contacts_is_active": "is_active",
+        "idx_contacts_tags": "tags",
+        "idx_contacts_external_id": "external_id",
+        "idx_contacts_last_assigned_at": "last_assigned_at",
+    }.items():
+        conn.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON contacts({column});")
+
+    # Future design note:
+    # Per-recipient assigned message values (codes/coupons/links) should live in
+    # dedicated tables such as message_value_pools and message_value_items. These
+    # last_assigned_* columns are only the latest summary on the contact row.
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    cur = conn.execute(f"PRAGMA table_info({table});")
+    return {str(row[1]) for row in cur.fetchall()}
+
+
 def ensure_send_logs_schema(conn: sqlite3.Connection) -> None:
     """
     send_logs 테이블/인덱스 생성 공통화

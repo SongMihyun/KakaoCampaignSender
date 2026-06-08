@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
 from datetime import timedelta
 from urllib.parse import urlencode
@@ -32,13 +30,14 @@ class KakaoAuthProvider(AuthProvider):
         verifier = new_code_verifier()
         state = new_state()
         log.info(
-            "KAKAO_OAUTH_AUTHORIZE CLIENT_ID=%s REDIRECT_URI=%s AUTH_URL=%s CODE_VERIFIER_SHA256=%s CLIENT_SECRET_CONFIGURED=%s",
-            self.config.kakao_client_id,
+            "KAKAO_OAUTH_AUTHORIZE client_id=%s redirect_uri=%s auth_url=%s prompt=%s client_secret_configured=%s",
+            _mask(self.config.kakao_client_id),
             self.config.kakao_redirect_uri,
             self.AUTH_URL,
-            _sha256_hex(verifier),
+            self.config.kakao_login_prompt or "",
             bool(self.config.kakao_client_secret),
         )
+
         server = LocalCallbackServer(self.config.kakao_redirect_uri)
         server.start()
         try:
@@ -64,7 +63,7 @@ class KakaoAuthProvider(AuthProvider):
         user = self._fetch_user(access_token)
         provider_user_id = str(user.get("id") or "")
         if not provider_user_id:
-            raise RuntimeError("카카오 사용자 식별 정보를 확인할 수 없습니다.")
+            raise RuntimeError("카카오 사용자 정보를 확인할 수 없습니다.")
 
         account = user.get("kakao_account") if isinstance(user.get("kakao_account"), dict) else {}
         profile = account.get("profile") if isinstance(account.get("profile"), dict) else {}
@@ -111,22 +110,36 @@ class KakaoAuthProvider(AuthProvider):
         }
         if self.config.kakao_client_secret:
             payload["client_secret"] = self.config.kakao_client_secret
-        log.info("KAKAO_OAUTH CLIENT_ID=%s", self.config.kakao_client_id)
-        log.info("KAKAO_OAUTH REDIRECT_URI=%s", self.config.kakao_redirect_uri)
-        log.info("KAKAO_OAUTH TOKEN_URL=%s", self.TOKEN_URL)
+
         log.info(
-            "KAKAO_OAUTH TOKEN_PAYLOAD=%s",
-            json.dumps(_safe_payload_for_log(payload), ensure_ascii=False),
+            "KAKAO_OAUTH TOKEN_REQUEST grant_type=authorization_code client_id=%s redirect_uri=%s token_url=%s code_present=%s code_verifier_present=%s client_secret_configured=%s",
+            _mask(self.config.kakao_client_id),
+            self.config.kakao_redirect_uri,
+            self.TOKEN_URL,
+            bool(code),
+            bool(verifier),
+            bool(self.config.kakao_client_secret),
         )
         resp = requests.post(
             self.TOKEN_URL,
             data=payload,
             timeout=15,
         )
-        log.info("KAKAO_OAUTH TOKEN_RESPONSE status=%s body=%s", resp.status_code, resp.text)
+        try:
+            token_body = resp.json()
+        except ValueError:
+            token_body = {}
+        log.info(
+            "KAKAO_OAUTH TOKEN_RESPONSE status=%s token_received=%s refresh_token_received=%s id_token_received=%s",
+            resp.status_code,
+            bool(token_body.get("access_token")),
+            bool(token_body.get("refresh_token")),
+            bool(token_body.get("id_token")),
+        )
         if resp.status_code >= 400:
-            raise RuntimeError(f"카카오 토큰 요청에 실패했습니다. ({resp.status_code})\n{resp.text}")
-        return resp.json()
+            log.warning("KAKAO_OAUTH TOKEN_ERROR status=%s body=%s", resp.status_code, _safe_error_body(resp.text))
+            raise RuntimeError(f"카카오 토큰 요청에 실패했습니다. ({resp.status_code})")
+        return token_body
 
     def _fetch_user(self, access_token: str) -> dict:
         resp = requests.get(
@@ -147,12 +160,15 @@ def _friendly_oauth_error(error: str, description: str | None) -> str:
     return "카카오 인증에 실패했습니다."
 
 
-def _sha256_hex(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+def _mask(value: str) -> str:
+    clean = str(value or "")
+    if len(clean) <= 8:
+        return "***"
+    return f"{clean[:4]}***{clean[-4:]}"
 
 
-def _safe_payload_for_log(payload: dict[str, str]) -> dict[str, str]:
-    data = dict(payload)
-    if "client_secret" in data:
-        data["client_secret"] = "<configured>"
-    return data
+def _safe_error_body(text: str, limit: int = 500) -> str:
+    clean = (text or "").replace("\r", " ").replace("\n", " ").strip()
+    for key in ("access_token", "refresh_token", "id_token", "code", "code_verifier", "client_secret"):
+        clean = clean.replace(key, f"{key[:2]}***")
+    return clean[:limit]

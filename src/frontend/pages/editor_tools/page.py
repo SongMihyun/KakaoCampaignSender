@@ -23,6 +23,7 @@ from backend.integrations.excel.tabular_editor_io import (
     suggest_text_save_path,
     suggest_word_save_path,
 )
+from backend.integrations.vcard_contacts import is_supported_vcard_file, load_vcard_contacts
 
 try:
     from backend.integrations.excel.workbook_editor_io import (
@@ -38,6 +39,7 @@ except ImportError:
 from backend.integrations.windows.win_file_picker import Filter, pick_open_file
 from frontend.pages.contacts.excel_editor_dialog import ExcelEditorDialog
 from frontend.pages.contacts.tabular_editor_dialog import TextEditorDialog, WordEditorDialog
+from frontend.pages.editor_tools.vcard_editor_dialog import VCardEditorDialog
 from frontend.theme import style_button
 from frontend.utils.worker import run_bg
 
@@ -74,9 +76,11 @@ class EditorToolsPage(QWidget):
         self.btn_excel = style_button(QPushButton("엑셀 편집"), "primary")
         self.btn_word = style_button(QPushButton("워드 편집"), "secondary")
         self.btn_text = style_button(QPushButton("메모장 편집"), "secondary")
+        self.btn_vcard = style_button(QPushButton("VCF 연락처 편집"), "accent")
         row.addWidget(self.btn_excel)
         row.addWidget(self.btn_word)
         row.addWidget(self.btn_text)
+        row.addWidget(self.btn_vcard)
         row.addStretch(1)
 
         note = QLabel("대상자 파일을 가져오기 전에 내용을 확인하거나, 형식을 다듬을 때 사용하세요.")
@@ -92,10 +96,11 @@ class EditorToolsPage(QWidget):
         self.btn_excel.clicked.connect(self._open_excel_editor)
         self.btn_word.clicked.connect(self._open_word_editor)
         self.btn_text.clicked.connect(self._open_text_editor)
+        self.btn_vcard.clicked.connect(self._open_vcard_editor)
 
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
-        for button in [self.btn_excel, self.btn_word, self.btn_text]:
+        for button in [self.btn_excel, self.btn_word, self.btn_text, self.btn_vcard]:
             button.setEnabled(not busy)
 
     def _show_bg_error(self, tb: str) -> None:
@@ -188,6 +193,35 @@ class EditorToolsPage(QWidget):
             self._set_busy(False)
             self._on_status(f"메모장 편집기 열기 완료: {Path(path).name}")
             dlg = TextEditorDialog(grid, save_workbook_grid_to_text, suggest_text_save_path, parent=self)
+            dlg.exec()
+
+        run_bg(load_job, on_done=load_done, on_error=self._show_bg_error)
+
+    def _open_vcard_editor(self) -> None:
+        try:
+            path = pick_open_file(
+                title="VCF 연락처 파일 선택",
+                filters=[Filter("vCard Files", "*.vcf;*.vcard"), Filter("All Files", "*.*")],
+                default_ext="vcf",
+            )
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"파일 선택기 실행 실패:\n{e}")
+            return
+        if not path:
+            return
+        if not is_supported_vcard_file(path):
+            QMessageBox.warning(self, "지원 형식 아님", "지원 확장자: .vcf, .vcard")
+            return
+        self._set_busy(True)
+        self._on_status("VCF 연락처 읽는 중...")
+
+        def load_job():
+            return load_vcard_contacts(path)
+
+        def load_done(contacts):
+            self._set_busy(False)
+            self._on_status(f"VCF 연락처 편집기 열기 완료: {Path(path).name} ({len(contacts)}건)")
+            dlg = VCardEditorDialog(path=path, contacts=contacts, parent=self)
             dlg.exec()
 
         run_bg(load_job, on_done=load_done, on_error=self._show_bg_error)

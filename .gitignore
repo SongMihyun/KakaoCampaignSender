@@ -57,6 +57,7 @@ Thumbs.db
 *.sqlite3
 
 # Debug / local artifacts
+.env
 kakao_not_found_recipients.csv
 *.patch
 pending_installer.json

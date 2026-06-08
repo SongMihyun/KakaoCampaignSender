@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from backend.database.schema import ensure_contacts_schema
+
 
 @dataclass
 class ContactRow:
@@ -16,6 +18,9 @@ class ContactRow:
     phone: str | None
     agency: str | None
     branch: str | None
+    last_assigned_code: str | None = None
+    last_assigned_label: str | None = None
+    last_assigned_at: str | None = None
 
 
 class ContactsRepo:
@@ -31,20 +36,7 @@ class ContactsRepo:
     def _init_db(self) -> None:
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         with self._conn() as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS contacts
-                (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    emp_id TEXT NOT NULL,
-                    name TEXT NOT NULL,
-                    phone TEXT,
-                    agency TEXT,
-                    branch TEXT,
-                    created_at TEXT DEFAULT (datetime('now','localtime'))
-                );
-                """
-            )
+            ensure_contacts_schema(conn)
 
             # ✅ 정규화: emp_id는 TRIM만(빈값 삭제/NULL 변환 금지: NOT NULL 컬럼이라)
             conn.execute("UPDATE contacts SET emp_id = TRIM(emp_id);")
@@ -130,12 +122,26 @@ class ContactsRepo:
             phone=(str(r["phone"]) if r["phone"] is not None else None),
             agency=(str(r["agency"]) if r["agency"] is not None else None),
             branch=(str(r["branch"]) if r["branch"] is not None else None),
+            last_assigned_code=(
+                str(r["last_assigned_code"]) if r["last_assigned_code"] is not None else None
+            ),
+            last_assigned_label=(
+                str(r["last_assigned_label"]) if r["last_assigned_label"] is not None else None
+            ),
+            last_assigned_at=(
+                str(r["last_assigned_at"]) if r["last_assigned_at"] is not None else None
+            ),
         )
 
     def list_all(self) -> list[ContactRow]:
         with self._conn() as conn:
             cur = conn.execute(
-                "SELECT id, emp_id, name, phone, agency, branch FROM contacts ORDER BY id DESC"
+                """
+                SELECT id, emp_id, name, phone, agency, branch,
+                       last_assigned_code, last_assigned_label, last_assigned_at
+                FROM contacts
+                ORDER BY id DESC
+                """
             )
             rows = cur.fetchall()
         return [self._row_to_contact(r) for r in rows]
@@ -148,7 +154,8 @@ class ContactsRepo:
             if not q:
                 cur = conn.execute(
                     """
-                    SELECT id, emp_id, name, phone, agency, branch
+                    SELECT id, emp_id, name, phone, agency, branch,
+                           last_assigned_code, last_assigned_label, last_assigned_at
                     FROM contacts
                     ORDER BY id ASC;
                     """
@@ -156,7 +163,8 @@ class ContactsRepo:
             else:
                 cur = conn.execute(
                     """
-                    SELECT id, emp_id, name, phone, agency, branch
+                    SELECT id, emp_id, name, phone, agency, branch,
+                           last_assigned_code, last_assigned_label, last_assigned_at
                     FROM contacts
                     WHERE COALESCE(emp_id,'') LIKE ?
                        OR name LIKE ?
@@ -289,7 +297,8 @@ class ContactsRepo:
         with self._conn() as conn:
             r = conn.execute(
                 """
-                SELECT id, emp_id, name, phone, agency, branch
+                SELECT id, emp_id, name, phone, agency, branch,
+                       last_assigned_code, last_assigned_label, last_assigned_at
                 FROM contacts
                 WHERE id = ? LIMIT 1;
                 """,
@@ -308,7 +317,8 @@ class ContactsRepo:
         with self._conn() as conn:
             r = conn.execute(
                 """
-                SELECT id, emp_id, name, phone, agency, branch
+                SELECT id, emp_id, name, phone, agency, branch,
+                       last_assigned_code, last_assigned_label, last_assigned_at
                 FROM contacts
                 WHERE TRIM(emp_id) = TRIM(?)
                   AND TRIM(emp_id) <> ''

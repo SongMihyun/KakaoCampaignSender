@@ -206,6 +206,15 @@ class KakaoSenderDriver:
     ) -> None:
         raise NotImplementedError
 
+    def send_one_target(
+            self,
+            name: str,
+            campaign_items: list[Any],
+            *,
+            send_mode: str = "clipboard",
+    ):
+        raise NotImplementedError
+
     def stop(self) -> None:
         raise NotImplementedError
 
@@ -214,6 +223,16 @@ class KakaoSenderDriver:
 class KakaoTarget:
     title: str
     handle: int
+
+
+@dataclass
+class TargetSendResult:
+    status: str
+    reason: str = ""
+    step: str = ""
+    chat_hwnd: int = 0
+    ok: bool = False
+    paused: bool = False
 
 
 class StopNow(RuntimeError):
@@ -1951,6 +1970,9 @@ class KakaoPcDriver(KakaoSenderDriver):
                 self._log_recipient_status(self._active_recipient, "CLOSE_FORCED_CONFIRM")
                 self._trace("CLOSE_CHAT:forced_confirm", recipient=self._active_recipient)
 
+            except UploadPipelineStalled:
+                raise
+
             except StopNow:
                 raise
             except Exception as e:
@@ -2365,6 +2387,223 @@ class KakaoPcDriver(KakaoSenderDriver):
     # ----------------------------
     # send APIs
     # ----------------------------
+    def _prepare_campaign_item_steps(self, campaign_items: list[Any]) -> tuple[list[tuple[bytes, str]], list[str]]:
+        images: list[tuple[bytes, str]] = []
+        texts: list[str] = []
+
+        for item in list(campaign_items or []):
+            item_type = str(getattr(item, "item_type", "") or "").upper().strip()
+            if item_type == "TEXT":
+                text = str(getattr(item, "text", "") or "").strip()
+                if text:
+                    texts.append(text)
+                continue
+
+            image_bytes = getattr(item, "image_bytes", b"") or b""
+            image_path = str(getattr(item, "image_path", "") or "").strip()
+            try:
+                image_bytes = bytes(image_bytes)
+            except Exception:
+                pass
+            if not image_bytes and image_path and not os.path.exists(image_path):
+                raise FileNotFoundError(f"IMAGE_FILE_NOT_FOUND: {image_path}")
+            if image_bytes or image_path:
+                images.append((image_bytes, image_path))
+
+        return images, texts
+
+    def _verify_open_chat_ready(self) -> bool:
+        self._check_stop()
+        if not (self._chat_hwnd and self._chat_hwnd != self._hwnd and w32.is_window(int(self._chat_hwnd))):
+            return False
+        try:
+            self._ensure_foreground_chat()
+        except Exception:
+            return False
+        return bool(self._focus_chat_input_best_effort(fast_only=False))
+
+    def _send_image_step(self, images: list[tuple[bytes, str]], *, send_mode: str) -> bool:
+        self._check_stop()
+        if not images:
+            return True
+
+        send_mode = (send_mode or "clipboard").strip().lower()
+        if send_mode == "multi_attach":
+            valid_paths = [path for (_data, path) in images if path and os.path.exists(path)]
+            if len(valid_paths) == len(images):
+                return bool(self.send_files_via_ctrl_t_paths(valid_paths))
+            valid_bytes = [data for (data, _path) in images if data]
+            return bool(self.send_images_via_ctrl_t(valid_bytes))
+
+        for idx, (image_bytes, _image_path) in enumerate(images, start=1):
+            self._check_stop()
+            if not image_bytes:
+                return False
+            if not self._paste_image_and_send(image_bytes):
+                self._trace("STATE_SEND:image_fail", index=idx)
+                return False
+            self._sleep(max(0.02, self._send_interval))
+        return True
+
+    def _send_text_step(self, texts: list[str]) -> bool:
+        self._check_stop()
+        for idx, text in enumerate(texts, start=1):
+            self._check_stop()
+            text = (text or "").strip()
+            if not text:
+                continue
+            if not self._paste_text_and_send(text):
+                self._trace("STATE_SEND:text_fail", index=idx)
+                return False
+            self._sleep(max(0.02, self._send_interval))
+        return True
+
+    def _cleanup_after_target_state(self) -> None:
+        try:
+            from kakao_win32.win32_core import close_open_dialog_if_any
+
+            close_open_dialog_if_any()
+        except Exception:
+            pass
+        try:
+            self._ensure_foreground_main_fast()
+        except Exception:
+            pass
+        self._chat_in_main = False
+        self._chat_hwnd = 0
+        self._mode = "MAIN"
+        self._search_ready = True
+
+    def send_one_target(
+            self,
+            name: str,
+            campaign_items: list[Any],
+            *,
+            send_mode: str = "clipboard",
+    ) -> TargetSendResult:
+        self._check_stop()
+        self._lock_kakao_target_once()
+
+        name = (name or "").strip()
+        if not name:
+            return TargetSendResult(
+                status="FAIL",
+                reason="EMPTY_NAME",
+                step="validate_recipient",
+                ok=False,
+            )
+
+        send_mode = (send_mode or "clipboard").strip().lower()
+        if send_mode not in ("clipboard", "multi_attach"):
+            send_mode = "clipboard"
+
+        previous_open_in_main = bool(self._open_in_main)
+        self._open_in_main = False
+        opened = False
+
+        self._trace("STATE_SEND:begin", name=name, send_mode=send_mode)
+
+        try:
+            images, texts = self._prepare_campaign_item_steps(list(campaign_items or []))
+            if not images and not texts:
+                return TargetSendResult(
+                    status="FAIL",
+                    reason="CAMPAIGN_EMPTY",
+                    step="validate_campaign",
+                    ok=False,
+                )
+
+            if not self._open_chat_by_name(name):
+                return TargetSendResult(
+                    status="NOT_FOUND",
+                    reason="SEARCH_NOT_FOUND",
+                    step="search_chat",
+                    chat_hwnd=0,
+                    ok=False,
+                )
+
+            opened = True
+            chat_hwnd = int(self._chat_hwnd or 0)
+
+            if not self._verify_open_chat_ready():
+                return TargetSendResult(
+                    status="FAIL",
+                    reason="OPEN_CHAT_FAIL",
+                    step="open_chat",
+                    chat_hwnd=chat_hwnd,
+                    ok=False,
+                )
+
+            if not self._send_image_step(images, send_mode=send_mode):
+                return TargetSendResult(
+                    status="FAIL",
+                    reason="IMAGE_ATTACH_FAILED",
+                    step="attach_image",
+                    chat_hwnd=chat_hwnd,
+                    ok=False,
+                )
+
+            if not self._send_text_step(texts):
+                return TargetSendResult(
+                    status="FAIL",
+                    reason="SEND_ACTION_FAILED",
+                    step="send_text",
+                    chat_hwnd=chat_hwnd,
+                    ok=False,
+                )
+
+            return TargetSendResult(
+                status="SUCCESS",
+                reason="",
+                step="result",
+                chat_hwnd=chat_hwnd,
+                ok=True,
+            )
+
+        except FileNotFoundError as e:
+            return TargetSendResult(
+                status="FAIL",
+                reason=str(e) or "IMAGE_FILE_NOT_FOUND",
+                step="load_image",
+                chat_hwnd=int(self._chat_hwnd or 0),
+                ok=False,
+            )
+        except ChatNotFound as e:
+            return TargetSendResult(
+                status="NOT_FOUND",
+                reason=str(e) or "SEARCH_NOT_FOUND",
+                step="search_chat",
+                chat_hwnd=0,
+                ok=False,
+            )
+        except UploadPipelineStalled:
+            raise
+        except StopNow:
+            raise
+        except Exception as e:
+            return TargetSendResult(
+                status="FAIL",
+                reason=str(e) or "UNKNOWN_ERROR",
+                step="unknown",
+                chat_hwnd=int(self._chat_hwnd or 0),
+                ok=False,
+            )
+        finally:
+            try:
+                if opened:
+                    self._close_chat()
+            except UploadPipelineStalled:
+                self._trace("STATE_SEND:close_paused", chat_hwnd=int(self._chat_hwnd or 0))
+                raise
+            except StopNow:
+                raise
+            except Exception as e:
+                self._trace("STATE_SEND:close_fail", err=str(e), chat_hwnd=int(self._chat_hwnd or 0))
+                raise UploadPipelineStalled(f"CHAT_CLOSE_TIMEOUT: {e}") from e
+            finally:
+                self._cleanup_after_target_state()
+                self._open_in_main = previous_open_in_main
+
     def send_campaign_items(
             self,
             name: str,
@@ -3093,6 +3332,7 @@ __all__ = [
     "KakaoTarget",
     "StopNow",
     "SpeedProfile",
+    "TargetSendResult",
     "TransferAbortedByClose",
     "CloseForcedByConfirm",
     "UploadPipelineStalled",
