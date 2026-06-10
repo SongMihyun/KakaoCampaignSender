@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -36,12 +36,6 @@ class AuthSession:
     refresh_token: str | None
     expires_at: datetime
     login_at: datetime
-    user_uuid: str | None = None
-    project_code: str | None = None
-    auth_result: str | None = None
-    auth_reason: str | None = None
-    device_id: str | None = None
-    app_version: str | None = None
 
     def is_expired(self, *, now: datetime | None = None, skew_seconds: int = 60) -> bool:
         now = now or utc_now()
@@ -62,12 +56,6 @@ class AuthSession:
             "refresh_token": self.refresh_token,
             "expires_at": dt_to_str(self.expires_at),
             "login_at": dt_to_str(self.login_at),
-            "user_uuid": self.user_uuid,
-            "project_code": self.project_code,
-            "auth_result": self.auth_result,
-            "auth_reason": self.auth_reason,
-            "device_id": self.device_id,
-            "app_version": self.app_version,
         }
 
     @classmethod
@@ -85,10 +73,4 @@ class AuthSession:
             refresh_token=data.get("refresh_token") or None,
             expires_at=expires_at,
             login_at=login_at,
-            user_uuid=data.get("user_uuid") or None,
-            project_code=data.get("project_code") or None,
-            auth_result=data.get("auth_result") or None,
-            auth_reason=data.get("auth_reason") or None,
-            device_id=data.get("device_id") or None,
-            app_version=data.get("app_version") or None,
         )

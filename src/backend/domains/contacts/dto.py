@@ -9,9 +9,6 @@ class ContactCreateDTO:
     phone: str = ""
     agency: str = ""
     branch: str = ""
-    last_assigned_code: str | None = None
-    last_assigned_label: str | None = None
-    last_assigned_at: str | None = None
 
 
 @dataclass(slots=True)
@@ -22,6 +19,3 @@ class ContactUpdateDTO:
     phone: str = ""
     agency: str = ""
     branch: str = ""
-    last_assigned_code: str | None = None
-    last_assigned_label: str | None = None
-    last_assigned_at: str | None = None

@@ -361,10 +361,7 @@ class ContactsPage(QWidget):
                 name=m.name,
                 phone=m.phone or "",
                 agency=m.agency or "",
-                branch=m.branch or "",
-                last_assigned_code=getattr(m, "last_assigned_code", None),
-                last_assigned_label=getattr(m, "last_assigned_label", None),
-                last_assigned_at=getattr(m, "last_assigned_at", None),
+                branch=m.branch or ""
             )
             for m in rows
         ]

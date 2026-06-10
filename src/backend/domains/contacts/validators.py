@@ -20,9 +20,6 @@ def normalize_create(dto: ContactCreateDTO) -> ContactCreateDTO:
         phone=normalize_optional(dto.phone),
         agency=normalize_optional(dto.agency),
         branch=normalize_optional(dto.branch),
-        last_assigned_code=dto.last_assigned_code,
-        last_assigned_label=dto.last_assigned_label,
-        last_assigned_at=dto.last_assigned_at,
     )
 
 
@@ -37,7 +34,4 @@ def normalize_update(dto: ContactUpdateDTO) -> ContactUpdateDTO:
         phone=normalize_optional(dto.phone),
         agency=normalize_optional(dto.agency),
         branch=normalize_optional(dto.branch),
-        last_assigned_code=dto.last_assigned_code,
-        last_assigned_label=dto.last_assigned_label,
-        last_assigned_at=dto.last_assigned_at,
     )

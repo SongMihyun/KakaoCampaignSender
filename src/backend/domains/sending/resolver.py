@@ -33,9 +33,6 @@ def build_recipients_and_snapshot(contacts_mem) -> tuple[list[Recipient], list[d
         phone = str(getattr(m, "phone", "") or "").strip()
         agency = str(getattr(m, "agency", "") or "").strip()
         branch = str(getattr(m, "branch", "") or "").strip()
-        last_assigned_code = getattr(m, "last_assigned_code", None)
-        last_assigned_label = getattr(m, "last_assigned_label", None)
-        last_assigned_at = getattr(m, "last_assigned_at", None)
 
         recipients.append(
             Recipient(
@@ -45,9 +42,6 @@ def build_recipients_and_snapshot(contacts_mem) -> tuple[list[Recipient], list[d
                 phone=phone,
                 agency=agency,
                 branch=branch,
-                last_assigned_code=last_assigned_code,
-                last_assigned_label=last_assigned_label,
-                last_assigned_at=last_assigned_at,
             )
         )
 
@@ -59,15 +53,6 @@ def build_recipients_and_snapshot(contacts_mem) -> tuple[list[Recipient], list[d
                 "phone": phone,
                 "agency": agency,
                 "branch": branch,
-                "last_assigned_code": last_assigned_code,
-                "last_assigned_label": last_assigned_label,
-                "last_assigned_at": last_assigned_at,
-                # TODO: When per-recipient message values are implemented, fill these
-                # from message_value_pools/message_value_items assignment results.
-                "assigned_value": None,
-                "assigned_value_label": None,
-                "assigned_value_pool_id": None,
-                "assigned_value_item_id": None,
             }
         )
 

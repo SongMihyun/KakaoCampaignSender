@@ -50,9 +50,6 @@ class ContactsService:
                     "phone": dto.phone,
                     "agency": dto.agency,
                     "branch": dto.branch,
-                    "last_assigned_code": dto.last_assigned_code,
-                    "last_assigned_label": dto.last_assigned_label,
-                    "last_assigned_at": dto.last_assigned_at,
                 },
             )()
         )
@@ -67,9 +64,6 @@ class ContactsService:
             phone=dto.phone,
             agency=dto.agency,
             branch=dto.branch,
-            last_assigned_code=dto.last_assigned_code,
-            last_assigned_label=dto.last_assigned_label,
-            last_assigned_at=dto.last_assigned_at,
         )
         self.store.update(
             contact_id=dto.row_id,
@@ -102,7 +96,4 @@ class ContactsService:
             phone=str(getattr(row, "phone", "") or ""),
             agency=str(getattr(row, "agency", "") or ""),
             branch=str(getattr(row, "branch", "") or ""),
-            last_assigned_code=getattr(row, "last_assigned_code", None),
-            last_assigned_label=getattr(row, "last_assigned_label", None),
-            last_assigned_at=getattr(row, "last_assigned_at", None),
         )

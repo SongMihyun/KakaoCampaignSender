@@ -13,10 +13,6 @@ DEFAULT_KAKAO_REDIRECT_URI = "http://localhost:8765/auth/kakao/callback"
 DEFAULT_KAKAO_LOGIN_PROMPT = "login"
 DEFAULT_BETA_LOGIN_PASSWORD_SALT = "DjVaJxCA78z7rmmQrvjrpA=="
 DEFAULT_BETA_LOGIN_PASSWORD_HASH = "h2RLhrxXBsG3PPfKc2lj0SZNdU1AKk7PoFPkIM+AvLg="
-DEFAULT_AUTH_API_BASE_URL_LOCAL = "http://127.0.0.1:8787"
-DEFAULT_AUTH_API_BASE_URL_PRODUCTION = "https://auth.kasender.com"
-DEFAULT_AUTH_API_MODE = "production"
-DEFAULT_PROJECT_CODE = "kasender"
 
 
 def _load_dotenv(path: Path) -> dict[str, str]:
@@ -53,13 +49,6 @@ class AuthConfig:
     beta_login_id: str = "test"
     beta_login_password_hash: str = DEFAULT_BETA_LOGIN_PASSWORD_HASH
     beta_login_password_salt: str = DEFAULT_BETA_LOGIN_PASSWORD_SALT
-    auth_api_mode: str = DEFAULT_AUTH_API_MODE
-    auth_api_base_url: str = ""
-    auth_api_base_url_local: str = DEFAULT_AUTH_API_BASE_URL_LOCAL
-    auth_api_base_url_production: str = DEFAULT_AUTH_API_BASE_URL_PRODUCTION
-    project_code: str = DEFAULT_PROJECT_CODE
-    auth_api_timeout_sec: int = 10
-    dev_kakao_provider_user_id: str = ""
 
     @classmethod
     def load(cls) -> "AuthConfig":
@@ -90,22 +79,7 @@ class AuthConfig:
             beta_login_id=get("BETA_LOGIN_ID", "test"),
             beta_login_password_hash=get("BETA_LOGIN_PASSWORD_HASH", DEFAULT_BETA_LOGIN_PASSWORD_HASH),
             beta_login_password_salt=get("BETA_LOGIN_PASSWORD_SALT", DEFAULT_BETA_LOGIN_PASSWORD_SALT),
-            auth_api_mode=get("AUTH_API_MODE", DEFAULT_AUTH_API_MODE).lower(),
-            auth_api_base_url=get("AUTH_API_BASE_URL", ""),
-            auth_api_base_url_local=get("AUTH_API_BASE_URL_LOCAL", DEFAULT_AUTH_API_BASE_URL_LOCAL),
-            auth_api_base_url_production=get("AUTH_API_BASE_URL_PRODUCTION", DEFAULT_AUTH_API_BASE_URL_PRODUCTION),
-            project_code=get("PROJECT_CODE", DEFAULT_PROJECT_CODE),
-            auth_api_timeout_sec=int(get("AUTH_API_TIMEOUT_SEC", "10") or "10"),
-            dev_kakao_provider_user_id=get("AUTH_API_DEV_PROVIDER_USER_ID_OVERRIDE") or get("KASENDER_DEV_KAKAO_PROVIDER_USER_ID"),
         )
-
-    @property
-    def effective_auth_api_base_url(self) -> str:
-        if self.auth_api_base_url:
-            return self.auth_api_base_url
-        if self.auth_api_mode == "production":
-            return self.auth_api_base_url_production
-        return self.auth_api_base_url_local
 
     def validate_for_kakao(self) -> None:
         if not self.kakao_client_id:

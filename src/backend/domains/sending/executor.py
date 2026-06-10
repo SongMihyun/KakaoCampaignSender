@@ -109,8 +109,7 @@ class SendExecutor:
                     result=result,
                 )
                 if stopped_during_main:
-                    if not result.paused:
-                        result.stopped = True
+                    result.stopped = True
                     break
 
                 stopped_during_tail = self._execute_tail_retry(
@@ -121,8 +120,7 @@ class SendExecutor:
                     result=result,
                 )
                 if stopped_during_tail:
-                    if not result.paused:
-                        result.stopped = True
+                    result.stopped = True
                     break
 
                 result.list_done += 1
@@ -202,7 +200,7 @@ class SendExecutor:
                 f"[{list_index}/{total_lists}] {job.title} | {recipient_index}/{total} | {recipient.name}"
             )
 
-            send_outcome = self.send_one_target(
+            send_outcome = self._send_single_recipient(
                 job=job,
                 recipient=recipient,
                 list_index=list_index,
@@ -236,229 +234,7 @@ class SendExecutor:
 
         return tail_retry, False
 
-    def send_one_target(self, *, job, recipient, list_index: int) -> dict:
-        used_attempt = 1
-        last_err: Optional[Exception] = None
-
-        if self._is_stop_requested():
-            self._report_add_recipient_result(
-                list_index=list_index,
-                recipient=recipient,
-                status="STOPPED_BY_USER",
-                reason="USER_STOP",
-                attempt=used_attempt,
-            )
-            return {
-                "ok": False,
-                "stopped": True,
-                "tail_retry_scheduled": False,
-                "attempt": used_attempt,
-                "last_err": None,
-                "count_as_fail": True,
-            }
-
-        raw_name = str(getattr(recipient, "name", "") or "")
-        name = raw_name.strip().replace("\u200b", "").replace("\ufeff", "")
-        if not name:
-            self._status_cb(f"대상자 정보 오류(이름 비어 있음) | {job.title} | emp_id={recipient.emp_id}")
-            self._report_add_recipient_result(
-                list_index=list_index,
-                recipient=recipient,
-                status="FAIL",
-                reason="EMPTY_NAME",
-                attempt=used_attempt,
-            )
-            return {
-                "ok": False,
-                "stopped": False,
-                "tail_retry_scheduled": False,
-                "attempt": used_attempt,
-                "last_err": None,
-            }
-
-        try:
-            state_send = getattr(self._driver, "send_one_target", None)
-            if callable(state_send):
-                driver_result = state_send(
-                    name,
-                    job.campaign_items,
-                    send_mode=str(getattr(job, "send_mode", "clipboard") or "clipboard"),
-                )
-            else:
-                driver_result = self._driver.send_campaign_items(
-                    name,
-                    job.campaign_items,
-                    send_mode=str(getattr(job, "send_mode", "clipboard") or "clipboard"),
-                )
-
-            failure_reason = self._driver_result_failure_reason(driver_result)
-            status = str(getattr(driver_result, "status", "") or "").upper()
-            reason = str(getattr(driver_result, "reason", "") or failure_reason or "")
-            paused = bool(getattr(driver_result, "paused", False)) or status == "PAUSED"
-
-            if paused:
-                self._status_cb(
-                    "파일 업로드가 지연되고 있습니다.\n\n"
-                    "카카오톡을 다시 로그인한 후\n"
-                    "F9를 눌러 발송을 재개해 주세요.\n\n"
-                    "※ 현재 발송은 일시정지 상태입니다."
-                )
-                self._report_add_recipient_result(
-                    list_index=list_index,
-                    recipient=recipient,
-                    status="PAUSED",
-                    reason=reason or "UPLOAD_PIPELINE_STALLED",
-                    attempt=used_attempt,
-                )
-                return {
-                    "ok": False,
-                    "stopped": False,
-                    "paused": True,
-                    "tail_retry_scheduled": False,
-                    "attempt": used_attempt,
-                    "last_err": None,
-                }
-
-            if status == "NOT_FOUND" or "NOT_FOUND" in (reason or "").upper():
-                self._status_cb(f"대화방 없음(NOT_FOUND) | {job.title} | {recipient.name}")
-                self._report_add_recipient_result(
-                    list_index=list_index,
-                    recipient=recipient,
-                    status="NOT_FOUND",
-                    reason=reason or "SEARCH_NOT_FOUND",
-                    attempt=used_attempt,
-                )
-                return {
-                    "ok": False,
-                    "stopped": False,
-                    "tail_retry_scheduled": False,
-                    "attempt": used_attempt,
-                    "last_err": None,
-                }
-
-            if failure_reason or status in {"FAIL", "FAILED"}:
-                self._status_cb(f"발송 실패 | {job.title} | {recipient.name} | {reason or failure_reason}")
-                self._report_add_recipient_result(
-                    list_index=list_index,
-                    recipient=recipient,
-                    status="FAIL",
-                    reason=reason or failure_reason or "SEND_ACTION_FAILED",
-                    attempt=used_attempt,
-                )
-                return {
-                    "ok": False,
-                    "stopped": False,
-                    "tail_retry_scheduled": False,
-                    "attempt": used_attempt,
-                    "last_err": None,
-                }
-
-            self._report_add_recipient_result(
-                list_index=list_index,
-                recipient=recipient,
-                status="SUCCESS",
-                reason="",
-                attempt=used_attempt,
-            )
-            return {
-                "ok": True,
-                "stopped": False,
-                "tail_retry_scheduled": False,
-                "attempt": used_attempt,
-                "last_err": None,
-            }
-
-        except ChatNotFound as e_nf:
-            self._status_cb(f"대화방 없음(NOT_FOUND) | {job.title} | {recipient.name}")
-            self._report_add_recipient_result(
-                list_index=list_index,
-                recipient=recipient,
-                status="NOT_FOUND",
-                reason=str(e_nf) or "CHAT_NOT_FOUND",
-                attempt=used_attempt,
-            )
-            return {
-                "ok": False,
-                "stopped": False,
-                "tail_retry_scheduled": False,
-                "attempt": used_attempt,
-                "last_err": e_nf,
-            }
-
-        except Exception as e:
-            last_err = e
-            if self._StopNow is not None and isinstance(e, self._StopNow):
-                self._report_add_recipient_result(
-                    list_index=list_index,
-                    recipient=recipient,
-                    status="STOPPED_BY_USER",
-                    reason="USER_STOP",
-                    attempt=used_attempt,
-                )
-                return {
-                    "ok": False,
-                    "stopped": True,
-                    "tail_retry_scheduled": False,
-                    "attempt": used_attempt,
-                    "last_err": e,
-                    "count_as_fail": True,
-                }
-
-            if self._UploadPipelineStalled is not None and isinstance(e, self._UploadPipelineStalled):
-                reason = str(e) or "UPLOAD_PIPELINE_STALLED"
-                self._status_cb(
-                    "파일 업로드가 지연되고 있습니다.\n\n"
-                    "카카오톡을 다시 로그인한 후\n"
-                    "F9를 눌러 발송을 재개해 주세요.\n\n"
-                    "※ 현재 발송은 일시정지 상태입니다."
-                )
-                self._report_add_recipient_result(
-                    list_index=list_index,
-                    recipient=recipient,
-                    status="PAUSED",
-                    reason=reason,
-                    attempt=used_attempt,
-                )
-                return {
-                    "ok": False,
-                    "stopped": False,
-                    "paused": True,
-                    "tail_retry_scheduled": False,
-                    "attempt": used_attempt,
-                    "last_err": e,
-                }
-
-            self._status_cb(f"발송 실패 | {job.title} | {recipient.name} | {e}")
-            self._report_add_recipient_result(
-                list_index=list_index,
-                recipient=recipient,
-                status="FAIL",
-                reason=str(e) or "UNKNOWN_ERROR",
-                attempt=used_attempt,
-            )
-            self._maybe_report_error(
-                exc=e,
-                stage="SEND_SINGLE_RECIPIENT_FINAL_FAIL",
-                attempt=used_attempt,
-                job=job,
-                recipient=recipient,
-                extra={
-                    "list_index": list_index,
-                    "send_mode": str(getattr(job, "send_mode", "") or ""),
-                },
-            )
-            return {
-                "ok": False,
-                "stopped": False,
-                "tail_retry_scheduled": False,
-                "attempt": used_attempt,
-                "last_err": last_err,
-            }
-
     def _send_single_recipient(self, *, job, recipient, list_index: int) -> dict:
-        return self.send_one_target(job=job, recipient=recipient, list_index=list_index)
-
-    def _send_single_recipient_legacy(self, *, job, recipient, list_index: int) -> dict:
         last_err: Optional[Exception] = None
         used_attempt = 0
 

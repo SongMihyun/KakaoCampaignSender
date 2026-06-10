@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QMenu,
@@ -485,47 +484,10 @@ class LoginDialog(QDialog):
         try:
             self.session = self.auth_service.login_with_kakao()
         except AuthError as e:
-            if e.result == "SIGNUP_REQUIRED" and e.requires_invite_code:
-                self._complete_signup_with_invite_code(e)
-                return
             self.status.setText("")
-            QMessageBox.warning(self, e.title, _friendly_login_error(e.message))
+            QMessageBox.warning(self, "로그인 실패", _friendly_login_error(str(e)))
             self.btn_kakao.setEnabled(True)
             return
-        self.accept()
-
-    def _complete_signup_with_invite_code(self, error: AuthError) -> None:
-        self.status.setText("")
-        message = (
-            "카센더 베타 초대 코드가 필요합니다.\n"
-            "운영자에게 받은 초대 코드를 입력해 주세요."
-        )
-        invite_code, ok = QInputDialog.getText(
-            self,
-            "베타 초대 코드 입력",
-            f"{message}\n\n예: KS-BETA-XXXX-XXXX",
-            QLineEdit.Normal,
-            "",
-        )
-        if not ok:
-            self.btn_kakao.setEnabled(True)
-            return
-
-        try:
-            self.session = self.auth_service.complete_signup_with_invite_code(
-                invite_code,
-                display_name=error.display_name,
-            )
-        except AuthError as e:
-            QMessageBox.warning(self, e.title, _friendly_login_error(e.message))
-            self.btn_kakao.setEnabled(True)
-            return
-
-        QMessageBox.information(
-            self,
-            "가입 완료",
-            "가입이 승인되었습니다.\n이제 카센더를 사용할 수 있습니다.",
-        )
         self.accept()
 
     def _show_coming_soon(self, name: str) -> None:

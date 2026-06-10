@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from app.paths import contacts_db_path
-from backend.database.schema import ensure_contacts_schema, ensure_send_logs_schema, ensure_scheduled_sends_schema
+from backend.database.schema import ensure_send_logs_schema, ensure_scheduled_sends_schema
 
 
 def _has_column(conn: sqlite3.Connection, table: str, column: str) -> bool:
@@ -56,7 +56,6 @@ def ensure_db_initialized() -> Path:
                     return db_file
 
                 # ✅ send_logs / scheduled_sends 테이블 보장 생성
-                ensure_contacts_schema(conn)
                 ensure_send_logs_schema(conn)
                 ensure_scheduled_sends_schema(conn)
                 conn.commit()
@@ -84,7 +83,6 @@ def ensure_db_initialized() -> Path:
     conn = sqlite3.connect(db_file)
     try:
         # ✅ 최초 생성 시에도 send_logs / scheduled_sends 생성
-        ensure_contacts_schema(conn)
         ensure_send_logs_schema(conn)
         ensure_scheduled_sends_schema(conn)
         conn.commit()
