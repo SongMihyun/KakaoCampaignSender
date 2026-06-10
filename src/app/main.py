@@ -130,13 +130,6 @@ def main() -> None:
     from PySide6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)
-    update_checked_before_auth = False
-
-    try:
-        _prepare_update_with_ui(app, lambda _msg: None)
-        update_checked_before_auth = True
-    except Exception:
-        pass
 
     # 로그인 화면이 스플래시에 가려지지 않도록 먼저 로그인 후 스플래시를 띄운다.
     try:
@@ -149,7 +142,7 @@ def main() -> None:
             session = LoginDialog.run_login(auth_service=auth_service)
         if session is None:
             sys.exit(0)
-        if not auth_service.should_persist_session():
+        if not auth_service.config.persist_session:
             app.aboutToQuit.connect(auth_service.clear_session)
     except Exception:
         logging.getLogger("main").exception("Authentication failed")
@@ -181,8 +174,7 @@ def main() -> None:
     try:
         if splash is not None:
             splash.hide()
-        if not update_checked_before_auth:
-            _prepare_update_with_ui(app, _splash_msg)
+        _prepare_update_with_ui(app, _splash_msg)
     except Exception:
         pass
     finally:
