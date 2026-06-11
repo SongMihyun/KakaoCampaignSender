@@ -149,6 +149,13 @@ def main() -> None:
             session = LoginDialog.run_login(auth_service=auth_service)
         if session is None:
             sys.exit(0)
+        from app.paths import set_active_user_uuid
+        from app.version import __version__
+        from backend.database.legacy_orphan_backup import backup_legacy_db_if_needed
+
+        active_user_id = session.user_uuid or session.provider_user_id
+        set_active_user_uuid(active_user_id)
+        backup_legacy_db_if_needed(app_version=str(__version__ or ""))
         if not auth_service.should_persist_session():
             app.aboutToQuit.connect(auth_service.clear_session)
     except Exception:
@@ -204,7 +211,7 @@ def main() -> None:
     _splash_msg("UI 로딩 중…")
     from frontend.app.main_window import MainWindow
 
-    win = MainWindow()
+    win = MainWindow(session=session)
     win.show()
 
     if splash is not None:

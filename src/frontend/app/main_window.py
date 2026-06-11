@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -34,6 +35,7 @@ from backend.core.support_package import build_support_package
 from backend.core.support_package import delete_support_packages
 from backend.core.support_sender import open_support_chat_url, send_summary_to_operator
 from backend.domains.auth import AuthService
+from backend.domains.auth.models import AuthSession
 from backend.domains.campaigns.repository import CampaignsRepo
 from backend.domains.campaigns.service import CampaignsService
 from backend.domains.contacts.repository import ContactsRepo
@@ -50,6 +52,11 @@ from backend.domains.scheduled_sends.service import ScheduledSendsService
 from backend.domains.sending.job_builder import SendJobBuilder
 from backend.domains.sending.service import SendingService
 from backend.domains.sending.worker import MultiSendWorker
+from backend.database.legacy_orphan_backup import (
+    claim_orphan_backup_for_user,
+    is_user_db_empty,
+    list_unclaimed_orphan_backups,
+)
 from backend.domains.settings_bundle.service import SettingsBundleService
 from backend.stores.contacts_store import ContactsStore
 
@@ -68,8 +75,9 @@ from frontend.pages.sending.page import SendPage
 class MainWindow(QMainWindow):
     TITLES = ["대상자 관리", "발송 그룹", "캠페인 설정", "발송", "로그/리포트"]
 
-    def __init__(self) -> None:
+    def __init__(self, *, session: AuthSession | None = None) -> None:
         super().__init__()
+        self.auth_session = session
 
         self.setWindowTitle(__display_name__)
         self.resize(1180, 760)
@@ -85,6 +93,7 @@ class MainWindow(QMainWindow):
         self.header = Header()
         self.header.export_settings_requested.connect(self.export_settings_bundle)
         self.header.import_settings_requested.connect(self.import_settings_bundle)
+        self.header.import_legacy_backup_requested.connect(self.import_legacy_backup)
         self.header.environment_changed.connect(self.set_pc_environment)
         self.header.open_logs_requested.connect(self.open_logs_folder)
         self.header.open_backups_requested.connect(self.open_backups_folder)
@@ -418,6 +427,87 @@ class MainWindow(QMainWindow):
             QApplication.quit()
         except Exception as e:
             QMessageBox.critical(self, "오류", f"설정 가져오기 예약 실패\n{e}")
+
+    def import_legacy_backup(self) -> None:
+        session = self.auth_session
+        user_uuid = (session.user_uuid if session else None) or (session.provider_user_id if session else None)
+        if not user_uuid:
+            QMessageBox.warning(self, "가져오기 불가", "현재 로그인 계정을 확인할 수 없어 기존 백업을 가져올 수 없습니다.")
+            return
+
+        backups = list_unclaimed_orphan_backups()
+        if not backups:
+            QMessageBox.information(self, "기존 백업 데이터", "가져올 수 있는 기존 카센더 백업 데이터가 없습니다.")
+            return
+
+        selected = backups[0]
+        if len(backups) > 1:
+            labels = [item.label for item in backups]
+            label, ok = QInputDialog.getItem(
+                self,
+                "기존 백업 선택",
+                "가져올 백업을 선택하세요.",
+                labels,
+                0,
+                False,
+            )
+            if not ok:
+                return
+            selected = backups[labels.index(label)]
+
+        db_path = contacts_db_path()
+        if not is_user_db_empty(db_path):
+            QMessageBox.warning(
+                self,
+                "가져오기 불가",
+                "현재 로그인 계정의 데이터가 이미 존재합니다.\n\n"
+                "데이터 덮어쓰기나 병합은 안전 문제로 지원하지 않습니다.",
+            )
+            return
+
+        display_name = ""
+        if session:
+            display_name = session.nickname or session.email or session.provider_user_id or session.provider
+        message = (
+            "기존 카센더 백업 데이터를 현재 로그인 계정으로 가져옵니다.\n\n"
+            "현재 계정:\n"
+            f"{display_name or '-'}\n"
+            f"{user_uuid}\n\n"
+            "주의:\n"
+            "공용 PC에서 다른 사람이 사용하던 데이터일 수 있습니다.\n"
+            "본인의 데이터가 맞을 때만 가져오세요.\n\n"
+            "가져오기 후 백업본은 사용 완료 처리합니다.\n"
+            "계속 진행하시겠습니까?"
+        )
+        reply = QMessageBox.warning(
+            self,
+            "기존 백업 데이터 가져오기",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            claim_orphan_backup_for_user(selected, user_uuid=user_uuid)
+        except Exception as e:
+            QMessageBox.critical(self, "가져오기 실패", f"기존 백업 데이터를 가져오지 못했습니다.\n\n{e}")
+            return
+
+        QMessageBox.information(
+            self,
+            "가져오기 완료",
+            "기존 백업 데이터를 현재 로그인 계정으로 가져왔습니다.\n\n"
+            "앱을 다시 시작해 가져온 데이터를 불러옵니다.",
+        )
+        try:
+            self._skip_finalize_pending_update_once = True
+            exe, args, cwd = relaunch_executable_and_args()
+            subprocess.Popen([exe, *args], cwd=cwd or None)
+            QApplication.quit()
+        except Exception as e:
+            QMessageBox.warning(self, "재시작 필요", f"앱을 수동으로 다시 실행해 주세요.\n\n{e}")
 
     def set_pc_environment(self, mode: str) -> None:
         mode = "personal" if mode == "personal" else "public"
