@@ -53,6 +53,7 @@ class LogsPage(QWidget):
         logs_service,
         campaigns_service=None,
         on_reset_all: Optional[Callable[[], None]] = None,
+        on_retry_failed_report: Optional[Callable[[str], None]] = None,
     ) -> None:
         super().__init__()
         self.setObjectName("Page")
@@ -60,6 +61,7 @@ class LogsPage(QWidget):
         self.logs_service = logs_service
         self.campaigns_service = campaigns_service
         self._on_reset_all = on_reset_all
+        self._on_retry_failed_report = on_retry_failed_report
 
         self._active_source: str = "DB"
         self._report_path: Optional[Path] = None
@@ -198,7 +200,9 @@ class LogsPage(QWidget):
         btn_row.setSpacing(8)
 
         self.btn_retry = style_button(QPushButton("실패 대상 추출"), "secondary")
+        self.btn_retry_send = style_button(QPushButton("실패 대상만 재발송"), "primary")
         btn_row.addWidget(self.btn_retry)
+        btn_row.addWidget(self.btn_retry_send)
 
         btn_row.addStretch(1)
 
@@ -215,6 +219,7 @@ class LogsPage(QWidget):
         self.btn_export.clicked.connect(self.export_csv)
         self.reset_btn.clicked.connect(self.reset_logs_and_reports)
         self.btn_retry.clicked.connect(self.show_retry_targets)
+        self.btn_retry_send.clicked.connect(self.retry_failed_from_selected_report)
 
         self.btn_open_log_file.clicked.connect(self.open_log_file)
         self.btn_open_wipe_log.clicked.connect(self.open_wipe_log)
@@ -631,6 +636,15 @@ class LogsPage(QWidget):
             preview += f"\n… (+{len(targets) - 80}명)"
 
         QMessageBox.information(self, "재시도 대상(FAIL)", preview)
+
+    def retry_failed_from_selected_report(self) -> None:
+        if self._active_source != "REPORT" or self._report_path is None:
+            QMessageBox.information(self, "안내", "먼저 발송 리포트 파일을 선택하세요.")
+            return
+        if self._on_retry_failed_report is None:
+            QMessageBox.information(self, "안내", "재발송 실행 기능이 연결되지 않았습니다.")
+            return
+        self._on_retry_failed_report(str(self._report_path))
 
     def reset_logs_and_reports(self) -> None:
         ok = QMessageBox.question(

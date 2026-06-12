@@ -29,7 +29,7 @@ def _safe_int(x: Any, default: int = 0) -> int:
 
 
 class SendReportWriter:
-    def __init__(self, *, base_dir: Path, run_id: str) -> None:
+    def __init__(self, *, base_dir: Path, run_id: str, filename_prefix: str = "send_report") -> None:
         self._lock = threading.Lock()
 
         self._base_dir = Path(base_dir)
@@ -37,7 +37,8 @@ class SendReportWriter:
         self._reports_dir.mkdir(parents=True, exist_ok=True)
 
         self._run_id = str(run_id)
-        self._path = self._reports_dir / f"send_report_{self._run_id}.json"
+        self._filename_prefix = str(filename_prefix or "send_report").strip() or "send_report"
+        self._path = self._reports_dir / f"{self._filename_prefix}_{self._run_id}.json"
 
         self._report = SendReport(run_id=self._run_id, started_at=_now_ts())
         self._list_map: Dict[int, int] = {}
@@ -54,6 +55,12 @@ class SendReportWriter:
         with self._lock:
             self._report.total_lists = _safe_int(total_lists)
             self._report.total_targets = _safe_int(total_targets)
+
+    def set_extra_meta(self, **kwargs: Any) -> None:
+        with self._lock:
+            for key, value in kwargs.items():
+                if hasattr(self._report, key):
+                    setattr(self._report, key, value)
 
     def add_list(
         self,

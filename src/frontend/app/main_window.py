@@ -210,6 +210,7 @@ class MainWindow(QMainWindow):
             logs_service=self.logs_service,
             campaigns_service=self.campaigns_service,
             on_reset_all=self.reset_application,
+            on_retry_failed_report=self._retry_failed_report_from_logs,
         )
 
         self.editor_page = EditorToolsPage(on_status=self.status.set_message)
@@ -296,6 +297,15 @@ class MainWindow(QMainWindow):
                     self.logs_page.refresh()
         except Exception:
             pass
+
+    def _retry_failed_report_from_logs(self, report_path: str) -> None:
+        self._show_sender_mode(update_subtitle=False)
+        try:
+            self.nav.set_current(3)
+        except Exception:
+            self.stack.setCurrentIndex(3)
+            self.header.set_subtitle(self.TITLES[3])
+        self.send_page.start_retry_failed_from_report(report_path)
 
     def _show_sender_mode(self, *, update_subtitle: bool = True) -> None:
         self.center_modes.setCurrentIndex(0)

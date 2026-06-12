@@ -35,6 +35,12 @@ from backend.domains.contacts.service import ContactsService
 from backend.domains.campaigns.service import CampaignsService
 from backend.domains.reports.writer import SendReportWriter
 from backend.domains.send_lists.dto import SendListCreateDTO
+from backend.domains.sending.retry_builder import (
+    FailedReportRetryBuilder,
+    MissingAttachmentError,
+    MissingOriginalConditionsError,
+    NoRetryableTargetsError,
+)
 from backend.domains.sending.service import SendingService
 
 from frontend.app.app_events import app_events
@@ -1265,6 +1271,9 @@ class SendPage(QWidget):
         speed_mode: str,
         confirm: bool,
         scheduled_send_id: int | None = None,
+        report_run_id: str | None = None,
+        report_filename_prefix: str = "send_report",
+        report_meta: dict | None = None,
     ) -> None:
         self._run_logger = None
 
@@ -1314,10 +1323,16 @@ class SendPage(QWidget):
         run_logger = SendRunLogger.new_run(prefix="send_run")
         self._run_logger = run_logger
 
-        run_id = time.strftime("%Y%m%d_%H%M%S")
-        report_writer = SendReportWriter(base_dir=user_data_dir(), run_id=run_id)
+        run_id = report_run_id or time.strftime("%Y%m%d_%H%M%S")
+        report_writer = SendReportWriter(
+            base_dir=user_data_dir(),
+            run_id=run_id,
+            filename_prefix=report_filename_prefix,
+        )
         self._last_report_path = str(report_writer.path)
         report_writer.set_meta(total_lists=len(filtered), total_targets=total_targets)
+        if report_meta:
+            report_writer.set_extra_meta(**report_meta)
 
         self._worker = self.sending_service.create_worker(
             driver=self.sender_driver,
@@ -1338,6 +1353,78 @@ class SendPage(QWidget):
         self._worker.status.connect(self._on_status)
         self._worker.finished_ok.connect(self._on_send_finished)
         self._worker.start()
+
+    def start_retry_failed_from_report(self, report_path: str) -> None:
+        if self._worker and self._worker.isRunning():
+            QMessageBox.information(self, "안내", "현재 다른 발송이 진행 중입니다. 완료 후 다시 시도해 주세요.")
+            return
+
+        builder = FailedReportRetryBuilder(campaigns_service=self.campaigns_service)
+        try:
+            retry_plan = builder.build(report_path)
+        except NoRetryableTargetsError:
+            QMessageBox.information(self, "안내", "재발송 가능한 실패 대상이 없습니다.")
+            return
+        except MissingAttachmentError as e:
+            QMessageBox.warning(
+                self,
+                "첨부파일 없음",
+                "원본 첨부파일을 찾을 수 없습니다.\n"
+                "파일 위치를 확인한 후 다시 시도해 주세요.\n\n"
+                f"파일:\n{e.file_path}",
+            )
+            return
+        except MissingOriginalConditionsError:
+            QMessageBox.warning(
+                self,
+                "재발송 불가",
+                "원본 발송 조건을 찾을 수 없어 재발송할 수 없습니다.\n"
+                "원본 캠페인 또는 첨부파일이 삭제되었는지 확인해 주세요.",
+            )
+            return
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"재발송 준비 실패\n{e}")
+            return
+
+        names = retry_plan.preview_names[:10]
+        preview = "\n".join(f"- {name}" for name in names)
+        remain = retry_plan.retry_target_count - len(names)
+        if remain > 0:
+            preview += f"\n- 외 {remain}명"
+
+        ok = QMessageBox.question(
+            self,
+            "실패 대상만 재발송",
+            f"실패 대상 {retry_plan.retry_target_count}명에게 다시 발송합니다.\n\n"
+            f"캠페인: {retry_plan.campaign_name}\n"
+            f"원본 배치: {retry_plan.source_batch_id}\n"
+            f"원본 리포트: {retry_plan.source_report_file}\n\n"
+            f"재발송 대상:\n{preview}\n\n"
+            "계속 진행하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if ok != QMessageBox.Yes:
+            return
+
+        try:
+            speed_mode = str(self.cbo_speed.currentData() or "normal")
+        except Exception:
+            speed_mode = "normal"
+
+        try:
+            self._start_send_jobs(
+                jobs=retry_plan.jobs,
+                speed_mode=speed_mode,
+                confirm=False,
+                scheduled_send_id=None,
+                report_run_id=retry_plan.retry_run_id,
+                report_filename_prefix="send_report_retry",
+                report_meta=retry_plan.report_meta,
+            )
+            self._on_status(f"실패 대상 재발송 시작: {retry_plan.retry_target_count}명")
+        except Exception as e:
+            QMessageBox.critical(self, "오류", str(e))
 
     def _start_send_all_lists(self) -> None:
         self._refresh_visible_numbers_only()
@@ -1496,8 +1583,10 @@ class SendPage(QWidget):
         )
         btn_ok = box.addButton("확인", QMessageBox.AcceptRole)
         btn_report = box.addButton("로그/리포트 보기", QMessageBox.ActionRole)
+        btn_retry_failed = None
         if fail > 0:
-            box.setInformativeText("실패 대상은 로그 화면의 '실패 대상 추출'에서 확인할 수 있습니다.")
+            box.setInformativeText("실패 대상은 로그 화면에서 추출하거나, 이 리포트 기준으로 바로 재발송할 수 있습니다.")
+            btn_retry_failed = box.addButton("실패 대상만 재발송", QMessageBox.ActionRole)
         box.setDefaultButton(btn_ok)
         box.exec()
         if box.clickedButton() == btn_report:
@@ -1510,6 +1599,8 @@ class SendPage(QWidget):
                 os.startfile(str(target))  # type: ignore[attr-defined]
             except Exception as e:
                 QMessageBox.warning(self, "오류", f"리포트 폴더를 열 수 없습니다.\n{e}")
+        elif btn_retry_failed is not None and box.clickedButton() == btn_retry_failed and report_path:
+            QTimer.singleShot(0, lambda p=report_path: self.start_retry_failed_from_report(p))
         self._pipeline_paused = False
 
     def _move_selected_send_list_up(self) -> None:

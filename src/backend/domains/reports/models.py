@@ -47,6 +47,13 @@ class ReportList:
 @dataclass
 class SendReport:
     run_id: str
+    report_type: str = "send"
+    batch_id: str = ""
+    source_batch_id: str = ""
+    source_report_file: str = ""
+    retry_only_failed: bool = False
+    retry_created_at: str = ""
+    retry_target_count: int = 0
     started_at: str = ""
     ended_at: str = ""
     total_lists: int = 0
