@@ -309,6 +309,7 @@ class SendExecutor:
                     status="PAUSED",
                     reason=reason or "UPLOAD_PIPELINE_STALLED",
                     attempt=used_attempt,
+                    driver_result=driver_result,
                 )
                 return {
                     "ok": False,
@@ -327,6 +328,7 @@ class SendExecutor:
                     status="NOT_FOUND",
                     reason=reason or "SEARCH_NOT_FOUND",
                     attempt=used_attempt,
+                    driver_result=driver_result,
                 )
                 return {
                     "ok": False,
@@ -344,6 +346,7 @@ class SendExecutor:
                     status="FAIL",
                     reason=reason or failure_reason or "SEND_ACTION_FAILED",
                     attempt=used_attempt,
+                    driver_result=driver_result,
                 )
                 return {
                     "ok": False,
@@ -825,8 +828,9 @@ class SendExecutor:
         list_index: int,
         recipient,
         status: str,
-        reason: str,
-        attempt: int,
+                reason: str,
+                attempt: int,
+                driver_result=None,
     ) -> None:
         if not self._report_writer:
             return
@@ -846,6 +850,10 @@ class SendExecutor:
                 step=info.step,
                 reason=reason,
                 attempt=attempt,
+                retryable=bool(getattr(driver_result, "retryable", False)) if driver_result is not None else False,
+                failure_step=str(getattr(driver_result, "failure_step", "") or ""),
+                last_success_step=str(getattr(driver_result, "last_success_step", "") or ""),
+                debug_steps=list(getattr(driver_result, "debug_steps", []) or []),
             )
         except Exception:
             pass

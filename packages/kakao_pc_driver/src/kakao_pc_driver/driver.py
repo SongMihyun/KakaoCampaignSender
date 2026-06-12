@@ -233,6 +233,10 @@ class TargetSendResult:
     chat_hwnd: int = 0
     ok: bool = False
     paused: bool = False
+    retryable: bool = False
+    failure_step: str = ""
+    last_success_step: str = ""
+    debug_steps: list[dict[str, Any]] = field(default_factory=list)
 
 
 class StopNow(RuntimeError):
@@ -508,6 +512,30 @@ class KakaoPcDriver(KakaoSenderDriver):
                 print(f"[TRACE {ts:.6f}] {label} {extra}".rstrip())
         except Exception:
             pass
+
+    def _debug_step(self, steps: list[dict[str, Any]], step: str, *, ok: bool, detail: str = "", extra: Optional[dict[str, Any]] = None) -> None:
+        try:
+            item: dict[str, Any] = {
+                "step": str(step or ""),
+                "at": datetime.now().isoformat(timespec="milliseconds"),
+                "ok": bool(ok),
+                "detail": str(detail or ""),
+            }
+            if extra:
+                item["extra"] = dict(extra)
+            steps.append(item)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _last_success_step(steps: list[dict[str, Any]]) -> str:
+        for item in reversed(steps or []):
+            try:
+                if bool(item.get("ok")):
+                    return str(item.get("step") or "")
+            except Exception:
+                pass
+        return ""
 
     def _get_desktop(self):
         if self._desk is not None:
@@ -2423,27 +2451,81 @@ class KakaoPcDriver(KakaoSenderDriver):
         return bool(self._focus_chat_input_best_effort(fast_only=False))
 
     def _send_image_step(self, images: list[tuple[bytes, str]], *, send_mode: str) -> bool:
+        ok, _reason, _step, _debug_steps = self._send_image_step_detailed(images, send_mode=send_mode)
+        return bool(ok)
+
+    def _send_image_step_detailed(self, images: list[tuple[bytes, str]], *, send_mode: str) -> tuple[bool, str, str, list[dict[str, Any]]]:
         self._check_stop()
+        debug_steps: list[dict[str, Any]] = []
         if not images:
-            return True
+            return True, "", "", debug_steps
 
         send_mode = (send_mode or "clipboard").strip().lower()
+        self._debug_step(debug_steps, "IMAGE_ATTACH_START", ok=True, detail=f"images={len(images)} mode={send_mode}")
         if send_mode == "multi_attach":
             valid_paths = [path for (_data, path) in images if path and os.path.exists(path)]
             if len(valid_paths) == len(images):
-                return bool(self.send_files_via_ctrl_t_paths(valid_paths))
+                file_details = []
+                for path in valid_paths:
+                    try:
+                        p = Path(path)
+                        file_details.append(
+                            {
+                                "path": str(p),
+                                "size": int(p.stat().st_size),
+                                "suffix": p.suffix,
+                                "path_len": len(str(p)),
+                                "onedrive": "onedrive" in str(p).casefold(),
+                            }
+                        )
+                    except Exception:
+                        file_details.append({"path": str(path)})
+                self._debug_step(debug_steps, "FILE_CHECK", ok=True, detail="all files exist", extra={"files": file_details})
+                self._debug_step(debug_steps, "FILE_DIALOG_OPEN_ATTEMPT", ok=True, detail="Ctrl+T file dialog flow")
+                ok = bool(self.send_files_via_ctrl_t_paths(valid_paths))
+                if ok:
+                    self._debug_step(debug_steps, "FILE_DIALOG_OPEN_BUTTON_SUCCESS", ok=True, detail="file dialog submitted")
+                    self._debug_step(debug_steps, "KAKAO_UPLOAD_DETECTED", ok=True, detail="file send hook completed")
+                    return True, "", "", debug_steps
+                self._debug_step(
+                    debug_steps,
+                    "FILE_DIALOG_UNKNOWN_STATE",
+                    ok=False,
+                    detail="file dialog flow returned false",
+                    extra={"retry_count": 1},
+                )
+                return False, "FILE_DIALOG_UNKNOWN_STATE", "file_dialog_unknown", debug_steps
             valid_bytes = [data for (data, _path) in images if data]
-            return bool(self.send_images_via_ctrl_t(valid_bytes))
+            if not valid_bytes:
+                self._debug_step(debug_steps, "FILE_CHECK", ok=False, detail="no existing file path and no image bytes")
+                return False, "FILE_NOT_FOUND", "load_file", debug_steps
+            self._debug_step(debug_steps, "FILE_DIALOG_OPEN_ATTEMPT", ok=True, detail="Ctrl+T temp image flow")
+            ok = bool(self.send_images_via_ctrl_t(valid_bytes))
+            if ok:
+                self._debug_step(debug_steps, "KAKAO_UPLOAD_DETECTED", ok=True, detail="temp image send completed")
+                return True, "", "", debug_steps
+            self._debug_step(debug_steps, "KAKAO_UPLOAD_NOT_STARTED", ok=False, detail="temp image attach returned false")
+            return False, "KAKAO_UPLOAD_NOT_STARTED", "upload_start", debug_steps
 
         for idx, (image_bytes, _image_path) in enumerate(images, start=1):
             self._check_stop()
             if not image_bytes:
-                return False
+                self._debug_step(
+                    debug_steps,
+                    "FILE_CHECK",
+                    ok=False,
+                    detail="clipboard image mode requires image bytes",
+                    extra={"index": idx, "path": _image_path},
+                )
+                return False, "FILE_NOT_FOUND", "load_file", debug_steps
+            self._debug_step(debug_steps, "IMAGE_CLIPBOARD_SET_ATTEMPT", ok=True, detail=f"image index={idx}")
             if not self._paste_image_and_send(image_bytes):
                 self._trace("STATE_SEND:image_fail", index=idx)
-                return False
+                self._debug_step(debug_steps, "KAKAO_UPLOAD_NOT_STARTED", ok=False, detail="paste image and send returned false", extra={"index": idx})
+                return False, "KAKAO_UPLOAD_NOT_STARTED", "upload_start", debug_steps
+            self._debug_step(debug_steps, "SEND_BUTTON_SUCCESS", ok=True, detail=f"image index={idx}")
             self._sleep(max(0.02, self._send_interval))
-        return True
+        return True, "", "", debug_steps
 
     def _send_text_step(self, texts: list[str]) -> bool:
         self._check_stop()
@@ -2500,93 +2582,147 @@ class KakaoPcDriver(KakaoSenderDriver):
         previous_open_in_main = bool(self._open_in_main)
         self._open_in_main = False
         opened = False
+        debug_steps: list[dict[str, Any]] = []
 
         self._trace("STATE_SEND:begin", name=name, send_mode=send_mode)
+        self._debug_step(debug_steps, "SEND_START", ok=True, detail="target send started", extra={"recipient": name, "send_mode": send_mode})
 
         try:
             images, texts = self._prepare_campaign_item_steps(list(campaign_items or []))
             if not images and not texts:
+                self._debug_step(debug_steps, "CAMPAIGN_VALIDATE", ok=False, detail="campaign has no sendable item")
                 return TargetSendResult(
                     status="FAIL",
                     reason="CAMPAIGN_EMPTY",
                     step="validate_campaign",
                     ok=False,
+                    retryable=False,
+                    failure_step="CAMPAIGN_VALIDATE",
+                    last_success_step=self._last_success_step(debug_steps),
+                    debug_steps=debug_steps,
                 )
 
+            self._debug_step(debug_steps, "CHAT_SEARCH_START", ok=True, detail="search chat by recipient name")
             if not self._open_chat_by_name(name):
+                self._debug_step(debug_steps, "CHAT_OPEN_ATTEMPT", ok=False, detail="chat not found or not opened", extra={"chat_hwnd": 0})
                 return TargetSendResult(
                     status="NOT_FOUND",
                     reason="SEARCH_NOT_FOUND",
                     step="search_chat",
                     chat_hwnd=0,
                     ok=False,
+                    retryable=False,
+                    failure_step="CHAT_OPEN_ATTEMPT",
+                    last_success_step=self._last_success_step(debug_steps),
+                    debug_steps=debug_steps,
                 )
 
             opened = True
             chat_hwnd = int(self._chat_hwnd or 0)
+            self._debug_step(debug_steps, "CHAT_OPEN_SUCCESS", ok=True, detail="chat opened", extra={"chat_hwnd": chat_hwnd})
 
             if not self._verify_open_chat_ready():
+                self._debug_step(debug_steps, "CHAT_INPUT_FOCUS", ok=False, detail="chat input focus check failed", extra={"chat_hwnd": chat_hwnd})
                 return TargetSendResult(
                     status="FAIL",
                     reason="OPEN_CHAT_FAIL",
                     step="open_chat",
                     chat_hwnd=chat_hwnd,
                     ok=False,
+                    retryable=True,
+                    failure_step="CHAT_INPUT_FOCUS",
+                    last_success_step=self._last_success_step(debug_steps),
+                    debug_steps=debug_steps,
                 )
 
-            if not self._send_image_step(images, send_mode=send_mode):
+            image_ok, image_reason, image_step, image_debug_steps = self._send_image_step_detailed(images, send_mode=send_mode)
+            debug_steps.extend(image_debug_steps)
+            if not image_ok:
                 return TargetSendResult(
                     status="FAIL",
-                    reason="IMAGE_ATTACH_FAILED",
-                    step="attach_image",
+                    reason=image_reason or "IMAGE_ATTACH_FAILED",
+                    step=image_step or "attach_image",
                     chat_hwnd=chat_hwnd,
                     ok=False,
+                    retryable=True,
+                    failure_step=(image_debug_steps[-1].get("step") if image_debug_steps else "IMAGE_ATTACH_START"),
+                    last_success_step=self._last_success_step(debug_steps),
+                    debug_steps=debug_steps,
                 )
 
+            if texts:
+                self._debug_step(debug_steps, "MESSAGE_INPUT_START", ok=True, detail=f"text_count={len(texts)}")
             if not self._send_text_step(texts):
+                self._debug_step(debug_steps, "MESSAGE_INPUT_SUCCESS", ok=False, detail="text send returned false")
                 return TargetSendResult(
                     status="FAIL",
                     reason="SEND_ACTION_FAILED",
                     step="send_text",
                     chat_hwnd=chat_hwnd,
                     ok=False,
+                    retryable=True,
+                    failure_step="MESSAGE_INPUT_SUCCESS",
+                    last_success_step=self._last_success_step(debug_steps),
+                    debug_steps=debug_steps,
                 )
+            if texts:
+                self._debug_step(debug_steps, "MESSAGE_INPUT_SUCCESS", ok=True, detail="text send completed")
 
+            self._debug_step(debug_steps, "SEND_SUCCESS", ok=True, detail="all target steps completed")
             return TargetSendResult(
                 status="SUCCESS",
                 reason="",
                 step="result",
                 chat_hwnd=chat_hwnd,
                 ok=True,
+                retryable=False,
+                failure_step="",
+                last_success_step=self._last_success_step(debug_steps),
+                debug_steps=debug_steps,
             )
 
         except FileNotFoundError as e:
+            self._debug_step(debug_steps, "FILE_CHECK", ok=False, detail=str(e) or "file not found")
             return TargetSendResult(
                 status="FAIL",
-                reason=str(e) or "IMAGE_FILE_NOT_FOUND",
-                step="load_image",
+                reason="FILE_NOT_FOUND",
+                step="load_file",
                 chat_hwnd=int(self._chat_hwnd or 0),
                 ok=False,
+                retryable=True,
+                failure_step="FILE_CHECK",
+                last_success_step=self._last_success_step(debug_steps),
+                debug_steps=debug_steps,
             )
         except ChatNotFound as e:
+            self._debug_step(debug_steps, "CHAT_OPEN_ATTEMPT", ok=False, detail=str(e) or "chat not found")
             return TargetSendResult(
                 status="NOT_FOUND",
                 reason=str(e) or "SEARCH_NOT_FOUND",
                 step="search_chat",
                 chat_hwnd=0,
                 ok=False,
+                retryable=False,
+                failure_step="CHAT_OPEN_ATTEMPT",
+                last_success_step=self._last_success_step(debug_steps),
+                debug_steps=debug_steps,
             )
         except UploadPipelineStalled:
             raise
         except StopNow:
             raise
         except Exception as e:
+            self._debug_step(debug_steps, "SEND_FAIL", ok=False, detail=str(e) or "unknown error")
             return TargetSendResult(
                 status="FAIL",
                 reason=str(e) or "UNKNOWN_ERROR",
                 step="unknown",
                 chat_hwnd=int(self._chat_hwnd or 0),
                 ok=False,
+                retryable=True,
+                failure_step="SEND_FAIL",
+                last_success_step=self._last_success_step(debug_steps),
+                debug_steps=debug_steps,
             )
         finally:
             try:

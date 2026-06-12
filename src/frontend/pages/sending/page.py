@@ -171,6 +171,7 @@ class SendPage(QWidget):
         self._active_scheduled_send_id: Optional[int] = None
         self._latest_schedule_id: Optional[int] = None
         self._send_mode_schedule: bool = False
+        self._last_report_path: str = ""
 
         self._hotkey_mgr: Optional[GlobalHotkeyManager] = None
         self._init_global_hotkey()
@@ -1315,6 +1316,7 @@ class SendPage(QWidget):
 
         run_id = time.strftime("%Y%m%d_%H%M%S")
         report_writer = SendReportWriter(base_dir=user_data_dir(), run_id=run_id)
+        self._last_report_path = str(report_writer.path)
         report_writer.set_meta(total_lists=len(filtered), total_targets=total_targets)
 
         self._worker = self.sending_service.create_worker(
@@ -1484,12 +1486,30 @@ class SendPage(QWidget):
             self._pipeline_paused = False
             return
 
-        QMessageBox.information(
-            self,
-            state_label,
+        box = QMessageBox(self)
+        box.setWindowTitle(state_label)
+        report_path = self._last_report_path or ""
+        box.setText(
             f"{state_label}\n- 완료 리스트: {list_done}개\n- 성공: {success}\n- 실패: {fail}"
-            + (f"\n\n로그 파일:\n{log_path}" if log_path else ""),
+            + (f"\n\n로그 파일:\n{log_path}" if log_path else "")
+            + (f"\n\n리포트 파일:\n{report_path}" if report_path else "")
         )
+        btn_ok = box.addButton("확인", QMessageBox.AcceptRole)
+        btn_report = box.addButton("로그/리포트 보기", QMessageBox.ActionRole)
+        if fail > 0:
+            box.setInformativeText("실패 대상은 로그 화면의 '실패 대상 추출'에서 확인할 수 있습니다.")
+        box.setDefaultButton(btn_ok)
+        box.exec()
+        if box.clickedButton() == btn_report:
+            try:
+                import os
+                from pathlib import Path
+
+                target = Path(report_path).parent if report_path else (user_data_dir() / "reports")
+                target.mkdir(parents=True, exist_ok=True)
+                os.startfile(str(target))  # type: ignore[attr-defined]
+            except Exception as e:
+                QMessageBox.warning(self, "오류", f"리포트 폴더를 열 수 없습니다.\n{e}")
         self._pipeline_paused = False
 
     def _move_selected_send_list_up(self) -> None:

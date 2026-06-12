@@ -1,6 +1,7 @@
 ﻿# FILE: src/frontend/pages/logs/detail_dialog.py
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -110,7 +111,7 @@ class LogDetailDialog(QDialog):
 
         self.txt_reason = QTextEdit()
         self.txt_reason.setReadOnly(True)
-        self.txt_reason.setPlainText(str(self._detail.get("reason", "") or ""))
+        self.txt_reason.setPlainText(self._build_reason_text())
         root.addWidget(self.txt_reason, 1)
 
         btns = QHBoxLayout()
@@ -135,6 +136,43 @@ class LogDetailDialog(QDialog):
         from PySide6.QtWidgets import QMessageBox
 
         QMessageBox.information(self, "오류코드 상세 설명", detail_text(code))
+
+    def _build_reason_text(self) -> str:
+        lines = [str(self._detail.get("reason", "") or "").strip()]
+        last_success = str(self._detail.get("last_success_step", "") or "").strip()
+        failure_step = str(self._detail.get("failure_step", "") or "").strip()
+        retryable = self._detail.get("retryable", "")
+        if last_success:
+            lines += ["", f"마지막 성공 단계: {last_success}"]
+        if failure_step:
+            lines.append(f"실패 단계: {failure_step}")
+        if retryable != "":
+            lines.append(f"재시도 가능: {'예' if bool(retryable) else '아니오'}")
+
+        steps = self._detail.get("debug_steps", [])
+        if isinstance(steps, list) and steps:
+            lines += ["", "[debug_steps]"]
+            for step in steps:
+                if not isinstance(step, dict):
+                    continue
+                name = str(step.get("step", "") or "")
+                ok = "OK" if bool(step.get("ok")) else "FAIL"
+                at = str(step.get("at", "") or "")
+                detail = str(step.get("detail", "") or "")
+                line = f"- {name} | {ok}"
+                if at:
+                    line += f" | {at}"
+                if detail:
+                    line += f" | {detail}"
+                extra = step.get("extra", None)
+                if extra:
+                    try:
+                        line += " | extra=" + json.dumps(extra, ensure_ascii=False)
+                    except Exception:
+                        line += f" | extra={extra}"
+                lines.append(line)
+
+        return "\n".join([line for line in lines if line is not None]).strip()
 
     def _open_campaign_preview(self) -> None:
         """

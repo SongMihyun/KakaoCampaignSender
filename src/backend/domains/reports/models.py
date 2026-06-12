@@ -17,6 +17,10 @@ class ReportRecipient:
     step: str = ""
     reason: str = ""
     attempt: int = 0
+    retryable: bool = False
+    failure_step: str = ""
+    last_success_step: str = ""
+    debug_steps: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass

@@ -131,6 +131,10 @@ class SendReportWriter:
         step: str = "",
         reason: str = "",
         attempt: int = 0,
+        retryable: bool = False,
+        failure_step: str = "",
+        last_success_step: str = "",
+        debug_steps: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         with self._lock:
             idx = self._list_map.get(int(list_index))
@@ -151,6 +155,10 @@ class SendReportWriter:
                 step=str(step or info.step),
                 reason=str(reason or ""),
                 attempt=_safe_int(attempt, 0),
+                retryable=bool(retryable),
+                failure_step=str(failure_step or ""),
+                last_success_step=str(last_success_step or ""),
+                debug_steps=list(debug_steps or []),
             )
             self._report.lists[idx].recipients.append(rr)
 
