@@ -190,6 +190,32 @@ def _validate_sqlite_db(path: Path) -> None:
         conn.close()
 
 
+def _restore_sqlite_backup_into_target(source_path: Path, target_path: Path) -> None:
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    src = sqlite3.connect(str(source_path), timeout=30.0)
+    dst = sqlite3.connect(str(target_path), timeout=30.0)
+    try:
+        dst.execute("PRAGMA busy_timeout=30000;")
+        src.backup(dst)
+        dst.commit()
+
+        from backend.database.schema import (
+            ensure_contacts_schema,
+            ensure_send_logs_schema,
+            ensure_scheduled_sends_schema,
+        )
+
+        ensure_contacts_schema(dst)
+        ensure_send_logs_schema(dst)
+        ensure_scheduled_sends_schema(dst)
+        dst.commit()
+    finally:
+        try:
+            dst.close()
+        finally:
+            src.close()
+
+
 def claim_orphan_backup_for_user(backup: OrphanBackup, *, user_uuid: str) -> Path:
     target = user_contacts_db_path(user_uuid)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -198,9 +224,7 @@ def claim_orphan_backup_for_user(backup: OrphanBackup, *, user_uuid: str) -> Pat
         raise RuntimeError("현재 로그인 계정의 DB가 비어 있지 않아 백업을 가져올 수 없습니다.")
 
     _validate_sqlite_db(backup.backup_path)
-    if target.exists():
-        target.unlink()
-    shutil.copy2(backup.backup_path, target)
+    _restore_sqlite_backup_into_target(backup.backup_path, target)
     _validate_sqlite_db(target)
 
     claimed_dir = orphan_backups_dir() / "claimed"

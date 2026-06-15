@@ -5,6 +5,10 @@ import sqlite3
 
 
 CONTACTS_COLUMNS: dict[str, str] = {
+    "phone": "TEXT",
+    "agency": "TEXT",
+    "branch": "TEXT",
+    "created_at": "TEXT",
     "search_name": "TEXT",
     "title": "TEXT",
     "honorific": "TEXT",

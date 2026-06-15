@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    QApplication,
 )
 
 from app.version import __version__
@@ -492,7 +493,7 @@ class LoginDialog(QDialog):
             QMessageBox.warning(self, e.title, _friendly_login_error(e.message))
             self.btn_kakao.setEnabled(True)
             return
-        self.accept()
+        self._finish_login_success()
 
     def _complete_signup_with_invite_code(self, error: AuthError) -> None:
         self.status.setText("")
@@ -526,7 +527,7 @@ class LoginDialog(QDialog):
             "가입 완료",
             "가입이 승인되었습니다.\n이제 카센더를 사용할 수 있습니다.",
         )
-        self.accept()
+        self._finish_login_success()
 
     def _show_coming_soon(self, name: str) -> None:
         QMessageBox.information(self, "준비중", f"{name}은 준비중입니다.")
@@ -588,7 +589,12 @@ class LoginDialog(QDialog):
 
         self._beta_fail_count = 0
         self._beta_locked_until = None
-        self.accept()
+        self._finish_login_success()
+
+    def _finish_login_success(self) -> None:
+        self.hide()
+        QApplication.processEvents()
+        self.done(QDialog.Accepted)
 
     def _uninstall_application(self) -> None:
         root = Path(getattr(sys, "_MEIPASS", _app_base_dir()))
