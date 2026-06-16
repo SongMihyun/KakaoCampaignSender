@@ -537,6 +537,69 @@ class KakaoPcDriver(KakaoSenderDriver):
                 pass
         return ""
 
+    @staticmethod
+    def _last_failed_step(steps: list[dict[str, Any]]) -> str:
+        for item in reversed(steps or []):
+            try:
+                if not bool(item.get("ok")):
+                    return str(item.get("step") or "")
+            except Exception:
+                pass
+        return ""
+
+    def _append_debug_step(
+        self,
+        steps: Optional[list[dict[str, Any]]],
+        step: str,
+        *,
+        ok: bool,
+        detail: str = "",
+        extra: Optional[dict[str, Any]] = None,
+    ) -> None:
+        if steps is None:
+            return
+        self._debug_step(steps, step, ok=ok, detail=detail, extra=extra)
+
+    def _ctrl_t_debug_callback(self, steps: Optional[list[dict[str, Any]]]):
+        if steps is None:
+            return None
+
+        def _cb(step: str, ok: bool, detail: str = "", extra: Optional[dict[str, Any]] = None) -> None:
+            self._debug_step(steps, step, ok=ok, detail=detail, extra=extra)
+
+        return _cb
+
+    @staticmethod
+    def _file_dialog_failure_from_steps(steps: list[dict[str, Any]]) -> tuple[str, str]:
+        for item in reversed(steps or []):
+            try:
+                if bool(item.get("ok")):
+                    continue
+                step = str(item.get("step") or "")
+            except Exception:
+                continue
+
+            if step in {"ATTACHMENT_PATH_VALIDATE", "FILE_CHECK"}:
+                return "FILE_NOT_FOUND", "load_file"
+            if step == "ATTACHMENT_TEMP_COPY":
+                return "ATTACHMENT_TEMP_COPY_FAILED", "attach_temp_copy"
+            if step == "FILE_DIALOG_WAIT_ACTIVE":
+                return "FILE_DIALOG_NOT_OPENED", "file_dialog_open"
+            if step in {"FILE_DIALOG_CLIPBOARD_SET"}:
+                return "IMAGE_PATH_CLIPBOARD_SET_FAILED", "clipboard_path"
+            if step in {"FILE_DIALOG_PATH_INPUT_FAILED", "FILE_DIALOG_PASTE", "FILE_DIALOG_DIRECT_SET"}:
+                return "FILE_DIALOG_PATH_INPUT_FAILED", "file_dialog_input"
+            if step in {"FILE_DIALOG_OPEN_BUTTON_FAILED", "FILE_DIALOG_CLOSED_CHECK"}:
+                return "FILE_DIALOG_OPEN_BUTTON_FAILED", "file_dialog_submit"
+            if step == "KAKAO_UPLOAD_NOT_STARTED":
+                return "KAKAO_UPLOAD_NOT_STARTED", "upload_start"
+            if step == "KAKAO_UPLOAD_TIMEOUT":
+                return "KAKAO_UPLOAD_TIMEOUT", "upload_wait"
+            if step == "KAKAO_WINDOW_FOCUS_LOST":
+                return "KAKAO_WINDOW_FOCUS_LOST", "focus_chat"
+
+        return "FILE_DIALOG_UNKNOWN_STATE", "file_dialog_unknown"
+
     def _get_desktop(self):
         if self._desk is not None:
             return self._desk
@@ -1723,6 +1786,7 @@ class KakaoPcDriver(KakaoSenderDriver):
                 key_delay=self._sf(self._key_delay),
                 debug=self._debug_log,
                 log=self._log,
+                cache_dir=self._attachment_temp_dir(),
                 prefer_hwnd=int(self._chat_hwnd or self._hwnd),
                 get_foreground_hwnd=w32.get_foreground_hwnd,
                 timings={
@@ -2056,6 +2120,7 @@ class KakaoPcDriver(KakaoSenderDriver):
                 key_delay=self._sf(self._key_delay),
                 debug=self._debug_log,
                 log=self._log,
+                cache_dir=self._attachment_temp_dir(),
 
                 # ✅ 여기 2줄 추가
                 prefer_hwnd=int(self._chat_hwnd or self._hwnd),
@@ -2482,30 +2547,27 @@ class KakaoPcDriver(KakaoSenderDriver):
                         file_details.append({"path": str(path)})
                 self._debug_step(debug_steps, "FILE_CHECK", ok=True, detail="all files exist", extra={"files": file_details})
                 self._debug_step(debug_steps, "FILE_DIALOG_OPEN_ATTEMPT", ok=True, detail="Ctrl+T file dialog flow")
-                ok = bool(self.send_files_via_ctrl_t_paths(valid_paths))
+                ok = bool(self.send_files_via_ctrl_t_paths(valid_paths, debug_steps=debug_steps))
                 if ok:
                     self._debug_step(debug_steps, "FILE_DIALOG_OPEN_BUTTON_SUCCESS", ok=True, detail="file dialog submitted")
-                    self._debug_step(debug_steps, "KAKAO_UPLOAD_DETECTED", ok=True, detail="file send hook completed")
+                    self._debug_step(debug_steps, "KAKAO_UPLOAD_STARTED", ok=True, detail="file send hook completed")
                     return True, "", "", debug_steps
-                self._debug_step(
-                    debug_steps,
-                    "FILE_DIALOG_UNKNOWN_STATE",
-                    ok=False,
-                    detail="file dialog flow returned false",
-                    extra={"retry_count": 1},
-                )
-                return False, "FILE_DIALOG_UNKNOWN_STATE", "file_dialog_unknown", debug_steps
+                reason, step = self._file_dialog_failure_from_steps(debug_steps)
+                return False, reason, step, debug_steps
             valid_bytes = [data for (data, _path) in images if data]
             if not valid_bytes:
                 self._debug_step(debug_steps, "FILE_CHECK", ok=False, detail="no existing file path and no image bytes")
                 return False, "FILE_NOT_FOUND", "load_file", debug_steps
             self._debug_step(debug_steps, "FILE_DIALOG_OPEN_ATTEMPT", ok=True, detail="Ctrl+T temp image flow")
-            ok = bool(self.send_images_via_ctrl_t(valid_bytes))
+            ok = bool(self.send_images_via_ctrl_t(valid_bytes, debug_steps=debug_steps))
             if ok:
-                self._debug_step(debug_steps, "KAKAO_UPLOAD_DETECTED", ok=True, detail="temp image send completed")
+                self._debug_step(debug_steps, "KAKAO_UPLOAD_STARTED", ok=True, detail="temp image send completed")
                 return True, "", "", debug_steps
-            self._debug_step(debug_steps, "KAKAO_UPLOAD_NOT_STARTED", ok=False, detail="temp image attach returned false")
-            return False, "KAKAO_UPLOAD_NOT_STARTED", "upload_start", debug_steps
+            reason, step = self._file_dialog_failure_from_steps(debug_steps)
+            if reason == "FILE_DIALOG_UNKNOWN_STATE":
+                self._debug_step(debug_steps, "KAKAO_UPLOAD_NOT_STARTED", ok=False, detail="temp image attach returned false")
+                return False, "KAKAO_UPLOAD_NOT_STARTED", "upload_start", debug_steps
+            return False, reason, step, debug_steps
 
         for idx, (image_bytes, _image_path) in enumerate(images, start=1):
             self._check_stop()
@@ -2645,7 +2707,7 @@ class KakaoPcDriver(KakaoSenderDriver):
                     chat_hwnd=chat_hwnd,
                     ok=False,
                     retryable=True,
-                    failure_step=(image_debug_steps[-1].get("step") if image_debug_steps else "IMAGE_ATTACH_START"),
+                    failure_step=(self._last_failed_step(image_debug_steps) or "IMAGE_ATTACH_START"),
                     last_success_step=self._last_success_step(debug_steps),
                     debug_steps=debug_steps,
                 )
@@ -3333,6 +3395,133 @@ class KakaoPcDriver(KakaoSenderDriver):
             pass
         return default_ext
 
+    def _attachment_temp_dir(self) -> Path:
+        try:
+            from app.paths import active_user_uuid, sanitize_user_uuid, user_data_dir
+
+            uid = active_user_uuid() or ""
+            base = user_data_dir()
+            if uid:
+                root = base / "users" / sanitize_user_uuid(uid) / "temp_attachments"
+            else:
+                root = base / "temp_attachments"
+        except Exception:
+            base = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir())
+            root = base / "kakao_campaign_sender" / "temp_attachments"
+
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    def _prune_temp_attachments(self, root: Path, *, ttl_sec: float = 60 * 60 * 24) -> None:
+        try:
+            now = time.time()
+            for p in root.glob("attach_*"):
+                try:
+                    if p.is_file() and (now - p.stat().st_mtime) > ttl_sec:
+                        p.unlink()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    @staticmethod
+    def _safe_attachment_ext(path: Path) -> str:
+        ext = str(path.suffix or "").lower()
+        if not ext or len(ext) > 12:
+            return ".bin"
+        if any((not ch.isascii()) or (not (ch.isalnum() or ch == ".")) for ch in ext):
+            return ".bin"
+        return ext
+
+    @staticmethod
+    def _attachment_path_detail(path: str) -> dict[str, Any]:
+        p = Path(str(path or ""))
+        raw = str(path or "")
+        folded = raw.casefold()
+        exists = p.exists()
+        size = 0
+        try:
+            if exists:
+                size = int(p.stat().st_size)
+        except Exception:
+            size = 0
+        return {
+            "path": raw,
+            "is_absolute": p.is_absolute(),
+            "exists": exists,
+            "size": size,
+            "extension": p.suffix,
+            "path_length": len(raw),
+            "has_non_ascii": any(ord(ch) > 127 for ch in raw),
+            "has_space": (" " in raw),
+            "onedrive": ("onedrive" in folded),
+            "kakao_received": ("카카오톡 받은 파일" in raw) or ("kakaotalk" in folded),
+            "documents": ("\\documents\\" in folded) or ("\\문서\\" in raw),
+        }
+
+    def _copy_paths_to_temp_attachments(
+        self,
+        paths: List[str],
+        *,
+        debug_steps: Optional[list[dict[str, Any]]] = None,
+    ) -> List[str]:
+        clean_paths = [str(p).strip() for p in (paths or []) if str(p).strip()]
+        if not clean_paths:
+            return []
+
+        root = self._attachment_temp_dir()
+        self._prune_temp_attachments(root)
+
+        out: List[str] = []
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        for idx, raw in enumerate(clean_paths, start=1):
+            detail = self._attachment_path_detail(raw)
+            self._append_debug_step(
+                debug_steps,
+                "ATTACHMENT_PATH_VALIDATE",
+                ok=bool(detail.get("is_absolute")) and bool(detail.get("exists")) and int(detail.get("size") or 0) > 0,
+                detail="validate attachment path before file dialog",
+                extra=detail,
+            )
+            if (not detail.get("is_absolute")) or (not detail.get("exists")) or int(detail.get("size") or 0) <= 0:
+                return []
+
+            src = Path(raw)
+            try:
+                st = src.stat()
+                digest_src = f"{src.resolve()}|{st.st_size}|{getattr(st, 'st_mtime_ns', int(st.st_mtime * 1000))}"
+                digest = hashlib.sha1(digest_src.encode("utf-8", "ignore")).hexdigest()[:10]
+                ext = self._safe_attachment_ext(src)
+                dst = root / f"attach_{stamp}_{idx:03d}_{digest}{ext}"
+                shutil.copy2(src, dst)
+                temp_path = str(dst)
+                self._append_debug_step(
+                    debug_steps,
+                    "ATTACHMENT_TEMP_COPY",
+                    ok=True,
+                    detail="copied attachment to stable temp path",
+                    extra={
+                        "original_path": str(src),
+                        "temp_path": temp_path,
+                        "size": int(dst.stat().st_size),
+                        "extension": ext,
+                        "path_length": len(temp_path),
+                    },
+                )
+                out.append(temp_path)
+            except Exception as e:
+                self._append_debug_step(
+                    debug_steps,
+                    "ATTACHMENT_TEMP_COPY",
+                    ok=False,
+                    detail=str(e) or "temp attachment copy failed",
+                    extra={"original_path": raw, "temp_dir": str(root)},
+                )
+                self._log(f"[CTRL+T-MULTI] temp attachment copy failed: {raw} -> {root}: {e}")
+                return []
+
+        return out
+
     def _save_temp_images_for_multi_attach(self, image_bytes_list: List[bytes]) -> tuple[str, List[str]]:
         """
         bytes fallback용 temp 저장.
@@ -3382,7 +3571,12 @@ class KakaoPcDriver(KakaoSenderDriver):
 
 
 
-    def send_images_via_ctrl_t(self, image_bytes_list: List[bytes]) -> bool:
+    def send_images_via_ctrl_t(
+        self,
+        image_bytes_list: List[bytes],
+        *,
+        debug_steps: Optional[list[dict[str, Any]]] = None,
+    ) -> bool:
         self._check_stop()
 
         images = [bytes(x) for x in (image_bytes_list or []) if x]
@@ -3400,7 +3594,7 @@ class KakaoPcDriver(KakaoSenderDriver):
 
             return self._run_with_retry(
                 "IMG_CTRL_T_MULTI",
-                lambda: self._send_images_via_ctrl_t_paths_once(saved_paths),
+                lambda: self.send_files_via_ctrl_t_paths(saved_paths, debug_steps=debug_steps),
             )
 
         finally:
@@ -3415,16 +3609,26 @@ class KakaoPcDriver(KakaoSenderDriver):
                 except Exception:
                     pass
 
-    def send_files_via_ctrl_t_paths(self, image_paths: List[str]) -> bool:
+    def send_files_via_ctrl_t_paths(
+        self,
+        image_paths: List[str],
+        *,
+        debug_steps: Optional[list[dict[str, Any]]] = None,
+    ) -> bool:
         self._check_stop()
 
         paths = [str(p).strip() for p in (image_paths or []) if str(p).strip()]
         if not paths:
             return True
 
+        dialog_paths = self._copy_paths_to_temp_attachments(paths, debug_steps=debug_steps)
+        if len(dialog_paths) != len(paths):
+            self._log("[CTRL+T-MULTI] temp attachment preparation failed")
+            return False
+
         try:
             ok = send_files_via_ctrl_t(
-                file_paths=paths,
+                file_paths=dialog_paths,
                 send_keys_fast=self._send_keys_fast,
                 set_clipboard_text=w32.set_clipboard_text,
                 ensure_foreground_chat=self._ensure_foreground_chat,
@@ -3436,6 +3640,7 @@ class KakaoPcDriver(KakaoSenderDriver):
                 log=self._log,
                 prefer_hwnd=int(self._chat_hwnd or self._hwnd),
                 get_foreground_hwnd=w32.get_foreground_hwnd,
+                debug_step=self._ctrl_t_debug_callback(debug_steps),
                 timings={
                     "focus_settle": self._sf(self._profile.ctrl_t.focus_settle),
                     "after_ctrl_t": self._sf(self._profile.ctrl_t.after_ctrl_t),

@@ -22,6 +22,8 @@ from kakao_win32.win32_core import (
     user32,
 )
 
+DebugStep = Callable[[str, bool, str, Optional[dict[str, Any]]], None]
+
 WM_SETTEXT = 0x000C
 WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
@@ -89,8 +91,10 @@ def _build_absolute_paths_text(paths: Sequence[str]) -> str:
         if not ap:
             continue
         ap = ap.replace('"', "")
-        out.append(f'"{ap}"')
-    return " ".join(out)
+        out.append(ap)
+    if len(out) == 1:
+        return out[0]
+    return " ".join([f'"{ap}"' for ap in out])
 
 
 def _normalize_compare_text(text: str) -> str:
@@ -105,6 +109,37 @@ def _safe_window_text(el) -> str:
         return str(el.window_text() or "").strip()
     except Exception:
         return ""
+
+
+def _emit_debug_step(
+    debug_step: Optional[DebugStep],
+    step: str,
+    *,
+    ok: bool,
+    detail: str = "",
+    extra: Optional[dict[str, Any]] = None,
+) -> None:
+    if not debug_step:
+        return
+    try:
+        debug_step(str(step or ""), bool(ok), str(detail or ""), dict(extra or {}))
+    except Exception:
+        pass
+
+
+def _window_extra(hwnd: int) -> dict[str, Any]:
+    h = int(hwnd or 0)
+    if h <= 0:
+        return {"active_window_hwnd": 0, "active_window_title": "", "active_window_class": ""}
+    try:
+        title = str(get_window_text(h) or "").strip()
+    except Exception:
+        title = ""
+    try:
+        cls = str(get_class_name(h) or "").strip()
+    except Exception:
+        cls = ""
+    return {"active_window_hwnd": h, "active_window_title": title, "active_window_class": cls}
 
 
 def _safe_rect_area(el) -> int:
@@ -526,6 +561,123 @@ def _set_edit_text_verified(
     return False
 
 
+def _focus_filename_edit(
+    *,
+    dialog_hwnd: int,
+    edit_hwnd: int,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+) -> None:
+    try:
+        user32.SetForegroundWindow(wintypes.HWND(int(dialog_hwnd or 0)))
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] SetForegroundWindow dialog fail err={e}")
+    try:
+        user32.SetFocus(wintypes.HWND(int(edit_hwnd or 0)))
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] SetFocus edit fail err={e}")
+    try:
+        user32.SendMessageW(wintypes.HWND(int(edit_hwnd or 0)), EM_SETSEL, 0, -1)
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] EM_SETSEL edit fail err={e}")
+    sleep_abs(0.06)
+
+
+def _set_path_text_with_clipboard_then_fallback(
+    *,
+    dialog_hwnd: int,
+    edit_hwnd: int,
+    text: str,
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    clipboard_settle_sec: float,
+    after_paste_sec: float,
+    debug_step: Optional[DebugStep],
+) -> bool:
+    expected = _normalize_compare_text(text)
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_PATH_INPUT_ATTEMPT",
+        ok=True,
+        detail="focus filename edit and paste absolute path",
+        extra={"expected_path": text, "dialog_hwnd": int(dialog_hwnd or 0), "edit_hwnd": int(edit_hwnd or 0)},
+    )
+
+    try:
+        _focus_filename_edit(
+            dialog_hwnd=dialog_hwnd,
+            edit_hwnd=edit_hwnd,
+            sleep_abs=sleep_abs,
+            log=log,
+        )
+        try:
+            send_keys_fast("^a")
+            sleep_abs(0.03)
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] Ctrl+A before paste fail err={e}")
+
+        set_clipboard_text(str(text or ""))
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_CLIPBOARD_SET",
+            ok=True,
+            detail="path copied to clipboard",
+            extra={"expected_path": text, "clipboard_text_length": len(str(text or ""))},
+        )
+        sleep_abs(max(0.03, float(clipboard_settle_sec)))
+
+        send_keys_fast("^v")
+        sleep_abs(max(0.08, float(after_paste_sec)))
+        raw_actual = _get_edit_text_via_messages(edit_hwnd)
+        if _normalize_compare_text(raw_actual) == expected:
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_PASTE",
+                ok=True,
+                detail="path paste verified",
+                extra={"expected_path": text, "actual_text_length": len(raw_actual)},
+            )
+            log("[CTRL+T-MULTI] filename text verified after clipboard paste")
+            return True
+
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_PASTE",
+            ok=False,
+            detail="clipboard paste did not populate filename edit",
+            extra={"expected_path": text, "actual": raw_actual, "actual_text_length": len(raw_actual)},
+        )
+        log(f"[CTRL+T-MULTI] clipboard paste verify fail expected={text!r} actual={raw_actual!r}")
+    except Exception as e:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_CLIPBOARD_SET",
+            ok=False,
+            detail=str(e) or "clipboard paste failed",
+            extra={"expected_path": text, "clipboard_text_length": len(str(text or ""))},
+        )
+        log(f"[CTRL+T-MULTI] clipboard path input fail err={e}")
+
+    ok = _set_edit_text_verified(
+        edit_hwnd,
+        text,
+        sleep_abs=sleep_abs,
+        log=log,
+        timeout_sec=max(1.2, float(after_paste_sec) + 1.2),
+    )
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_DIRECT_SET",
+        ok=ok,
+        detail="fallback WM_SETTEXT filename edit",
+        extra={"expected_path": text, "edit_hwnd": int(edit_hwnd or 0)},
+    )
+    return bool(ok)
+
+
 def _find_open_button_hwnd(dialog_hwnd: int, *, log: Callable[[str], None]) -> int:
     fallback_idok = 0
     fallback_area = 0
@@ -616,109 +768,30 @@ def _confirm_dialog_fields_and_submit(
     return False
 
 
-def send_png_via_ctrl_t(
+def _cleanup_file_dialog_flow(
     *,
-    png_bytes: bytes,
-    send_keys_fast: Callable[[str], None],
-    set_clipboard_text: Callable[[str], None],
-    ensure_foreground_chat: Callable[[], None],
-    focus_chat_input_best_effort: Callable[[], bool],
+    prefer_hwnd: int,
     sleep_abs: Callable[[float], None],
-    send_image_dialog_hook: Callable[..., bool],
-    timeout_sec: float,
-    key_delay: float,
-    debug: bool,
     log: Callable[[str], None],
-    prefix: str = "kakao_sender_attach",
-    ttl_sec: float = 60 * 60 * 6,
-    cache_dir: Optional[Path] = None,
-    timings: Optional[Mapping[str, float]] = None,
-    dlg_timings: Optional[Mapping[str, float]] = None,
-    prefer_hwnd: int = 0,
-    get_foreground_hwnd: Optional[Callable[[], int]] = None,
-) -> bool:
-    """
-    단일 파일 Ctrl+T.
-    기존 검증된 흐름 유지.
-    """
-    if not png_bytes:
-        return True
-
-    tm = dict(timings or {})
-
-    def _t(key: str, default: float = 0.0) -> float:
-        return float(tm.get(key, default))
-
-    try:
-        tmp_path = get_or_create_temp_png(
-            png_bytes=png_bytes,
-            prefix=prefix,
-            ttl_sec=ttl_sec,
-            cache_dir=cache_dir,
-        )
-    except Exception as e:
-        log(f"[CTRL+T] temp cache get/create failed: {e}")
-        return False
-
-    try:
-        ensure_foreground_chat()
-        focus_chat_input_best_effort()
-        sleep_abs(0.02)
-    except Exception:
-        pass
-
-    try:
-        send_keys_fast("^t")
-        sleep_abs(_t("after_ctrl_t"))
-    except Exception as e:
-        log(f"[CTRL+T] key_ctrl_t failed: {e}")
-        return False
-
-    try:
-        set_clipboard_text(str(tmp_path))
-        sleep_abs(_t("clipboard_settle"))
-    except Exception as e:
-        log(f"[CTRL+T] set_clipboard_path failed: {e}")
-        return False
-
-    try:
-        send_keys_fast("^v")
-        sleep_abs(_t("after_paste_path"))
-        send_keys_fast("{ENTER}")
-        sleep_abs(_t("after_enter_path"))
-    except Exception as e:
-        log(f"[CTRL+T] paste/enter flow failed: {e}")
-        return False
-
-    try:
-        ok = bool(
-            send_image_dialog_hook(
-                timeout_sec=timeout_sec,
-                key_delay=key_delay,
-                debug=debug,
-                log=log,
-                timings=dlg_timings,
-                prefer_hwnd=int(prefer_hwnd or 0),
-            )
-        )
-
-        if not ok:
-            try:
-                close_open_dialog_if_any()
-            except Exception:
-                pass
-            try:
-                ensure_foreground_chat_hwnd(int(prefer_hwnd or 0))
-            except Exception:
-                pass
-
-        return bool(ok)
-    except Exception as e:
-        log(f"[CTRL+T] dialog hook failed: {e}")
-        return False
+    debug_step: Optional[DebugStep],
+    ok: bool,
+    detail: str = "",
+) -> None:
+    _safe_cleanup_after_file_dialog(
+        prefer_hwnd=int(prefer_hwnd or 0),
+        sleep_abs=sleep_abs,
+        log=log,
+    )
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_CLEANUP",
+        ok=ok,
+        detail=detail or "file dialog cleanup completed",
+        extra={"prefer_hwnd": int(prefer_hwnd or 0)},
+    )
 
 
-def send_files_via_ctrl_t(
+def _send_paths_via_ctrl_t_dialog(
     *,
     file_paths: Sequence[str],
     send_keys_fast: Callable[[str], None],
@@ -727,12 +800,12 @@ def send_files_via_ctrl_t(
     focus_chat_input_best_effort: Callable[[], bool],
     sleep_abs: Callable[[float], None],
     timeout_sec: float,
-    key_delay: float,
-    debug: bool,
     log: Callable[[str], None],
     timings: Optional[Mapping[str, float]] = None,
     prefer_hwnd: int = 0,
-    get_foreground_hwnd: Optional[Callable[[], int]] = None,
+    get_foreground_hwnd_cb: Optional[Callable[[], int]] = None,
+    debug_step: Optional[DebugStep] = None,
+    post_open_hook: Optional[Callable[..., bool]] = None,
 ) -> bool:
     valid_paths = [str(p).strip() for p in (file_paths or []) if str(p).strip()]
     if not valid_paths:
@@ -740,6 +813,13 @@ def send_files_via_ctrl_t(
 
     for p in valid_paths:
         if not os.path.exists(p):
+            _emit_debug_step(
+                debug_step,
+                "ATTACHMENT_PATH_VALIDATE",
+                ok=False,
+                detail="file does not exist",
+                extra={"path": p, "exists": False},
+            )
             log(f"[CTRL+T-MULTI] file not found: {p}")
             return False
 
@@ -764,44 +844,114 @@ def send_files_via_ctrl_t(
         log(f"[CTRL+T-MULTI] pre-focus fail: {e}")
 
     try:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_OPEN_ATTEMPT",
+            ok=True,
+            detail="press Ctrl+T",
+            extra={"expected_path": full_paths_text, "file_count": len(valid_paths), "prefer_hwnd": int(prefer_hwnd or 0)},
+        )
         send_keys_fast("^t")
+        t_wait0 = time.perf_counter()
         dialog_hwnd = _wait_for_open_dialog(
             timeout_sec=max(2.5, _t("after_ctrl_t", 0.20) + 3.0),
             sleep_abs=sleep_abs,
             log=log,
-            get_foreground_hwnd_cb=get_foreground_hwnd,
+            get_foreground_hwnd_cb=get_foreground_hwnd_cb,
         )
+        elapsed_ms = int((time.perf_counter() - t_wait0) * 1000)
         if not dialog_hwnd:
-            _safe_cleanup_after_file_dialog(
+            fg = int((get_foreground_hwnd_cb or get_foreground_hwnd)() or 0)
+            extra = _window_extra(_root_hwnd(fg))
+            extra.update({"timeout_ms": int(max(2.5, _t("after_ctrl_t", 0.20) + 3.0) * 1000), "elapsed_ms": elapsed_ms})
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_WAIT_ACTIVE",
+                ok=False,
+                detail="open dialog was not detected",
+                extra=extra,
+            )
+            _cleanup_file_dialog_flow(
                 prefer_hwnd=int(prefer_hwnd or 0),
                 sleep_abs=sleep_abs,
                 log=log,
+                debug_step=debug_step,
+                ok=True,
+                detail="cleanup after open dialog wait failure",
             )
             return False
+
+        settle = max(0.30, min(0.70, _t("focus_settle", 0.35)))
+        sleep_abs(settle)
+        extra = _window_extra(dialog_hwnd)
+        extra.update({"elapsed_ms": elapsed_ms, "settle_ms": int(settle * 1000)})
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_WAIT_ACTIVE",
+            ok=True,
+            detail="open dialog is active",
+            extra=extra,
+        )
 
         edit_hwnd = _find_filename_edit_hwnd(dialog_hwnd, log=log)
         if not edit_hwnd:
-            _safe_cleanup_after_file_dialog(
+            extra = _window_extra(dialog_hwnd)
+            extra.update({"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)})
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_PATH_INPUT_FAILED",
+                ok=False,
+                detail="filename edit control was not found",
+                extra=extra,
+            )
+            _cleanup_file_dialog_flow(
                 prefer_hwnd=int(prefer_hwnd or 0),
                 sleep_abs=sleep_abs,
                 log=log,
+                debug_step=debug_step,
+                ok=True,
+                detail="cleanup after filename edit lookup failure",
             )
             return False
 
-        if not _set_edit_text_verified(
-            edit_hwnd,
-            full_paths_text,
+        if not _set_path_text_with_clipboard_then_fallback(
+            dialog_hwnd=dialog_hwnd,
+            edit_hwnd=edit_hwnd,
+            text=full_paths_text,
+            send_keys_fast=send_keys_fast,
+            set_clipboard_text=set_clipboard_text,
             sleep_abs=sleep_abs,
             log=log,
-            timeout_sec=max(1.2, _t("after_paste_path", 0.08) + 1.2),
+            clipboard_settle_sec=_t("clipboard_settle", 0.05),
+            after_paste_sec=_t("after_paste_path", 0.10),
+            debug_step=debug_step,
         ):
-            _safe_cleanup_after_file_dialog(
+            extra = _window_extra(dialog_hwnd)
+            extra.update({"expected_path": full_paths_text, "edit_hwnd": int(edit_hwnd or 0)})
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_PATH_INPUT_FAILED",
+                ok=False,
+                detail="filename edit did not accept expected path",
+                extra=extra,
+            )
+            _cleanup_file_dialog_flow(
                 prefer_hwnd=int(prefer_hwnd or 0),
                 sleep_abs=sleep_abs,
                 log=log,
+                debug_step=debug_step,
+                ok=True,
+                detail="cleanup after path input failure",
             )
             return False
 
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_ENTER",
+            ok=True,
+            detail="submit open dialog",
+            extra={"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)},
+        )
         if not _confirm_dialog_fields_and_submit(
             dialog_hwnd=dialog_hwnd,
             edit_hwnd=edit_hwnd,
@@ -810,17 +960,51 @@ def send_files_via_ctrl_t(
             log=log,
             submit_timeout_sec=max(3.0, float(timeout_sec)),
         ):
+            extra = _window_extra(dialog_hwnd)
+            extra.update({"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)})
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_OPEN_BUTTON_FAILED",
+                ok=False,
+                detail="open dialog did not close after submit",
+                extra=extra,
+            )
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_CLOSED_CHECK",
+                ok=False,
+                detail="open dialog still exists",
+                extra=extra,
+            )
             log("[CTRL+T-MULTI] submit failed or dialog did not close")
-            _safe_cleanup_after_file_dialog(
+            _cleanup_file_dialog_flow(
                 prefer_hwnd=int(prefer_hwnd or 0),
                 sleep_abs=sleep_abs,
                 log=log,
+                debug_step=debug_step,
+                ok=True,
+                detail="cleanup after open dialog submit failure",
             )
             return False
 
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_CLOSED_CHECK",
+            ok=True,
+            detail="open dialog closed",
+            extra={"dialog_hwnd": int(dialog_hwnd or 0), "expected_path": full_paths_text},
+        )
         sleep_abs(max(0.15, _t("after_enter_path", 0.25)))
 
-        ok = send_files_dialog_hook(
+        _emit_debug_step(
+            debug_step,
+            "KAKAO_UPLOAD_WAIT_START",
+            ok=True,
+            detail="wait for Kakao file-send surface",
+            extra={"timeout_ms": int(max(2.0, float(timeout_sec)) * 1000), "prefer_hwnd": int(prefer_hwnd or 0)},
+        )
+        hook = post_open_hook or send_files_dialog_hook
+        ok = hook(
             chat_hwnd=int(prefer_hwnd or 0),
             send_keys_fast=send_keys_fast,
             sleep_abs=sleep_abs,
@@ -828,26 +1012,158 @@ def send_files_via_ctrl_t(
             timeout_sec=max(2.0, float(timeout_sec)),
         )
         if not ok:
-            _safe_cleanup_after_file_dialog(
+            _emit_debug_step(
+                debug_step,
+                "KAKAO_UPLOAD_NOT_STARTED",
+                ok=False,
+                detail="Kakao file-send hook returned false",
+                extra=_window_extra(_root_hwnd(int((get_foreground_hwnd_cb or get_foreground_hwnd)() or 0))),
+            )
+            _cleanup_file_dialog_flow(
                 prefer_hwnd=int(prefer_hwnd or 0),
                 sleep_abs=sleep_abs,
                 log=log,
+                debug_step=debug_step,
+                ok=True,
+                detail="cleanup after Kakao upload start failure",
             )
             return False
 
-        _safe_cleanup_after_file_dialog(
+        _emit_debug_step(
+            debug_step,
+            "KAKAO_UPLOAD_STARTED",
+            ok=True,
+            detail="Kakao file-send hook completed",
+            extra={"prefer_hwnd": int(prefer_hwnd or 0)},
+        )
+        _cleanup_file_dialog_flow(
             prefer_hwnd=int(prefer_hwnd or 0),
             sleep_abs=sleep_abs,
             log=log,
+            debug_step=debug_step,
+            ok=True,
+            detail="cleanup after successful file attach",
         )
         sleep_abs(0.12)
         return True
 
     except Exception as e:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_UNKNOWN_STATE",
+            ok=False,
+            detail=str(e) or "file dialog exception",
+            extra=_window_extra(_root_hwnd(int((get_foreground_hwnd_cb or get_foreground_hwnd)() or 0))),
+        )
         log(f"[CTRL+T-MULTI] exception: {e}")
-        _safe_cleanup_after_file_dialog(
+        _cleanup_file_dialog_flow(
             prefer_hwnd=int(prefer_hwnd or 0),
             sleep_abs=sleep_abs,
             log=log,
+            debug_step=debug_step,
+            ok=True,
+            detail="cleanup after file dialog exception",
         )
         return False
+
+
+def send_png_via_ctrl_t(
+    *,
+    png_bytes: bytes,
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    ensure_foreground_chat: Callable[[], None],
+    focus_chat_input_best_effort: Callable[[], bool],
+    sleep_abs: Callable[[float], None],
+    send_image_dialog_hook: Callable[..., bool],
+    timeout_sec: float,
+    key_delay: float,
+    debug: bool,
+    log: Callable[[str], None],
+    prefix: str = "kakao_sender_attach",
+    ttl_sec: float = 60 * 60 * 6,
+    cache_dir: Optional[Path] = None,
+    timings: Optional[Mapping[str, float]] = None,
+    dlg_timings: Optional[Mapping[str, float]] = None,
+    prefer_hwnd: int = 0,
+    get_foreground_hwnd: Optional[Callable[[], int]] = None,
+    debug_step: Optional[DebugStep] = None,
+) -> bool:
+    """
+    단일 파일 Ctrl+T.
+    기존 검증된 흐름 유지.
+    """
+    if not png_bytes:
+        return True
+
+    try:
+        tmp_path = get_or_create_temp_png(
+            png_bytes=png_bytes,
+            prefix=prefix,
+            ttl_sec=ttl_sec,
+            cache_dir=cache_dir,
+        )
+    except Exception as e:
+        log(f"[CTRL+T] temp cache get/create failed: {e}")
+        return False
+
+    def _single_image_post_open_hook(**_kwargs: Any) -> bool:
+        return bool(
+            send_image_dialog_hook(
+                timeout_sec=timeout_sec,
+                key_delay=key_delay,
+                debug=debug,
+                log=log,
+                timings=dlg_timings,
+                prefer_hwnd=int(prefer_hwnd or 0),
+            )
+        )
+
+    return _send_paths_via_ctrl_t_dialog(
+        file_paths=[str(tmp_path)],
+        send_keys_fast=send_keys_fast,
+        set_clipboard_text=set_clipboard_text,
+        ensure_foreground_chat=ensure_foreground_chat,
+        focus_chat_input_best_effort=focus_chat_input_best_effort,
+        sleep_abs=sleep_abs,
+        timeout_sec=timeout_sec,
+        log=log,
+        timings=timings,
+        prefer_hwnd=int(prefer_hwnd or 0),
+        get_foreground_hwnd_cb=get_foreground_hwnd,
+        debug_step=debug_step,
+        post_open_hook=_single_image_post_open_hook,
+    )
+
+
+def send_files_via_ctrl_t(
+    *,
+    file_paths: Sequence[str],
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    ensure_foreground_chat: Callable[[], None],
+    focus_chat_input_best_effort: Callable[[], bool],
+    sleep_abs: Callable[[float], None],
+    timeout_sec: float,
+    key_delay: float,
+    debug: bool,
+    log: Callable[[str], None],
+    timings: Optional[Mapping[str, float]] = None,
+    prefer_hwnd: int = 0,
+    get_foreground_hwnd: Optional[Callable[[], int]] = None,
+    debug_step: Optional[DebugStep] = None,
+) -> bool:
+    return _send_paths_via_ctrl_t_dialog(
+        file_paths=file_paths,
+        send_keys_fast=send_keys_fast,
+        set_clipboard_text=set_clipboard_text,
+        ensure_foreground_chat=ensure_foreground_chat,
+        focus_chat_input_best_effort=focus_chat_input_best_effort,
+        sleep_abs=sleep_abs,
+        timeout_sec=timeout_sec,
+        log=log,
+        timings=timings,
+        prefer_hwnd=int(prefer_hwnd or 0),
+        get_foreground_hwnd_cb=get_foreground_hwnd,
+        debug_step=debug_step,
+    )

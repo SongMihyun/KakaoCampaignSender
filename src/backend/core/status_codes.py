@@ -35,6 +35,7 @@ STATUS_CODES: dict[int, StatusInfo] = {
     4216: StatusInfo(4216, "카카오톡 창 포커스 손실", "focus_chat", "파일 첨부 중 카카오톡 채팅창 포커스가 사라졌습니다.", ("다른 창 활성화", "사용자 입력 간섭"), ("발송 중 PC 조작 중지", "카카오톡 창 앞으로 이동")),
     4217: StatusInfo(4217, "파일 경로 클립보드 설정 실패", "clipboard_path", "파일 경로를 클립보드에 넣지 못했습니다.", ("클립보드 점유", "보안 프로그램 간섭"), ("잠시 후 재시도", "클립보드 사용 앱 종료")),
     4218: StatusInfo(4218, "파일 선택창 알 수 없는 상태", "file_dialog_unknown", "파일 선택/업로드 단계에서 분류되지 않은 상태가 발생했습니다.", ("Windows 파일창 비정상 상태", "카카오톡 UI 변경"), ("오류내용 운영자에게 보내기",)),
+    4219: StatusInfo(4219, "임시 첨부 파일 복사 실패", "attach_temp_copy", "첨부 파일을 안정적인 임시 경로로 복사하지 못했습니다.", ("원본 파일 접근 권한 문제", "OneDrive 동기화 지연", "디스크 공간 부족"), ("원본 파일 위치 확인", "잠시 후 다시 발송")),
     4301: StatusInfo(4301, "업로드 타임아웃", "upload_wait", "파일 업로드 완료 신호를 제한 시간 안에 확인하지 못했습니다.", ("네트워크 지연", "PC 부하", "카카오톡 업로드 지연"), ("카카오톡 상태 확인", "일시정지 후 F9로 재개")),
     4302: StatusInfo(4302, "업로드 파이프라인 정지", "upload_pipeline", "파일 업로드가 진행 중인 상태로 파이프라인이 멈춘 것으로 보입니다.", ("업로드 지연", "카카오톡 세션 불안정", "채팅창 닫기 충돌"), ("카카오톡 재로그인", "F9로 재개")),
     4303: StatusInfo(4303, "채팅창 종료 실패", "close_chat", "업로드 또는 카카오톡 응답 문제로 채팅창을 닫지 못했습니다.", ("전송 중 파일 팝업", "카카오톡 응답 없음"), ("카카오톡 재로그인", "F9로 재개")),
@@ -83,6 +84,8 @@ def status_from_result(status: str, reason: str = "") -> StatusInfo:
         return STATUS_CODES[4217]
     if "FILE_DIALOG_UNKNOWN_STATE" in s or "file_dialog_unknown_state" in r:
         return STATUS_CODES[4218]
+    if "ATTACHMENT_TEMP_COPY_FAILED" in s or "attachment_temp_copy_failed" in r or "attach_temp_copy" in r:
+        return STATUS_CODES[4219]
     if "NOT_FOUND" in s or "not_found" in r or ("chat" in r and "not" in r):
         return STATUS_CODES[3001]
     if "IMAGE_ATTACH_FAILED" in s or "image_attach_failed" in r:

@@ -149,6 +149,30 @@ class LogDetailDialog(QDialog):
         if retryable != "":
             lines.append(f"재시도 가능: {'예' if bool(retryable) else '아니오'}")
 
+        try:
+            status_code = int(self._detail.get("status_code") or 0)
+        except Exception:
+            status_code = 0
+        if status_code in (4212, 4213):
+            lines += [
+                "",
+                "파일 선택창은 열렸지만 파일 경로 자동 입력 또는 열기 동작이 완료되지 않았습니다.",
+                "- 파일 경로가 복잡하거나 OneDrive/카카오톡 받은 파일 폴더 접근이 늦을 수 있습니다.",
+                "- 파일명 입력칸 포커스 또는 클립보드 붙여넣기가 실패했을 수 있습니다.",
+            ]
+        elif status_code == 4214:
+            lines += [
+                "",
+                "파일 선택은 끝났지만 카카오톡 업로드 시작을 확인하지 못했습니다.",
+                "- 카카오톡 창 포커스 또는 첨부 파일 접근 권한을 확인하세요.",
+            ]
+        elif status_code == 4219:
+            lines += [
+                "",
+                "원본 파일을 임시 첨부 폴더로 복사하지 못했습니다.",
+                "- 원본 파일이 열려 있거나 OneDrive 동기화 중인지 확인하세요.",
+            ]
+
         steps = self._detail.get("debug_steps", [])
         if isinstance(steps, list) and steps:
             lines += ["", "[debug_steps]"]
