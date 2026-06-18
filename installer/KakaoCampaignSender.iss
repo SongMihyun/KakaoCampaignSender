@@ -51,7 +51,10 @@ PrivilegesRequired=lowest
 SetupIconFile={#MyAppIconSource}
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
-ArchitecturesInstallIn64BitMode=x64
+; PyInstaller release builds are produced on 64-bit Windows/Python.
+; Fail early on unsupported 32-bit Windows instead of appearing to do nothing.
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "korean"; MessagesFile: "compiler:Languages\Korean.isl"

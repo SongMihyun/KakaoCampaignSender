@@ -178,16 +178,42 @@ jobs:
 
           $hash = (Get-FileHash $installer.FullName -Algorithm SHA256).Hash.ToLower()
           $url  = "https://github.com/${{ github.repository }}/releases/download/v$ver/$($installer.Name)"
+          $size = [int64]$installer.Length
 
           $obj = [ordered]@{
             version      = $ver
+            filename     = $installer.Name
             url          = $url
+            size         = $size
             sha256       = $hash
             notes        = ""
             published_at = (Get-Date).ToUniversalTime().ToString("o")
           }
 
           ($obj | ConvertTo-Json -Depth 5) | Out-File -Encoding utf8 "dist/installer/latest.json"
+
+          $sizeFormatted = "{0:N0}" -f $size
+          $notes = @"
+          ## 설치파일 확인 정보
+
+          - File: ``$($installer.Name)``
+          - Size: ``$sizeFormatted bytes``
+          - SHA256: ``$hash``
+
+          설치창이 뜨지 않거나 실행 직후 무반응이면 PowerShell에서 설치 로그를 생성해 확인하세요.
+
+          ``````powershell
+          cd `$env:USERPROFILE\Desktop
+          .\KakaoCampaignSenderSetup_$ver.exe /LOG="`$env:USERPROFILE\Desktop\kasender_install.log"
+          Get-Item .\KakaoCampaignSenderSetup_$ver.exe | Select-Object Name, Length
+          Get-FileHash .\KakaoCampaignSenderSetup_$ver.exe -Algorithm SHA256
+          ``````
+
+          자세한 진단 절차는 저장소의 ``docs/install_troubleshooting.md``를 참고하세요.
+          "@
+
+          $notes = ($notes -split "`r?`n" | ForEach-Object { $_.TrimStart() }) -join "`r`n"
+          $notes | Out-File -Encoding utf8 "dist/installer/release_notes.md"
 
       - name: Upload release artifacts
         uses: actions/upload-artifact@v4
@@ -196,12 +222,14 @@ jobs:
           path: |
             dist/installer/*.exe
             dist/installer/latest.json
+            dist/installer/release_notes.md
           if-no-files-found: error
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.taginfo.outputs.tag }}
+          body_path: dist/installer/release_notes.md
           files: |
             dist/installer/*.exe
             dist/installer/latest.json
