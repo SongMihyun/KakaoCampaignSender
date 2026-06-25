@@ -68,11 +68,20 @@ class CampaignComboBox(QComboBox):
 
 
 class CampaignPage(QWidget):
-    def __init__(self, service: CampaignsService, on_status: Optional[Callable[[str], None]] = None) -> None:
+    def __init__(
+        self,
+        service: CampaignsService,
+        on_status: Optional[Callable[[str], None]] = None,
+        *,
+        contacts_store=None,
+        sender_profiles_repo=None,
+    ) -> None:
         super().__init__()
         self.setObjectName("Page")
         self.service = service
         self._on_status = on_status or (lambda _: None)
+        self.contacts_store = contacts_store
+        self.sender_profiles_repo = sender_profiles_repo
 
         self._draft: list[DraftItem] = []
         self._campaigns = []
@@ -257,7 +266,13 @@ class CampaignPage(QWidget):
         run_bg(job, on_done=done, on_error=lambda tb: QMessageBox.critical(self, "오류", tb))
 
     def _add_text_item(self) -> None:
-        dlg = TextItemDialog(title="문구 추가", text="", parent=self)
+        dlg = TextItemDialog(
+            title="문구 추가",
+            text="",
+            parent=self,
+            sample_contact=self._sample_contact_for_preview(),
+            sender_profile=self._sender_profile_for_preview(),
+        )
         if dlg.exec() != QDialog.Accepted:
             return
 
@@ -336,13 +351,36 @@ class CampaignPage(QWidget):
 
     def _edit_text_item(self, idx: int) -> None:
         item = self._draft[idx]
-        dlg = TextItemDialog(title="문구 수정", text=item.text, parent=self)
+        dlg = TextItemDialog(
+            title="문구 수정",
+            text=item.text,
+            parent=self,
+            sample_contact=self._sample_contact_for_preview(),
+            sender_profile=self._sender_profile_for_preview(),
+        )
         if dlg.exec() != QDialog.Accepted:
             return
 
         item.text = dlg.get_text()
         self._rebuild_list(select_index=idx)
         self._on_status("문구를 수정했습니다.")
+
+    def _sample_contact_for_preview(self):
+        try:
+            if self.contacts_store is None:
+                return None
+            rows = self.contacts_store.list_all()
+            return rows[0] if rows else None
+        except Exception:
+            return None
+
+    def _sender_profile_for_preview(self):
+        try:
+            if self.sender_profiles_repo is None:
+                return None
+            return self.sender_profiles_repo.get_default()
+        except Exception:
+            return None
 
     def _replace_image(self, idx: int) -> None:
         try:

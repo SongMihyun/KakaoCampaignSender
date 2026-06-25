@@ -197,6 +197,8 @@ class MainWindow(QMainWindow):
         self.campaign_page = CampaignPage(
             service=self.campaigns_service,
             on_status=self.status.set_message,
+            contacts_store=self.contacts_store,
+            sender_profiles_repo=self.sender_profiles_repo,
         )
 
         self.send_page = SendPage(
