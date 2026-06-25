@@ -40,6 +40,10 @@ user32.EnumChildWindows.argtypes = [wintypes.HWND, EnumWindowsProc, wintypes.LPA
 user32.EnumChildWindows.restype = wintypes.BOOL
 user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
 user32.GetDlgCtrlID.restype = ctypes.c_int
+user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
+user32.GetDlgItem.restype = wintypes.HWND
+user32.SetDlgItemTextW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_wchar_p]
+user32.SetDlgItemTextW.restype = wintypes.BOOL
 
 
 def _safe_cleanup_after_file_dialog(
@@ -467,6 +471,27 @@ def _get_edit_text_via_messages(hwnd: int) -> str:
 
 
 def _find_filename_edit_hwnd(dialog_hwnd: int, *, log: Callable[[str], None]) -> int:
+    try:
+        item = int(user32.GetDlgItem(wintypes.HWND(int(dialog_hwnd or 0)), EDT1) or 0)
+        if item:
+            item_cls = str(get_class_name(item) or "")
+            if item_cls == "Edit":
+                log(f"[CTRL+T-MULTI] filename edit found by GetDlgItem EDT1 hwnd={item}")
+                return item
+            for child in _iter_child_windows(item, recursive=True):
+                try:
+                    if str(get_class_name(child) or "") == "Edit":
+                        log(
+                            "[CTRL+T-MULTI] filename edit found under GetDlgItem EDT1 "
+                            f"item={item} item_cls={item_cls!r} edit={child}"
+                        )
+                        return int(child)
+                except Exception:
+                    continue
+            log(f"[CTRL+T-MULTI] GetDlgItem EDT1 hwnd={item} cls={item_cls!r} has no Edit child")
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] GetDlgItem EDT1 lookup fail err={e}")
+
     candidates: list[tuple[int, int]] = []
     for h in _iter_child_windows(dialog_hwnd, recursive=True):
         try:
@@ -698,6 +723,263 @@ def _set_path_text_with_clipboard_then_fallback(
     return bool(ok)
 
 
+def _bring_dialog_foreground(dialog_hwnd: int, *, sleep_abs: Callable[[float], None], log: Callable[[str], None]) -> None:
+    h = int(dialog_hwnd or 0)
+    if h <= 0:
+        return
+    try:
+        user32.ShowWindow(wintypes.HWND(h), 9)
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] ShowWindow dialog fail err={e}")
+    try:
+        user32.SetForegroundWindow(wintypes.HWND(h))
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] SetForegroundWindow dialog fail err={e}")
+    sleep_abs(0.08)
+
+
+def _submit_path_text_by_dlgitem_fallback(
+    *,
+    dialog_hwnd: int,
+    text: str,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    submit_timeout_sec: float,
+    debug_step: Optional[DebugStep],
+) -> bool:
+    extra = {
+        "expected_path": text,
+        "dialog_hwnd": int(dialog_hwnd or 0),
+        "control_id": EDT1,
+        "method": "SetDlgItemTextW",
+    }
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_DLGITEM_FALLBACK",
+        ok=True,
+        detail="try filename input using dialog item id",
+        extra=extra,
+    )
+
+    try:
+        item = int(user32.GetDlgItem(wintypes.HWND(int(dialog_hwnd or 0)), EDT1) or 0)
+        if item:
+            extra["item_hwnd"] = item
+            extra["item_class"] = str(get_class_name(item) or "")
+
+        if not user32.SetDlgItemTextW(wintypes.HWND(int(dialog_hwnd or 0)), EDT1, ctypes.c_wchar_p(str(text or ""))):
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_DLGITEM_FALLBACK",
+                ok=False,
+                detail="SetDlgItemTextW returned false",
+                extra=extra,
+            )
+            return False
+
+        sleep_abs(0.12)
+        verified = False
+        if item:
+            actual = _get_edit_text_via_messages(item)
+            verified = _normalize_compare_text(actual) == _normalize_compare_text(text)
+            extra["actual_text_length"] = len(actual)
+            if not verified:
+                for child in _iter_child_windows(item, recursive=True):
+                    try:
+                        if str(get_class_name(child) or "") != "Edit":
+                            continue
+                        actual = _get_edit_text_via_messages(child)
+                        verified = _normalize_compare_text(actual) == _normalize_compare_text(text)
+                        extra["actual_text_length"] = len(actual)
+                        extra["edit_hwnd"] = int(child)
+                        if verified:
+                            break
+                    except Exception:
+                        continue
+
+        if not verified:
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_DLGITEM_FALLBACK",
+                ok=False,
+                detail="dialog item text was not verified",
+                extra=extra,
+            )
+            return False
+
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_DLGITEM_FALLBACK",
+            ok=True,
+            detail="dialog item text verified",
+            extra=extra,
+        )
+        user32.SendMessageW(wintypes.HWND(int(dialog_hwnd or 0)), WM_COMMAND, IDOK, 0)
+        if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+            log("[CTRL+T-MULTI] dialog closed after SetDlgItemTextW fallback")
+            return True
+    except Exception as e:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_DLGITEM_FALLBACK",
+            ok=False,
+            detail=str(e) or "dialog item fallback failed",
+            extra=extra,
+        )
+        log(f"[CTRL+T-MULTI] dialog item fallback fail err={e}")
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_DLGITEM_FALLBACK",
+        ok=False,
+        detail="open dialog did not close after dialog item fallback",
+        extra=extra,
+    )
+    return False
+
+
+def _submit_path_text_by_uia_fallback(
+    *,
+    dialog_hwnd: int,
+    text: str,
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    submit_timeout_sec: float,
+    debug_step: Optional[DebugStep],
+) -> bool:
+    extra = {
+        "expected_path": text,
+        "dialog_hwnd": int(dialog_hwnd or 0),
+        "method": "uia_focus_clipboard_enter",
+    }
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_UIA_FALLBACK",
+        ok=True,
+        detail="try filename input using UI Automation",
+        extra=extra,
+    )
+
+    try:
+        _bring_dialog_foreground(dialog_hwnd, sleep_abs=sleep_abs, log=log)
+        Desktop, _, _ = lazy_pywinauto()
+        root = Desktop(backend="uia").window(handle=int(dialog_hwnd or 0))
+        try:
+            root.set_focus()
+        except Exception:
+            pass
+
+        root_rect = root.rectangle()
+        candidates: list[tuple[int, Any, dict[str, Any]]] = []
+        for el in root.descendants():
+            try:
+                info = getattr(el, "element_info", None)
+                ctrl_type = str(getattr(info, "control_type", "") or "")
+                if ctrl_type not in {"Edit", "ComboBox"}:
+                    continue
+                rect = el.rectangle()
+                w = max(0, int(rect.width()))
+                h = max(0, int(rect.height()))
+                if w <= 20 or h <= 8:
+                    continue
+                name = _safe_window_text(el)
+                automation_id = str(getattr(info, "automation_id", "") or "")
+                class_name = str(getattr(info, "class_name", "") or "")
+                score = int(rect.bottom) * 10 + (w * h)
+                lowered_name = name.casefold()
+                if automation_id == str(EDT1):
+                    score += 10_000_000
+                if "file name" in lowered_name or "파일 이름" in name or "파일명" in name:
+                    score += 5_000_000
+                if int(rect.bottom) >= int(root_rect.bottom) - 160:
+                    score += 1_000_000
+                meta = {
+                    "control_type": ctrl_type,
+                    "automation_id": automation_id,
+                    "class_name": class_name,
+                    "name": name,
+                    "rect": (int(rect.left), int(rect.top), int(rect.right), int(rect.bottom)),
+                }
+                candidates.append((score, el, meta))
+            except Exception:
+                continue
+
+        if not candidates:
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_UIA_FALLBACK",
+                ok=False,
+                detail="no UIA filename input candidate",
+                extra=extra,
+            )
+            return False
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        score, el, meta = candidates[0]
+        extra.update({"candidate_score": int(score), "candidate": meta, "candidate_count": len(candidates)})
+        log(f"[CTRL+T-MULTI] UIA filename candidate score={score} meta={meta}")
+
+        try:
+            el.set_focus()
+            sleep_abs(0.08)
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] UIA candidate set_focus fail err={e}")
+
+        set_clipboard_text(str(text or ""))
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_CLIPBOARD_SET",
+            ok=True,
+            detail="path copied to clipboard for UIA fallback",
+            extra={"expected_path": text, "clipboard_text_length": len(str(text or ""))},
+        )
+        sleep_abs(0.08)
+        send_keys_fast("^a")
+        sleep_abs(0.04)
+        send_keys_fast("^v")
+        sleep_abs(0.15)
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_PASTE",
+            ok=True,
+            detail="path pasted by UIA fallback",
+            extra=extra,
+        )
+        send_keys_fast("{ENTER}")
+        if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_UIA_FALLBACK",
+                ok=True,
+                detail="open dialog closed after UIA fallback",
+                extra=extra,
+            )
+            log("[CTRL+T-MULTI] dialog closed after UIA fallback")
+            return True
+    except Exception as e:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_UIA_FALLBACK",
+            ok=False,
+            detail=str(e) or "UIA fallback failed",
+            extra=extra,
+        )
+        log(f"[CTRL+T-MULTI] UIA fallback fail err={e}")
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_UIA_FALLBACK",
+        ok=False,
+        detail="open dialog did not close after UIA fallback",
+        extra=extra,
+    )
+    return False
+
+
 def _submit_path_text_by_keyboard_fallback(
     *,
     dialog_hwnd: int,
@@ -789,6 +1071,108 @@ def _submit_path_text_by_keyboard_fallback(
         "FILE_DIALOG_KEYBOARD_FALLBACK",
         ok=False,
         detail="open dialog did not close after keyboard fallback",
+        extra=extra,
+    )
+    return False
+
+
+def _submit_path_text_by_geometry_fallback(
+    *,
+    dialog_hwnd: int,
+    text: str,
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    submit_timeout_sec: float,
+    debug_step: Optional[DebugStep],
+) -> bool:
+    try:
+        l, t, r, b = get_window_rect(dialog_hwnd)
+    except Exception:
+        l = t = r = b = 0
+    w = max(0, int(r - l))
+    h = max(0, int(b - t))
+    if w <= 200 or h <= 180:
+        return False
+
+    x = int(l + (w * 0.45))
+    y_candidates = [
+        int(b - max(62, min(92, h * 0.105))),
+        int(b - max(78, min(116, h * 0.135))),
+    ]
+    extra = {
+        "expected_path": text,
+        "dialog_hwnd": int(dialog_hwnd or 0),
+        "method": "bottom_filename_click_clipboard_enter",
+        "dialog_rect": (int(l), int(t), int(r), int(b)),
+        "x": x,
+        "y_candidates": y_candidates,
+    }
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_GEOMETRY_FALLBACK",
+        ok=True,
+        detail="try filename input using bottom field click",
+        extra=extra,
+    )
+
+    try:
+        _bring_dialog_foreground(dialog_hwnd, sleep_abs=sleep_abs, log=log)
+        set_clipboard_text(str(text or ""))
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_CLIPBOARD_SET",
+            ok=True,
+            detail="path copied to clipboard for geometry fallback",
+            extra={"expected_path": text, "clipboard_text_length": len(str(text or ""))},
+        )
+        sleep_abs(0.08)
+
+        _, _, click = lazy_pywinauto()
+        for y in y_candidates:
+            _bring_dialog_foreground(dialog_hwnd, sleep_abs=sleep_abs, log=log)
+            click(coords=(x, int(y)))
+            sleep_abs(0.08)
+            send_keys_fast("^a")
+            sleep_abs(0.04)
+            send_keys_fast("^v")
+            sleep_abs(0.15)
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_PASTE",
+                ok=True,
+                detail="path pasted by geometry fallback",
+                extra={**extra, "clicked": (x, int(y))},
+            )
+            send_keys_fast("{ENTER}")
+            if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+                _emit_debug_step(
+                    debug_step,
+                    "FILE_DIALOG_GEOMETRY_FALLBACK",
+                    ok=True,
+                    detail="open dialog closed after geometry fallback",
+                    extra={**extra, "clicked": (x, int(y))},
+                )
+                log(f"[CTRL+T-MULTI] dialog closed after geometry fallback x={x} y={y}")
+                return True
+            sleep_abs(0.15)
+    except Exception as e:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_GEOMETRY_FALLBACK",
+            ok=False,
+            detail=str(e) or "geometry fallback failed",
+            extra=extra,
+        )
+        log(f"[CTRL+T-MULTI] geometry fallback fail err={e}")
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_GEOMETRY_FALLBACK",
+        ok=False,
+        detail="open dialog did not close after geometry fallback",
         extra=extra,
     )
     return False
@@ -1050,7 +1434,41 @@ def _send_paths_via_ctrl_t_dialog(
             log("[CTRL+T-MULTI] filename edit not found after retry; trying keyboard fallback")
 
         if not submitted:
+            submitted = _submit_path_text_by_dlgitem_fallback(
+                dialog_hwnd=dialog_hwnd,
+                text=full_paths_text,
+                sleep_abs=sleep_abs,
+                log=log,
+                submit_timeout_sec=max(3.0, float(timeout_sec)),
+                debug_step=debug_step,
+            )
+
+        if not submitted:
+            submitted = _submit_path_text_by_uia_fallback(
+                dialog_hwnd=dialog_hwnd,
+                text=full_paths_text,
+                send_keys_fast=send_keys_fast,
+                set_clipboard_text=set_clipboard_text,
+                sleep_abs=sleep_abs,
+                log=log,
+                submit_timeout_sec=max(3.0, float(timeout_sec)),
+                debug_step=debug_step,
+            )
+
+        if not submitted:
             submitted = _submit_path_text_by_keyboard_fallback(
+                dialog_hwnd=dialog_hwnd,
+                text=full_paths_text,
+                send_keys_fast=send_keys_fast,
+                set_clipboard_text=set_clipboard_text,
+                sleep_abs=sleep_abs,
+                log=log,
+                submit_timeout_sec=max(3.0, float(timeout_sec)),
+                debug_step=debug_step,
+            )
+
+        if not submitted:
+            submitted = _submit_path_text_by_geometry_fallback(
                 dialog_hwnd=dialog_hwnd,
                 text=full_paths_text,
                 send_keys_fast=send_keys_fast,
