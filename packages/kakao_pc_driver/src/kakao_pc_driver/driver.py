@@ -2790,14 +2790,32 @@ class KakaoPcDriver(KakaoSenderDriver):
             try:
                 if opened:
                     self._close_chat()
-            except UploadPipelineStalled:
+            except UploadPipelineStalled as e:
                 self._trace("STATE_SEND:close_paused", chat_hwnd=int(self._chat_hwnd or 0))
-                raise
+                if self._last_failed_step(debug_steps):
+                    self._debug_step(
+                        debug_steps,
+                        "CHAT_CLOSE_AFTER_FAILURE",
+                        ok=False,
+                        detail=str(e) or "chat close failed after send failure",
+                        extra={"chat_hwnd": int(self._chat_hwnd or 0)},
+                    )
+                else:
+                    raise
             except StopNow:
                 raise
             except Exception as e:
                 self._trace("STATE_SEND:close_fail", err=str(e), chat_hwnd=int(self._chat_hwnd or 0))
-                raise UploadPipelineStalled(f"CHAT_CLOSE_TIMEOUT: {e}") from e
+                if self._last_failed_step(debug_steps):
+                    self._debug_step(
+                        debug_steps,
+                        "CHAT_CLOSE_AFTER_FAILURE",
+                        ok=False,
+                        detail=str(e) or "chat close failed after send failure",
+                        extra={"chat_hwnd": int(self._chat_hwnd or 0)},
+                    )
+                else:
+                    raise UploadPipelineStalled(f"CHAT_CLOSE_TIMEOUT: {e}") from e
             finally:
                 self._cleanup_after_target_state()
                 self._open_in_main = previous_open_in_main

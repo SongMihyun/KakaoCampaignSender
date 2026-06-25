@@ -111,6 +111,9 @@ user32.SendInput.restype = wintypes.UINT
 user32.SendMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
 user32.SendMessageW.restype = wintypes.LRESULT
 
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
+
 # --- GetAncestor (top-level/root hwnd 정규화) ---
 GA_PARENT = 1
 GA_ROOT = 2
@@ -425,28 +428,47 @@ def close_open_dialog_if_any(
         except Exception:
             return False
 
-    found = False
-
-    for _ in range(max_try):
-        fg = int(get_foreground_hwnd() or 0)
-        top = _root(fg)
+    def _close_dialog(top: int) -> bool:
+        top = int(top or 0)
         if not _looks_like_open_dialog(top):
-            break
-
-        found = True
+            return False
         try:
-            # 가장 확실: WM_CLOSE
             user32.PostMessageW(wintypes.HWND(top), WM_CLOSE, 0, 0)
             time.sleep(wait_after_sec)
+            if user32.IsWindow(wintypes.HWND(top)):
+                user32.SendMessageW(wintypes.HWND(top), WM_CLOSE, 0, 0)
+                time.sleep(wait_after_sec)
+            return True
         except Exception as e:
             logger.info(f"[MODAL] WM_CLOSE failed: {e}")
-            # 최후수단: ESC
             try:
                 from pywinauto.keyboard import send_keys
                 send_keys("{ESC}")
                 time.sleep(wait_after_sec)
             except Exception:
                 pass
+            return True
+
+    found = False
+
+    for _ in range(max_try):
+        fg = int(get_foreground_hwnd() or 0)
+        top = _root(fg)
+        if not _close_dialog(top):
+            break
+        found = True
+
+    try:
+        Desktop, _, _ = lazy_pywinauto()
+        for dlg in Desktop(backend="win32").windows(class_name="#32770", visible_only=True):
+            try:
+                h = int(getattr(dlg, "handle", 0) or 0)
+                if h and _looks_like_open_dialog(h):
+                    found = bool(_close_dialog(h)) or found
+            except Exception:
+                continue
+    except Exception:
+        pass
 
     return found
 
@@ -558,4 +580,3 @@ __all__ = [
     "GA_ROOT",
     "GA_ROOTOWNER",
 ]
-
