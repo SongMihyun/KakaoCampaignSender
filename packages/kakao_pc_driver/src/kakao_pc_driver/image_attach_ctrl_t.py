@@ -32,6 +32,8 @@ WM_COMMAND = 0x0111
 EM_SETSEL = 0x00B1
 IDOK = 1
 EDT1 = 0x0480
+CMB13 = 0x047C
+OPEN_DIALOG_MIN_SCORE = 900
 
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
@@ -42,6 +44,8 @@ user32.GetDlgCtrlID.argtypes = [wintypes.HWND]
 user32.GetDlgCtrlID.restype = ctypes.c_int
 user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetDlgItem.restype = wintypes.HWND
+user32.GetParent.argtypes = [wintypes.HWND]
+user32.GetParent.restype = wintypes.HWND
 user32.SetDlgItemTextW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_wchar_p]
 user32.SetDlgItemTextW.restype = wintypes.BOOL
 
@@ -134,7 +138,13 @@ def _emit_debug_step(
 def _window_extra(hwnd: int) -> dict[str, Any]:
     h = int(hwnd or 0)
     if h <= 0:
-        return {"active_window_hwnd": 0, "active_window_title": "", "active_window_class": ""}
+        return {
+            "active_window_hwnd": 0,
+            "active_window_title": "",
+            "active_window_class": "",
+            "active_window_rect": (0, 0, 0, 0),
+            "active_window_size": (0, 0),
+        }
     try:
         title = str(get_window_text(h) or "").strip()
     except Exception:
@@ -143,7 +153,17 @@ def _window_extra(hwnd: int) -> dict[str, Any]:
         cls = str(get_class_name(h) or "").strip()
     except Exception:
         cls = ""
-    return {"active_window_hwnd": h, "active_window_title": title, "active_window_class": cls}
+    try:
+        l, t, r, b = get_window_rect(h)
+    except Exception:
+        l = t = r = b = 0
+    return {
+        "active_window_hwnd": h,
+        "active_window_title": title,
+        "active_window_class": cls,
+        "active_window_rect": (int(l), int(t), int(r), int(b)),
+        "active_window_size": (max(0, int(r - l)), max(0, int(b - t))),
+    }
 
 
 def _safe_rect_area(el) -> int:
@@ -417,7 +437,212 @@ def _iter_child_windows(parent_hwnd: int, *, recursive: bool = True) -> list[int
     return out
 
 
+def _safe_hwnd_rect(hwnd: int) -> tuple[int, int, int, int]:
+    try:
+        l, t, r, b = get_window_rect(int(hwnd or 0))
+        return int(l), int(t), int(r), int(b)
+    except Exception:
+        return 0, 0, 0, 0
+
+
+def _safe_dialog_item(hwnd: int, ctrl_id: int) -> int:
+    try:
+        return int(user32.GetDlgItem(wintypes.HWND(int(hwnd or 0)), int(ctrl_id)) or 0)
+    except Exception:
+        return 0
+
+
+def _title_looks_like_open_dialog(title: str) -> bool:
+    value = str(title or "").strip()
+    folded = value.casefold()
+    return ("open" in folded) or ("\uc5f4\uae30" in value)
+
+
+def _summarize_dialog_children(hwnd: int) -> dict[str, Any]:
+    children = _iter_child_windows(hwnd, recursive=True)
+    class_counts: dict[str, int] = {}
+    text_hits: list[dict[str, Any]] = []
+    for child in children:
+        try:
+            cls = str(get_class_name(child) or "").strip()
+            if cls:
+                class_counts[cls] = class_counts.get(cls, 0) + 1
+            title = str(get_window_text(child) or "").strip()
+            if title and (
+                _title_looks_like_open_dialog(title)
+                or "file name" in title.casefold()
+                or "\ud30c\uc77c" in title
+                or "\uc774\ub984" in title
+            ):
+                text_hits.append(
+                    {
+                        "hwnd": int(child),
+                        "class": cls,
+                        "text": title[:80],
+                        "ctrl_id": int(user32.GetDlgCtrlID(wintypes.HWND(child)) or 0),
+                    }
+                )
+        except Exception:
+            continue
+
+    direct_items: list[dict[str, Any]] = []
+    for ctrl_id, name in ((EDT1, "EDT1"), (CMB13, "CMB13"), (IDOK, "IDOK")):
+        item = _safe_dialog_item(hwnd, ctrl_id)
+        if not item:
+            continue
+        try:
+            item_cls = str(get_class_name(item) or "").strip()
+        except Exception:
+            item_cls = ""
+        try:
+            item_text = str(get_window_text(item) or "").strip()
+        except Exception:
+            item_text = ""
+        direct_items.append(
+            {
+                "name": name,
+                "ctrl_id": int(ctrl_id),
+                "hwnd": int(item),
+                "class": item_cls,
+                "text": item_text[:80],
+            }
+        )
+
+    return {
+        "child_count": len(children),
+        "class_counts": dict(sorted(class_counts.items())[:30]),
+        "text_hits": text_hits[:8],
+        "direct_items": direct_items,
+    }
+
+
+def _score_open_dialog_candidate(hwnd: int, *, foreground_root: int = 0) -> tuple[int, dict[str, Any]]:
+    h = int(hwnd or 0)
+    if h <= 0:
+        return 0, {"hwnd": h, "reason": "empty hwnd"}
+
+    try:
+        cls = str(get_class_name(h) or "").strip()
+    except Exception:
+        cls = ""
+    try:
+        title = str(get_window_text(h) or "").strip()
+    except Exception:
+        title = ""
+    try:
+        visible = bool(user32.IsWindowVisible(wintypes.HWND(h)))
+    except Exception:
+        visible = False
+
+    l, t, r, b = _safe_hwnd_rect(h)
+    width = max(0, r - l)
+    height = max(0, b - t)
+    area = width * height
+
+    meta: dict[str, Any] = {
+        "hwnd": h,
+        "title": title,
+        "class": cls,
+        "visible": visible,
+        "rect": (l, t, r, b),
+        "size": (width, height),
+        "area": area,
+        "foreground_root": int(foreground_root or 0),
+        "is_foreground_root": h == int(foreground_root or 0),
+    }
+    if cls != "#32770" or not visible:
+        meta["reason"] = "not visible #32770 dialog"
+        return 0, meta
+
+    summary = _summarize_dialog_children(h)
+    meta.update(summary)
+
+    class_counts = summary.get("class_counts", {})
+    direct_items = summary.get("direct_items", [])
+    direct_ids = {int(item.get("ctrl_id") or 0) for item in direct_items}
+    direct_classes = {str(item.get("class") or "") for item in direct_items}
+    child_count = int(summary.get("child_count") or 0)
+    has_edit = bool(class_counts.get("Edit") or "Edit" in direct_classes)
+    has_combo = bool(
+        class_counts.get("ComboBox")
+        or class_counts.get("ComboBoxEx32")
+        or "ComboBox" in direct_classes
+        or "ComboBoxEx32" in direct_classes
+    )
+    has_filename_item = bool((EDT1 in direct_ids) or (CMB13 in direct_ids) or has_edit or has_combo)
+    has_open_button = IDOK in direct_ids
+    has_file_view = any(
+        class_counts.get(name)
+        for name in (
+            "DirectUIHWND",
+            "SHELLDLL_DefView",
+            "SysListView32",
+            "DUIViewWndClassName",
+        )
+    )
+
+    score = 0
+    if area >= 80_000:
+        score += min(2200, area // 500)
+    else:
+        score -= 600
+    if _title_looks_like_open_dialog(title):
+        score += 5000
+    elif title:
+        score += 120
+    else:
+        score -= 80
+    if h == int(foreground_root or 0):
+        score += 400
+    if has_filename_item:
+        score += 4200
+    if has_open_button:
+        score += 900
+    if has_file_view:
+        score += 1200
+    if child_count >= 6:
+        score += min(1200, child_count * 25)
+
+    meta.update(
+        {
+            "score": int(score),
+            "has_filename_item": bool(has_filename_item),
+            "has_open_button": bool(has_open_button),
+            "has_file_view": bool(has_file_view),
+        }
+    )
+    return int(score), meta
+
+
+def _brief_open_dialog_candidate(meta: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "hwnd": int(meta.get("hwnd") or 0),
+        "score": int(meta.get("score") or 0),
+        "title": str(meta.get("title") or "")[:80],
+        "class": str(meta.get("class") or ""),
+        "visible": bool(meta.get("visible")),
+        "rect": meta.get("rect") or (0, 0, 0, 0),
+        "size": meta.get("size") or (0, 0),
+        "child_count": int(meta.get("child_count") or 0),
+        "has_filename_item": bool(meta.get("has_filename_item")),
+        "has_open_button": bool(meta.get("has_open_button")),
+        "has_file_view": bool(meta.get("has_file_view")),
+        "direct_items": list(meta.get("direct_items") or [])[:6],
+    }
+
+
+def _has_open_dialog_signal(meta: Mapping[str, Any]) -> bool:
+    return bool(
+        meta.get("has_filename_item")
+        or meta.get("has_open_button")
+        or meta.get("has_file_view")
+        or _title_looks_like_open_dialog(str(meta.get("title") or ""))
+    )
+
+
 def _looks_like_open_dialog(hwnd: int) -> bool:
+    score, meta = _score_open_dialog_candidate(hwnd)
+    return score >= OPEN_DIALOG_MIN_SCORE and _has_open_dialog_signal(meta)
     h = int(hwnd or 0)
     if h <= 0:
         return False
@@ -436,25 +661,47 @@ def _wait_for_open_dialog(
     sleep_abs: Callable[[float], None],
     log: Callable[[str], None],
     get_foreground_hwnd_cb: Optional[Callable[[], int]] = None,
-) -> int:
+) -> tuple[int, dict[str, Any]]:
     deadline = time.perf_counter() + max(0.8, float(timeout_sec))
     last_fg_root = 0
+    last_candidates: list[dict[str, Any]] = []
     while time.perf_counter() < deadline:
         fg = int((get_foreground_hwnd_cb or get_foreground_hwnd)() or 0)
         fg_root = _root_hwnd(fg)
         last_fg_root = fg_root
-        if _looks_like_open_dialog(fg_root):
-            log(f"[CTRL+T-MULTI] open dialog found by fg root={fg_root}")
-            return fg_root
+        seen: set[int] = set()
+        scored: list[tuple[int, int, dict[str, Any]]] = []
+        if fg_root > 0:
+            seen.add(fg_root)
+            score, meta = _score_open_dialog_candidate(fg_root, foreground_root=fg_root)
+            if str(meta.get("class") or "") == "#32770":
+                scored.append((score, fg_root, meta))
 
         for h in _iter_top_windows():
-            if _looks_like_open_dialog(h):
-                log(f"[CTRL+T-MULTI] open dialog found by enum hwnd={h}")
-                return h
+            if h in seen:
+                continue
+            seen.add(h)
+            score, meta = _score_open_dialog_candidate(h, foreground_root=fg_root)
+            if str(meta.get("class") or "") == "#32770":
+                scored.append((score, h, meta))
+
+        scored.sort(key=lambda item: item[0], reverse=True)
+        last_candidates = [_brief_open_dialog_candidate(item[2]) for item in scored[:5]]
+        if scored and int(scored[0][0]) >= OPEN_DIALOG_MIN_SCORE and _has_open_dialog_signal(scored[0][2]):
+            score, h, meta = scored[0]
+            log(
+                "[CTRL+T-MULTI] open dialog selected "
+                f"hwnd={h} score={score} title={meta.get('title')!r} "
+                f"rect={meta.get('rect')} children={meta.get('child_count')}"
+            )
+            meta["selected_from"] = "scored_dialog_candidates"
+            meta["candidate_count"] = len(scored)
+            meta["top_candidates"] = last_candidates
+            return int(h), meta
         sleep_abs(0.05)
 
-    log(f"[CTRL+T-MULTI] open dialog not found fg_root={last_fg_root}")
-    return 0
+    log(f"[CTRL+T-MULTI] open dialog not found fg_root={last_fg_root} candidates={last_candidates}")
+    return 0, {"foreground_root": int(last_fg_root or 0), "top_candidates": last_candidates}
 
 
 def _get_edit_text_via_messages(hwnd: int) -> str:
@@ -471,26 +718,27 @@ def _get_edit_text_via_messages(hwnd: int) -> str:
 
 
 def _find_filename_edit_hwnd(dialog_hwnd: int, *, log: Callable[[str], None]) -> int:
-    try:
-        item = int(user32.GetDlgItem(wintypes.HWND(int(dialog_hwnd or 0)), EDT1) or 0)
-        if item:
-            item_cls = str(get_class_name(item) or "")
-            if item_cls == "Edit":
-                log(f"[CTRL+T-MULTI] filename edit found by GetDlgItem EDT1 hwnd={item}")
-                return item
-            for child in _iter_child_windows(item, recursive=True):
-                try:
-                    if str(get_class_name(child) or "") == "Edit":
-                        log(
-                            "[CTRL+T-MULTI] filename edit found under GetDlgItem EDT1 "
-                            f"item={item} item_cls={item_cls!r} edit={child}"
-                        )
-                        return int(child)
-                except Exception:
-                    continue
-            log(f"[CTRL+T-MULTI] GetDlgItem EDT1 hwnd={item} cls={item_cls!r} has no Edit child")
-    except Exception as e:
-        log(f"[CTRL+T-MULTI] GetDlgItem EDT1 lookup fail err={e}")
+    for ctrl_id, name in ((EDT1, "EDT1"), (CMB13, "CMB13")):
+        try:
+            item = _safe_dialog_item(dialog_hwnd, ctrl_id)
+            if item:
+                item_cls = str(get_class_name(item) or "")
+                if item_cls == "Edit":
+                    log(f"[CTRL+T-MULTI] filename edit found by GetDlgItem {name} hwnd={item}")
+                    return item
+                for child in _iter_child_windows(item, recursive=True):
+                    try:
+                        if str(get_class_name(child) or "") == "Edit":
+                            log(
+                                f"[CTRL+T-MULTI] filename edit found under GetDlgItem {name} "
+                                f"item={item} item_cls={item_cls!r} edit={child}"
+                            )
+                            return int(child)
+                    except Exception:
+                        continue
+                log(f"[CTRL+T-MULTI] GetDlgItem {name} hwnd={item} cls={item_cls!r} has no Edit child")
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] GetDlgItem {name} lookup fail err={e}")
 
     candidates: list[tuple[int, int]] = []
     for h in _iter_child_windows(dialog_hwnd, recursive=True):
@@ -508,8 +756,12 @@ def _find_filename_edit_hwnd(dialog_hwnd: int, *, log: Callable[[str], None]) ->
             score = (b * 10) + area
             if ctrl_id == EDT1:
                 score += 10000000
+            if ctrl_id == CMB13:
+                score += 9000000
             if parent_id == EDT1:
                 score += 5000000
+            if parent_id == CMB13:
+                score += 4500000
             if parent_cls in {"ComboBox", "ComboBoxEx32"}:
                 score += 1000000
             candidates.append((score, h))
@@ -747,10 +999,9 @@ def _submit_path_text_by_dlgitem_fallback(
     submit_timeout_sec: float,
     debug_step: Optional[DebugStep],
 ) -> bool:
-    extra = {
+    base_extra = {
         "expected_path": text,
         "dialog_hwnd": int(dialog_hwnd or 0),
-        "control_id": EDT1,
         "method": "SetDlgItemTextW",
     }
     _emit_debug_step(
@@ -758,83 +1009,96 @@ def _submit_path_text_by_dlgitem_fallback(
         "FILE_DIALOG_DLGITEM_FALLBACK",
         ok=True,
         detail="try filename input using dialog item id",
-        extra=extra,
+        extra={**base_extra, "control_ids": [EDT1, CMB13]},
     )
 
-    try:
-        item = int(user32.GetDlgItem(wintypes.HWND(int(dialog_hwnd or 0)), EDT1) or 0)
-        if item:
-            extra["item_hwnd"] = item
-            extra["item_class"] = str(get_class_name(item) or "")
+    for ctrl_id, name in ((EDT1, "EDT1"), (CMB13, "CMB13")):
+        extra = {**base_extra, "control_id": int(ctrl_id), "control_name": name}
+        try:
+            item = _safe_dialog_item(dialog_hwnd, ctrl_id)
+            if item:
+                extra["item_hwnd"] = item
+                extra["item_class"] = str(get_class_name(item) or "")
 
-        if not user32.SetDlgItemTextW(wintypes.HWND(int(dialog_hwnd or 0)), EDT1, ctypes.c_wchar_p(str(text or ""))):
-            _emit_debug_step(
-                debug_step,
-                "FILE_DIALOG_DLGITEM_FALLBACK",
-                ok=False,
-                detail="SetDlgItemTextW returned false",
-                extra=extra,
-            )
-            return False
+            if not user32.SetDlgItemTextW(
+                wintypes.HWND(int(dialog_hwnd or 0)),
+                int(ctrl_id),
+                ctypes.c_wchar_p(str(text or "")),
+            ):
+                _emit_debug_step(
+                    debug_step,
+                    "FILE_DIALOG_DLGITEM_FALLBACK",
+                    ok=False,
+                    detail=f"SetDlgItemTextW returned false for {name}",
+                    extra=extra,
+                )
+                continue
 
-        sleep_abs(0.12)
-        verified = False
-        if item:
-            actual = _get_edit_text_via_messages(item)
-            verified = _normalize_compare_text(actual) == _normalize_compare_text(text)
-            extra["actual_text_length"] = len(actual)
-            if not verified:
-                for child in _iter_child_windows(item, recursive=True):
-                    try:
-                        if str(get_class_name(child) or "") != "Edit":
+            sleep_abs(0.12)
+            verified = False
+            if item:
+                actual = _get_edit_text_via_messages(item)
+                verified = _normalize_compare_text(actual) == _normalize_compare_text(text)
+                extra["actual_text_length"] = len(actual)
+                if not verified:
+                    for child in _iter_child_windows(item, recursive=True):
+                        try:
+                            if str(get_class_name(child) or "") != "Edit":
+                                continue
+                            actual = _get_edit_text_via_messages(child)
+                            verified = _normalize_compare_text(actual) == _normalize_compare_text(text)
+                            extra["actual_text_length"] = len(actual)
+                            extra["edit_hwnd"] = int(child)
+                            if verified:
+                                break
+                        except Exception:
                             continue
-                        actual = _get_edit_text_via_messages(child)
-                        verified = _normalize_compare_text(actual) == _normalize_compare_text(text)
-                        extra["actual_text_length"] = len(actual)
-                        extra["edit_hwnd"] = int(child)
-                        if verified:
-                            break
-                    except Exception:
-                        continue
 
-        if not verified:
+            if not verified:
+                _emit_debug_step(
+                    debug_step,
+                    "FILE_DIALOG_DLGITEM_FALLBACK",
+                    ok=False,
+                    detail=f"dialog item text was not verified for {name}",
+                    extra=extra,
+                )
+                continue
+
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_DLGITEM_FALLBACK",
+                ok=True,
+                detail=f"dialog item text verified for {name}",
+                extra=extra,
+            )
+            user32.SendMessageW(wintypes.HWND(int(dialog_hwnd or 0)), WM_COMMAND, IDOK, 0)
+            if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+                log(f"[CTRL+T-MULTI] dialog closed after SetDlgItemTextW fallback {name}")
+                return True
             _emit_debug_step(
                 debug_step,
                 "FILE_DIALOG_DLGITEM_FALLBACK",
                 ok=False,
-                detail="dialog item text was not verified",
+                detail=f"open dialog did not close after dialog item fallback {name}",
                 extra=extra,
             )
-            return False
-
-        _emit_debug_step(
-            debug_step,
-            "FILE_DIALOG_DLGITEM_FALLBACK",
-            ok=True,
-            detail="dialog item text verified",
-            extra=extra,
-        )
-        user32.SendMessageW(wintypes.HWND(int(dialog_hwnd or 0)), WM_COMMAND, IDOK, 0)
-        if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
-            log("[CTRL+T-MULTI] dialog closed after SetDlgItemTextW fallback")
-            return True
-    except Exception as e:
-        _emit_debug_step(
-            debug_step,
-            "FILE_DIALOG_DLGITEM_FALLBACK",
-            ok=False,
-            detail=str(e) or "dialog item fallback failed",
-            extra=extra,
-        )
-        log(f"[CTRL+T-MULTI] dialog item fallback fail err={e}")
-        return False
+        except Exception as e:
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_DLGITEM_FALLBACK",
+                ok=False,
+                detail=str(e) or f"dialog item fallback failed for {name}",
+                extra=extra,
+            )
+            log(f"[CTRL+T-MULTI] dialog item fallback fail {name} err={e}")
+            continue
 
     _emit_debug_step(
         debug_step,
         "FILE_DIALOG_DLGITEM_FALLBACK",
         ok=False,
         detail="open dialog did not close after dialog item fallback",
-        extra=extra,
+        extra=base_extra,
     )
     return False
 
@@ -892,6 +1156,8 @@ def _submit_path_text_by_uia_fallback(
                 lowered_name = name.casefold()
                 if automation_id == str(EDT1):
                     score += 10_000_000
+                if automation_id == str(CMB13):
+                    score += 9_000_000
                 if "file name" in lowered_name or "파일 이름" in name or "파일명" in name:
                     score += 5_000_000
                 if int(rect.bottom) >= int(root_rect.bottom) - 160:
@@ -1093,9 +1359,6 @@ def _submit_path_text_by_geometry_fallback(
         l = t = r = b = 0
     w = max(0, int(r - l))
     h = max(0, int(b - t))
-    if w <= 200 or h <= 180:
-        return False
-
     x = int(l + (w * 0.45))
     y_candidates = [
         int(b - max(62, min(92, h * 0.105))),
@@ -1109,6 +1372,16 @@ def _submit_path_text_by_geometry_fallback(
         "x": x,
         "y_candidates": y_candidates,
     }
+    if w <= 200 or h <= 180:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_GEOMETRY_FALLBACK",
+            ok=False,
+            detail="dialog rect too small for geometry fallback",
+            extra=extra,
+        )
+        return False
+
     _emit_debug_step(
         debug_step,
         "FILE_DIALOG_GEOMETRY_FALLBACK",
@@ -1353,7 +1626,7 @@ def _send_paths_via_ctrl_t_dialog(
         )
         send_keys_fast("^t")
         t_wait0 = time.perf_counter()
-        dialog_hwnd = _wait_for_open_dialog(
+        dialog_hwnd, dialog_meta = _wait_for_open_dialog(
             timeout_sec=max(2.5, _t("after_ctrl_t", 0.20) + 3.0),
             sleep_abs=sleep_abs,
             log=log,
@@ -1363,7 +1636,13 @@ def _send_paths_via_ctrl_t_dialog(
         if not dialog_hwnd:
             fg = int((get_foreground_hwnd_cb or get_foreground_hwnd)() or 0)
             extra = _window_extra(_root_hwnd(fg))
-            extra.update({"timeout_ms": int(max(2.5, _t("after_ctrl_t", 0.20) + 3.0) * 1000), "elapsed_ms": elapsed_ms})
+            extra.update(
+                {
+                    "timeout_ms": int(max(2.5, _t("after_ctrl_t", 0.20) + 3.0) * 1000),
+                    "elapsed_ms": elapsed_ms,
+                    "dialog_selection": dialog_meta,
+                }
+            )
             _emit_debug_step(
                 debug_step,
                 "FILE_DIALOG_WAIT_ACTIVE",
@@ -1384,7 +1663,7 @@ def _send_paths_via_ctrl_t_dialog(
         settle = max(0.30, min(0.70, _t("focus_settle", 0.35)))
         sleep_abs(settle)
         extra = _window_extra(dialog_hwnd)
-        extra.update({"elapsed_ms": elapsed_ms, "settle_ms": int(settle * 1000)})
+        extra.update({"elapsed_ms": elapsed_ms, "settle_ms": int(settle * 1000), "dialog_selection": dialog_meta})
         _emit_debug_step(
             debug_step,
             "FILE_DIALOG_WAIT_ACTIVE",
