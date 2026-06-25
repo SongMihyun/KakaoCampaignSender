@@ -502,6 +502,26 @@ def _find_filename_edit_hwnd(dialog_hwnd: int, *, log: Callable[[str], None]) ->
     return hwnd
 
 
+def _find_filename_edit_hwnd_retry(
+    dialog_hwnd: int,
+    *,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    timeout_sec: float = 1.5,
+) -> int:
+    deadline = time.perf_counter() + max(0.2, float(timeout_sec))
+    attempt = 0
+    while time.perf_counter() < deadline:
+        attempt += 1
+        hwnd = _find_filename_edit_hwnd(dialog_hwnd, log=log)
+        if hwnd:
+            if attempt > 1:
+                log(f"[CTRL+T-MULTI] filename edit found after retry attempt={attempt}")
+            return hwnd
+        sleep_abs(0.10)
+    return 0
+
+
 def _set_edit_text_verified(
     edit_hwnd: int,
     text: str,
@@ -676,6 +696,102 @@ def _set_path_text_with_clipboard_then_fallback(
         extra={"expected_path": text, "edit_hwnd": int(edit_hwnd or 0)},
     )
     return bool(ok)
+
+
+def _submit_path_text_by_keyboard_fallback(
+    *,
+    dialog_hwnd: int,
+    text: str,
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    submit_timeout_sec: float,
+    debug_step: Optional[DebugStep],
+) -> bool:
+    extra = {
+        "expected_path": text,
+        "dialog_hwnd": int(dialog_hwnd or 0),
+        "method": "alt_n_clipboard_enter",
+    }
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_KEYBOARD_FALLBACK",
+        ok=True,
+        detail="try filename input using keyboard accelerator",
+        extra=extra,
+    )
+
+    try:
+        user32.SetForegroundWindow(wintypes.HWND(int(dialog_hwnd or 0)))
+        sleep_abs(0.10)
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] keyboard fallback SetForegroundWindow fail err={e}")
+
+    try:
+        set_clipboard_text(str(text or ""))
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_CLIPBOARD_SET",
+            ok=True,
+            detail="path copied to clipboard for keyboard fallback",
+            extra={"expected_path": text, "clipboard_text_length": len(str(text or ""))},
+        )
+        sleep_abs(0.08)
+
+        # Korean and English Windows common file dialogs use Alt+N for the
+        # filename field ("파일 이름(N)" / "File name(N)").
+        send_keys_fast("%n")
+        sleep_abs(0.10)
+        send_keys_fast("^a")
+        sleep_abs(0.04)
+        send_keys_fast("^v")
+        sleep_abs(0.15)
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_PASTE",
+            ok=True,
+            detail="path pasted by keyboard fallback",
+            extra={"expected_path": text},
+        )
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_ENTER",
+            ok=True,
+            detail="submit open dialog by keyboard fallback",
+            extra=extra,
+        )
+        send_keys_fast("{ENTER}")
+
+        if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_KEYBOARD_FALLBACK",
+                ok=True,
+                detail="open dialog closed after keyboard fallback",
+                extra=extra,
+            )
+            log("[CTRL+T-MULTI] dialog closed after keyboard fallback")
+            return True
+    except Exception as e:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_KEYBOARD_FALLBACK",
+            ok=False,
+            detail=str(e) or "keyboard fallback failed",
+            extra=extra,
+        )
+        log(f"[CTRL+T-MULTI] keyboard fallback fail err={e}")
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_KEYBOARD_FALLBACK",
+        ok=False,
+        detail="open dialog did not close after keyboard fallback",
+        extra=extra,
+    )
+    return False
 
 
 def _find_open_button_hwnd(dialog_hwnd: int, *, log: Callable[[str], None]) -> int:
@@ -893,82 +1009,61 @@ def _send_paths_via_ctrl_t_dialog(
             extra=extra,
         )
 
-        edit_hwnd = _find_filename_edit_hwnd(dialog_hwnd, log=log)
-        if not edit_hwnd:
-            extra = _window_extra(dialog_hwnd)
-            extra.update({"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)})
-            _emit_debug_step(
-                debug_step,
-                "FILE_DIALOG_PATH_INPUT_FAILED",
-                ok=False,
-                detail="filename edit control was not found",
-                extra=extra,
-            )
-            _cleanup_file_dialog_flow(
-                prefer_hwnd=int(prefer_hwnd or 0),
-                sleep_abs=sleep_abs,
-                log=log,
-                debug_step=debug_step,
-                ok=True,
-                detail="cleanup after filename edit lookup failure",
-            )
-            return False
-
-        if not _set_path_text_with_clipboard_then_fallback(
-            dialog_hwnd=dialog_hwnd,
-            edit_hwnd=edit_hwnd,
-            text=full_paths_text,
-            send_keys_fast=send_keys_fast,
-            set_clipboard_text=set_clipboard_text,
+        submitted = False
+        edit_hwnd = _find_filename_edit_hwnd_retry(
+            dialog_hwnd,
             sleep_abs=sleep_abs,
             log=log,
-            clipboard_settle_sec=_t("clipboard_settle", 0.05),
-            after_paste_sec=_t("after_paste_path", 0.10),
-            debug_step=debug_step,
-        ):
-            extra = _window_extra(dialog_hwnd)
-            extra.update({"expected_path": full_paths_text, "edit_hwnd": int(edit_hwnd or 0)})
-            _emit_debug_step(
-                debug_step,
-                "FILE_DIALOG_PATH_INPUT_FAILED",
-                ok=False,
-                detail="filename edit did not accept expected path",
-                extra=extra,
-            )
-            _cleanup_file_dialog_flow(
-                prefer_hwnd=int(prefer_hwnd or 0),
-                sleep_abs=sleep_abs,
-                log=log,
-                debug_step=debug_step,
-                ok=True,
-                detail="cleanup after path input failure",
-            )
-            return False
-
-        _emit_debug_step(
-            debug_step,
-            "FILE_DIALOG_ENTER",
-            ok=True,
-            detail="submit open dialog",
-            extra={"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)},
+            timeout_sec=1.5,
         )
-        if not _confirm_dialog_fields_and_submit(
-            dialog_hwnd=dialog_hwnd,
-            edit_hwnd=edit_hwnd,
-            expected_text=full_paths_text,
-            sleep_abs=sleep_abs,
-            log=log,
-            submit_timeout_sec=max(3.0, float(timeout_sec)),
-        ):
+        if edit_hwnd:
+            if _set_path_text_with_clipboard_then_fallback(
+                dialog_hwnd=dialog_hwnd,
+                edit_hwnd=edit_hwnd,
+                text=full_paths_text,
+                send_keys_fast=send_keys_fast,
+                set_clipboard_text=set_clipboard_text,
+                sleep_abs=sleep_abs,
+                log=log,
+                clipboard_settle_sec=_t("clipboard_settle", 0.05),
+                after_paste_sec=_t("after_paste_path", 0.10),
+                debug_step=debug_step,
+            ):
+                _emit_debug_step(
+                    debug_step,
+                    "FILE_DIALOG_ENTER",
+                    ok=True,
+                    detail="submit open dialog",
+                    extra={"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)},
+                )
+                submitted = _confirm_dialog_fields_and_submit(
+                    dialog_hwnd=dialog_hwnd,
+                    edit_hwnd=edit_hwnd,
+                    expected_text=full_paths_text,
+                    sleep_abs=sleep_abs,
+                    log=log,
+                    submit_timeout_sec=max(3.0, float(timeout_sec)),
+                )
+            else:
+                log("[CTRL+T-MULTI] filename edit path input failed; trying keyboard fallback")
+        else:
+            log("[CTRL+T-MULTI] filename edit not found after retry; trying keyboard fallback")
+
+        if not submitted:
+            submitted = _submit_path_text_by_keyboard_fallback(
+                dialog_hwnd=dialog_hwnd,
+                text=full_paths_text,
+                send_keys_fast=send_keys_fast,
+                set_clipboard_text=set_clipboard_text,
+                sleep_abs=sleep_abs,
+                log=log,
+                submit_timeout_sec=max(3.0, float(timeout_sec)),
+                debug_step=debug_step,
+            )
+
+        if not submitted:
             extra = _window_extra(dialog_hwnd)
             extra.update({"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)})
-            _emit_debug_step(
-                debug_step,
-                "FILE_DIALOG_OPEN_BUTTON_FAILED",
-                ok=False,
-                detail="open dialog did not close after submit",
-                extra=extra,
-            )
             _emit_debug_step(
                 debug_step,
                 "FILE_DIALOG_CLOSED_CHECK",
@@ -976,14 +1071,21 @@ def _send_paths_via_ctrl_t_dialog(
                 detail="open dialog still exists",
                 extra=extra,
             )
-            log("[CTRL+T-MULTI] submit failed or dialog did not close")
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_PATH_INPUT_FAILED",
+                ok=False,
+                detail="filename path input failed by hwnd and keyboard fallback",
+                extra=extra,
+            )
+            log("[CTRL+T-MULTI] path input fallback failed or dialog did not close")
             _cleanup_file_dialog_flow(
                 prefer_hwnd=int(prefer_hwnd or 0),
                 sleep_abs=sleep_abs,
                 log=log,
                 debug_step=debug_step,
                 ok=True,
-                detail="cleanup after open dialog submit failure",
+                detail="cleanup after path input fallback failure",
             )
             return False
 
