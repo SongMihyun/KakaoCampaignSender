@@ -1,16 +1,7 @@
 # FILE: src/frontend/pages/contacts/paste_import_dialog.py
 from __future__ import annotations
 
-from PySide6.QtWidgets import (
-    QApplication,
-    QDialog,
-    QVBoxLayout,
-    QLabel,
-    QTextEdit,
-    QHBoxLayout,
-    QPushButton,
-    QMessageBox,
-)
+from PySide6.QtWidgets import QApplication, QDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QTextEdit, QVBoxLayout
 
 
 class PasteImportDialog(QDialog):
@@ -30,9 +21,9 @@ class PasteImportDialog(QDialog):
         guide = QLabel(
             "지원 예시\n"
             "- 이름만 한 줄씩: 홍길동\n"
-            "- 엑셀 복사: 사번/이름/전화/대리점/지사 탭 구분\n"
-            "- 워드 표/문단, 메모장 목록도 가능\n"
-            "- 이름만 있어도 등록됩니다."
+            "- 새 CRM 서식: 카카오톡 검색명/고객명/호칭/직책/소속/지사/연락처/상태/태그/메모\n"
+            "- 예전 서식: 사번/이름/전화/대리점/지사\n"
+            "- 이름만 있어도 검색명과 고객명에 같이 등록됩니다."
         )
         guide.setStyleSheet("color:#6b7280;")
         root.addWidget(guide)
@@ -40,8 +31,10 @@ class PasteImportDialog(QDialog):
         self.editor = QTextEdit()
         self.editor.setPlaceholderText(
             "여기에 Ctrl+V로 붙여넣으세요.\n\n"
-            "예시 1)\n홍길동\n김영희\n\n"
-            "예시 2)\n1001\t홍길동\t010-1111-2222\t강남대리점\t서울지사"
+            "예시 1)\n홍길동\n김하늘\n\n"
+            "예시 2)\n"
+            "카카오톡 검색명\t고객명\t호칭\t직책\t소속/대리점\t지사\t연락처\t상태\t태그\t메모\n"
+            "홍길동\t홍길동\t고객님\t대표\t강남대리점\t서울\t010-1111-2222\t상담중\t자동차보험\t"
         )
         self.editor.setAcceptRichText(False)
         root.addWidget(self.editor, 1)
@@ -72,7 +65,7 @@ class PasteImportDialog(QDialog):
 
     def _accept_if_valid(self) -> None:
         if not self.get_text().strip():
-            QMessageBox.information(self, "안내", "붙여넣은 내용이 없습니다.")
+            QMessageBox.information(self, "안내", "붙여넣을 내용이 없습니다.")
             return
         self.accept()
 

@@ -22,6 +22,7 @@ from app.version import __version__
 class Header(QWidget):
     home_requested = Signal()
     editor_requested = Signal()
+    sender_profile_requested = Signal()
     export_settings_requested = Signal()
     import_settings_requested = Signal()
     import_legacy_backup_requested = Signal()
@@ -62,6 +63,7 @@ class Header(QWidget):
         self.btn_menu.setToolButtonStyle(Qt.ToolButtonTextOnly)
 
         menu = QMenu(self.btn_menu)
+        act_sender_profile = QAction("내 발신자 정보", self)
         act_export_settings = QAction("설정 내보내기", self)
         act_import_settings = QAction("설정 가져오기", self)
         act_import_legacy_backup = QAction("기존 백업 데이터 가져오기", self)
@@ -79,6 +81,8 @@ class Header(QWidget):
         env_menu = menu.addMenu("사용 환경")
         env_menu.addAction(act_env_public)
         env_menu.addAction(act_env_personal)
+        menu.addAction(act_sender_profile)
+        menu.addSeparator()
         menu.addAction(act_export_settings)
         menu.addAction(act_import_settings)
         menu.addAction(act_import_legacy_backup)
@@ -118,6 +122,7 @@ class Header(QWidget):
         self.ver.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.ver.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
+        act_sender_profile.triggered.connect(self.sender_profile_requested.emit)
         act_export_settings.triggered.connect(self.export_settings_requested.emit)
         act_import_settings.triggered.connect(self.import_settings_requested.emit)
         act_import_legacy_backup.triggered.connect(self.import_legacy_backup_requested.emit)

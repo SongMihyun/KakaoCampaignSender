@@ -1,4 +1,5 @@
 from __future__ import annotations
+
 from backend.domains.contacts.dto import ContactCreateDTO, ContactUpdateDTO
 
 
@@ -14,12 +15,21 @@ def normalize_required(v: str | None, field_name: str) -> str:
 
 
 def normalize_create(dto: ContactCreateDTO) -> ContactCreateDTO:
+    name = normalize_required(dto.name, "카카오톡 검색명")
+    customer_name = normalize_optional(dto.customer_name) or name
+    honorific = normalize_optional(dto.customer_honorific) or "고객님"
     return ContactCreateDTO(
         emp_id=normalize_optional(dto.emp_id),
-        name=normalize_required(dto.name, "이름"),
+        name=name,
+        customer_name=customer_name,
+        customer_honorific=honorific,
+        customer_position=normalize_optional(dto.customer_position),
         phone=normalize_optional(dto.phone),
         agency=normalize_optional(dto.agency),
         branch=normalize_optional(dto.branch),
+        customer_status=normalize_optional(dto.customer_status),
+        tags=normalize_optional(dto.tags),
+        memo2=normalize_optional(dto.memo2),
         last_assigned_code=dto.last_assigned_code,
         last_assigned_label=dto.last_assigned_label,
         last_assigned_at=dto.last_assigned_at,
@@ -30,13 +40,22 @@ def normalize_update(dto: ContactUpdateDTO) -> ContactUpdateDTO:
     if int(dto.row_id or 0) <= 0:
         raise ValueError("유효한 row_id가 필요합니다.")
 
+    name = normalize_required(dto.name, "카카오톡 검색명")
+    customer_name = normalize_optional(dto.customer_name) or name
+    honorific = normalize_optional(dto.customer_honorific) or "고객님"
     return ContactUpdateDTO(
         row_id=int(dto.row_id),
         emp_id=normalize_optional(dto.emp_id),
-        name=normalize_required(dto.name, "이름"),
+        name=name,
+        customer_name=customer_name,
+        customer_honorific=honorific,
+        customer_position=normalize_optional(dto.customer_position),
         phone=normalize_optional(dto.phone),
         agency=normalize_optional(dto.agency),
         branch=normalize_optional(dto.branch),
+        customer_status=normalize_optional(dto.customer_status),
+        tags=normalize_optional(dto.tags),
+        memo2=normalize_optional(dto.memo2),
         last_assigned_code=dto.last_assigned_code,
         last_assigned_label=dto.last_assigned_label,
         last_assigned_at=dto.last_assigned_at,

@@ -10,6 +10,9 @@ CONTACTS_COLUMNS: dict[str, str] = {
     "branch": "TEXT",
     "created_at": "TEXT",
     "search_name": "TEXT",
+    "customer_name": "TEXT",
+    "customer_honorific": "TEXT DEFAULT '고객님'",
+    "customer_position": "TEXT",
     "title": "TEXT",
     "honorific": "TEXT",
     "nickname": "TEXT",
@@ -104,6 +107,29 @@ def ensure_contacts_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         UPDATE contacts
+        SET customer_name = name
+        WHERE customer_name IS NULL
+           OR TRIM(customer_name) = '';
+        """
+    )
+    conn.execute(
+        """
+        UPDATE contacts
+        SET customer_honorific = '고객님'
+        WHERE customer_honorific IS NULL
+           OR TRIM(customer_honorific) = '';
+        """
+    )
+    conn.execute(
+        """
+        UPDATE contacts
+        SET customer_position = ''
+        WHERE customer_position IS NULL;
+        """
+    )
+    conn.execute(
+        """
+        UPDATE contacts
         SET registered_at = COALESCE(NULLIF(TRIM(registered_at), ''), NULLIF(TRIM(created_at), ''), datetime('now','localtime'))
         WHERE registered_at IS NULL
            OR TRIM(registered_at) = '';
@@ -128,6 +154,8 @@ def ensure_contacts_schema(conn: sqlite3.Connection) -> None:
 
     for index_name, column in {
         "idx_contacts_search_name": "search_name",
+        "idx_contacts_customer_name": "customer_name",
+        "idx_contacts_customer_position": "customer_position",
         "idx_contacts_title": "title",
         "idx_contacts_company": "company",
         "idx_contacts_department": "department",
@@ -151,6 +179,67 @@ def ensure_contacts_schema(conn: sqlite3.Connection) -> None:
     # Per-recipient assigned message values (codes/coupons/links) should live in
     # dedicated tables such as message_value_pools and message_value_items. These
     # last_assigned_* columns are only the latest summary on the contact row.
+
+
+def ensure_sender_profiles_schema(conn: sqlite3.Connection) -> None:
+    """
+    Sender profile settings for message personalization.
+
+    The first release uses one default sender, but the table shape allows
+    future multiple profiles without changing existing user data.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS sender_profiles (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            profile_name TEXT,
+            sender_name TEXT,
+            sender_position TEXT,
+            sender_company TEXT,
+            sender_branch TEXT,
+            sender_phone TEXT,
+            default_signature TEXT,
+            is_default INTEGER NOT NULL DEFAULT 1,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+            updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+        );
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sender_profiles (
+            profile_name,
+            sender_name,
+            sender_position,
+            sender_company,
+            sender_branch,
+            sender_phone,
+            default_signature,
+            is_default,
+            is_active
+        )
+        SELECT '기본 발신자', '', '', '', '', '', '', 1, 1
+        WHERE NOT EXISTS (
+            SELECT 1
+            FROM sender_profiles
+            WHERE is_default = 1
+              AND is_active = 1
+        );
+        """
+    )
+    conn.execute(
+        """
+        UPDATE sender_profiles
+        SET profile_name = '기본 발신자'
+        WHERE is_default = 1
+          AND (profile_name IS NULL OR TRIM(profile_name) = '');
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_sender_profiles_default_active "
+        "ON sender_profiles(is_default, is_active);"
+    )
 
 
 def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:

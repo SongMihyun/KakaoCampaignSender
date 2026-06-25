@@ -133,7 +133,7 @@ class ContactsPage(QWidget):
         search_row = QHBoxLayout()
         search_row.setSpacing(8)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("이름, 사번, 전화, 대리점, 지사")
+        self.search.setPlaceholderText("카카오톡 검색명, 고객명, 연락처, 소속/대리점, 지사, 태그")
         btn_search_clear = style_button(QPushButton("초기화"), "ghost")
         self.btn_reload = style_button(QPushButton("새로고침"), "ghost")
         self.btn_delete = style_button(QPushButton("선택 삭제"), "danger")
@@ -214,10 +214,15 @@ class ContactsPage(QWidget):
         widths = {
             0: 42,
             1: 56,
-            2: 120,
-            3: 260,
-            4: 150,
-            5: 140,
+            2: 180,
+            3: 140,
+            4: 84,
+            5: 110,
+            6: 150,
+            7: 110,
+            8: 140,
+            9: 100,
+            10: 120,
         }
         for col, width in widths.items():
             self.table.setColumnWidth(col, width)
@@ -359,9 +364,15 @@ class ContactsPage(QWidget):
                 id=m.id,
                 emp_id=(m.emp_id or ""),
                 name=m.name,
+                customer_name=getattr(m, "customer_name", "") or m.name,
+                customer_honorific=getattr(m, "customer_honorific", "") or "고객님",
+                customer_position=getattr(m, "customer_position", "") or "",
                 phone=m.phone or "",
                 agency=m.agency or "",
                 branch=m.branch or "",
+                customer_status=getattr(m, "customer_status", "") or "",
+                tags=getattr(m, "tags", "") or "",
+                memo2=getattr(m, "memo2", "") or "",
                 last_assigned_code=getattr(m, "last_assigned_code", None),
                 last_assigned_label=getattr(m, "last_assigned_label", None),
                 last_assigned_at=getattr(m, "last_assigned_at", None),
@@ -393,15 +404,35 @@ class ContactsPage(QWidget):
             return
         data = dlg.get_contact()
         name = (data.get("name") or "").strip()
+        customer_name = (data.get("customer_name") or "").strip() or name
+        customer_honorific = (data.get("customer_honorific") or "").strip() or "고객님"
+        customer_position = (data.get("customer_position") or "").strip()
         emp_id = (data.get("emp_id") or "").strip()
         phone = (data.get("phone") or "").strip()
         agency = (data.get("agency") or "").strip()
         branch = (data.get("branch") or "").strip()
+        customer_status = (data.get("customer_status") or "").strip()
+        tags = (data.get("tags") or "").strip()
+        memo2 = (data.get("memo2") or "").strip()
         if not name:
-            QMessageBox.warning(self, "입력 오류", "이름은 필수입니다.")
+            QMessageBox.warning(self, "입력 오류", "카카오톡 검색명은 필수입니다.")
             return
         try:
-            self.service.create_contact(ContactCreateDTO(emp_id=emp_id, name=name, phone=phone, agency=agency, branch=branch))
+            self.service.create_contact(
+                ContactCreateDTO(
+                    emp_id=emp_id,
+                    name=name,
+                    customer_name=customer_name,
+                    customer_honorific=customer_honorific,
+                    customer_position=customer_position,
+                    phone=phone,
+                    agency=agency,
+                    branch=branch,
+                    customer_status=customer_status,
+                    tags=tags,
+                    memo2=memo2,
+                )
+            )
         except ValueError as e:
             QMessageBox.warning(self, "중복 오류", str(e))
             return
@@ -417,7 +448,7 @@ class ContactsPage(QWidget):
         if self.search.text().strip():
             self.search.setText("")
         self._sync_header_checkbox()
-        self._on_status(f"추가 완료: {name} ({emp_id if emp_id else '사번없음'})")
+        self._on_status(f"추가 완료: {name} / 고객명: {customer_name}")
 
     def _edit(self) -> None:
         rows = self._selected_source_rows()
@@ -668,13 +699,26 @@ class ContactsPage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "오류", f"샘플 서식 생성 실패:\n{e}")
 
-    def _collect_current_rows(self) -> list[tuple[str, str, str, str, str]]:
+    def _collect_current_rows(self) -> list[tuple[str, str, str, str, str, str, str, str, str, str]]:
         export_rows = []
         for pr in range(self.proxy.rowCount()):
             idx = self.proxy.index(pr, 2)
             src_idx = self.proxy.mapToSource(idx)
             c = self.model.contact_at(src_idx.row())
-            export_rows.append((c.emp_id, c.name, c.phone, c.agency, c.branch))
+            export_rows.append(
+                (
+                    c.name,
+                    c.customer_name or c.name,
+                    c.customer_honorific or "고객님",
+                    c.customer_position,
+                    c.agency,
+                    c.branch,
+                    c.phone,
+                    c.customer_status,
+                    c.tags,
+                    c.memo2,
+                )
+            )
         return export_rows
 
     def _export_contacts(self, kind: str = "excel") -> None:

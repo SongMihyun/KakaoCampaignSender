@@ -1,54 +1,90 @@
-﻿# ✅ FILE: src/frontend/pages/contacts/dialog.py
+# FILE: src/frontend/pages/contacts/dialog.py
 
 from __future__ import annotations
 
 from typing import Optional, TypedDict
 
 from PySide6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox
+    QDialog,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
 )
 
 
 class ContactForm(TypedDict):
     emp_id: str
     name: str
+    customer_name: str
+    customer_honorific: str
+    customer_position: str
     phone: str
     agency: str
     branch: str
+    customer_status: str
+    tags: str
+    memo2: str
 
 
 class ContactDialog(QDialog):
     def __init__(self, title: str, preset: Optional[object] = None, parent=None) -> None:
         super().__init__(parent)
         self.setWindowTitle(title)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(520)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
 
-        self.emp_id = QLineEdit()
+        form = QGridLayout()
+        form.setHorizontalSpacing(10)
+        form.setVerticalSpacing(8)
+
         self.name = QLineEdit()
-        self.phone = QLineEdit()
+        self.customer_name = QLineEdit()
+        self.customer_honorific = QLineEdit()
+        self.customer_position = QLineEdit()
         self.agency = QLineEdit()
         self.branch = QLineEdit()
+        self.phone = QLineEdit()
+        self.customer_status = QLineEdit()
+        self.tags = QLineEdit()
+        self.memo2 = QLineEdit()
+        self.emp_id = QLineEdit()
 
-        # ✅ 필수: 이름만
-        self.emp_id.setPlaceholderText("사번(선택)")
-        self.name.setPlaceholderText("이름(필수)")
-        self.phone.setPlaceholderText("전화번호(선택, 숫자/하이픈)")
-        self.agency.setPlaceholderText("대리점명(선택)")
-        self.branch.setPlaceholderText("지사명(선택)")
+        self.name.setPlaceholderText("카카오톡에서 검색할 이름 또는 채팅방명")
+        self.customer_name.setPlaceholderText("메시지 개인화에 사용할 고객명")
+        self.customer_honorific.setPlaceholderText("고객님")
+        self.customer_position.setPlaceholderText("직책/직함")
+        self.agency.setPlaceholderText("소속/대리점")
+        self.branch.setPlaceholderText("지사")
+        self.phone.setPlaceholderText("연락처")
+        self.customer_status.setPlaceholderText("예: 신규, 상담중, 계약")
+        self.tags.setPlaceholderText("태그")
+        self.memo2.setPlaceholderText("메모")
+        self.emp_id.setPlaceholderText("사번/외부 ID(선택)")
 
-        layout.addWidget(QLabel("사번(선택)"))
-        layout.addWidget(self.emp_id)
-        layout.addWidget(QLabel("이름(필수)"))
-        layout.addWidget(self.name)
-        layout.addWidget(QLabel("전화번호(선택)"))
-        layout.addWidget(self.phone)
-        layout.addWidget(QLabel("대리점명(선택)"))
-        layout.addWidget(self.agency)
-        layout.addWidget(QLabel("지사명(선택)"))
-        layout.addWidget(self.branch)
+        rows = [
+            ("카카오톡 검색명(필수)", self.name),
+            ("고객명", self.customer_name),
+            ("호칭", self.customer_honorific),
+            ("직책", self.customer_position),
+            ("소속/대리점", self.agency),
+            ("지사", self.branch),
+            ("연락처", self.phone),
+            ("상태", self.customer_status),
+            ("태그", self.tags),
+            ("메모", self.memo2),
+            ("사번/외부 ID(선택)", self.emp_id),
+        ]
+        for row, (label, widget) in enumerate(rows):
+            form.addWidget(QLabel(label), row, 0)
+            form.addWidget(widget, row, 1)
+
+        layout.addLayout(form)
 
         btns = QHBoxLayout()
         btns.addStretch(1)
@@ -56,43 +92,64 @@ class ContactDialog(QDialog):
         self.btn_ok = QPushButton("저장")
         btns.addWidget(self.btn_cancel)
         btns.addWidget(self.btn_ok)
-
         layout.addLayout(btns)
 
         self.btn_cancel.clicked.connect(self.reject)
         self.btn_ok.clicked.connect(self._on_ok)
 
-        # ✅ Enter/Return 누르면 저장(_on_ok) -> accept()로 닫힘
-        for le in (self.emp_id, self.name, self.phone, self.agency, self.branch):
+        for le in (
+            self.name,
+            self.customer_name,
+            self.customer_honorific,
+            self.customer_position,
+            self.agency,
+            self.branch,
+            self.phone,
+            self.customer_status,
+            self.tags,
+            self.memo2,
+            self.emp_id,
+        ):
             le.returnPressed.connect(self._on_ok)
 
-        # ✅ Enter 기본 버튼 = 저장
         self.btn_ok.setDefault(True)
         self.btn_ok.setAutoDefault(True)
 
-        # preset은 Contact든 임시 객체든(emp_id/name/...) 속성만 있으면 동작
         if preset:
             self.emp_id.setText(getattr(preset, "emp_id", "") or "")
             self.name.setText(getattr(preset, "name", "") or "")
+            self.customer_name.setText(
+                getattr(preset, "customer_name", "") or getattr(preset, "name", "") or ""
+            )
+            self.customer_honorific.setText(getattr(preset, "customer_honorific", "") or "고객님")
+            self.customer_position.setText(getattr(preset, "customer_position", "") or "")
             self.phone.setText(getattr(preset, "phone", "") or "")
             self.agency.setText(getattr(preset, "agency", "") or "")
             self.branch.setText(getattr(preset, "branch", "") or "")
+            self.customer_status.setText(getattr(preset, "customer_status", "") or "")
+            self.tags.setText(getattr(preset, "tags", "") or "")
+            self.memo2.setText(getattr(preset, "memo2", "") or "")
+        else:
+            self.customer_honorific.setText("고객님")
 
     def _on_ok(self) -> None:
-        # ✅ 이름만 필수
         if not self.name.text().strip():
-            QMessageBox.warning(self, "검증", "이름은 필수입니다.")
+            QMessageBox.warning(self, "검증", "카카오톡 검색명은 필수입니다.")
             return
-
-        # ✅ 사번/전화/대리점/지사: 비워도 통과
-        # (중복/형식 검증은 Repo(DB)에서 최종 처리 권장)
         self.accept()
 
     def get_contact(self) -> ContactForm:
+        name = self.name.text().strip()
         return {
-            "emp_id": self.emp_id.text().strip(),   # 빈값 허용
-            "name": self.name.text().strip(),       # 필수
+            "emp_id": self.emp_id.text().strip(),
+            "name": name,
+            "customer_name": self.customer_name.text().strip() or name,
+            "customer_honorific": self.customer_honorific.text().strip() or "고객님",
+            "customer_position": self.customer_position.text().strip(),
             "phone": self.phone.text().strip(),
             "agency": self.agency.text().strip(),
             "branch": self.branch.text().strip(),
+            "customer_status": self.customer_status.text().strip(),
+            "tags": self.tags.text().strip(),
+            "memo2": self.memo2.text().strip(),
         }

@@ -49,6 +49,7 @@ from backend.domains.send_lists.repository import SendListsRepo
 from backend.domains.send_lists.service import SendListsService
 from backend.domains.scheduled_sends.repository import ScheduledSendsRepo
 from backend.domains.scheduled_sends.service import ScheduledSendsService
+from backend.domains.sender_profiles.repository import SenderProfilesRepo
 from backend.domains.sending.job_builder import SendJobBuilder
 from backend.domains.sending.service import SendingService
 from backend.domains.sending.worker import MultiSendWorker
@@ -64,6 +65,7 @@ from frontend.theme import APP_STYLESHEET
 from frontend.layout.header import Header
 from frontend.layout.navigation import Navigation
 from frontend.layout.statusbar import StatusBar
+from frontend.dialogs.sender_profile_dialog import SenderProfileDialog
 from frontend.pages.campaigns.page import CampaignPage
 from frontend.pages.contacts.page import ContactsPage
 from frontend.pages.editor_tools.page import EditorToolsPage
@@ -91,6 +93,7 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(10)
 
         self.header = Header()
+        self.header.sender_profile_requested.connect(self.edit_sender_profile)
         self.header.export_settings_requested.connect(self.export_settings_bundle)
         self.header.import_settings_requested.connect(self.import_settings_bundle)
         self.header.import_legacy_backup_requested.connect(self.import_legacy_backup)
@@ -119,6 +122,7 @@ class MainWindow(QMainWindow):
         self.send_logs_repo = SendLogsRepo(db_path)
         self.send_logs_repo.ensure_tables()
         self.scheduled_sends_repo = ScheduledSendsRepo(db_path)
+        self.sender_profiles_repo = SenderProfilesRepo(db_path)
 
         # stores
         self.contacts_store = ContactsStore()
@@ -322,6 +326,26 @@ class MainWindow(QMainWindow):
 
     def _apply_style(self) -> None:
         self.setStyleSheet(APP_STYLESHEET)
+
+    def edit_sender_profile(self) -> None:
+        try:
+            profile = self.sender_profiles_repo.get_default()
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"발신자 정보 로드 실패\n{e}")
+            return
+
+        dlg = SenderProfileDialog(profile, parent=self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+
+        try:
+            self.sender_profiles_repo.save_default(dlg.get_profile())
+        except Exception as e:
+            QMessageBox.critical(self, "오류", f"발신자 정보 저장 실패\n{e}")
+            return
+
+        self.status.set_message("내 발신자 정보 저장 완료")
+        QMessageBox.information(self, "완료", "내 발신자 정보를 저장했습니다.")
 
     def _on_contacts_changed_global(self) -> None:
         from frontend.utils.worker import run_bg

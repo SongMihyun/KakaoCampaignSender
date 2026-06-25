@@ -22,9 +22,19 @@ def _make_fallback_preset(fallback_preset: Any):
             {
                 "emp_id": (fallback_preset.get("emp_id") or "").strip(),
                 "name": (fallback_preset.get("name") or "").strip(),
+                "customer_name": (
+                    fallback_preset.get("customer_name")
+                    or fallback_preset.get("name")
+                    or ""
+                ).strip(),
+                "customer_honorific": (fallback_preset.get("customer_honorific") or "고객님").strip(),
+                "customer_position": (fallback_preset.get("customer_position") or "").strip(),
                 "phone": (fallback_preset.get("phone") or "").strip(),
                 "agency": (fallback_preset.get("agency") or "").strip(),
                 "branch": (fallback_preset.get("branch") or "").strip(),
+                "customer_status": (fallback_preset.get("customer_status") or "").strip(),
+                "tags": (fallback_preset.get("tags") or "").strip(),
+                "memo2": (fallback_preset.get("memo2") or "").strip(),
             },
         )()
 
@@ -70,12 +80,18 @@ def edit_contact_by_id(
     data = dlg.get_contact()
     new_emp_id = (data.get("emp_id") or "").strip()
     new_name = (data.get("name") or "").strip()
+    new_customer_name = (data.get("customer_name") or "").strip() or new_name
+    new_customer_honorific = (data.get("customer_honorific") or "").strip() or "고객님"
+    new_customer_position = (data.get("customer_position") or "").strip()
     new_phone = (data.get("phone") or "").strip()
     new_agency = (data.get("agency") or "").strip()
     new_branch = (data.get("branch") or "").strip()
+    new_customer_status = (data.get("customer_status") or "").strip()
+    new_tags = (data.get("tags") or "").strip()
+    new_memo2 = (data.get("memo2") or "").strip()
 
     if not new_name:
-        QMessageBox.warning(parent, "입력 오류", "이름은 필수입니다.")
+        QMessageBox.warning(parent, "입력 오류", "카카오톡 검색명은 필수입니다.")
         return False
 
     try:
@@ -84,9 +100,15 @@ def edit_contact_by_id(
                 row_id=cid,
                 emp_id=new_emp_id,
                 name=new_name,
+                customer_name=new_customer_name,
+                customer_honorific=new_customer_honorific,
+                customer_position=new_customer_position,
                 phone=new_phone,
                 agency=new_agency,
                 branch=new_branch,
+                customer_status=new_customer_status,
+                tags=new_tags,
+                memo2=new_memo2,
             )
         )
     except ValueError as e:

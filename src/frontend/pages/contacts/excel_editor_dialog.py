@@ -55,7 +55,18 @@ class SheetSnapshotCommand:
 
 EditCommand = CellEditCommand | SheetSnapshotCommand
 
-EXCEL_SAMPLE_HEADERS = ["사번", "이름", "전화번호", "대리점명", "지사명"]
+EXCEL_SAMPLE_HEADERS = [
+    "카카오톡 검색명",
+    "고객명",
+    "호칭",
+    "직책",
+    "소속/대리점",
+    "지사",
+    "연락처",
+    "상태",
+    "태그",
+    "메모",
+]
 
 
 class SheetGridTableModel(QAbstractTableModel):
@@ -623,7 +634,15 @@ class CombinedColumnDialog(QDialog):
         return f"{get_column_letter(col + 1)} | {header_disp} | 예시: {sample_disp}"
 
     def _sample_value_for_header(self, header: str) -> str:
-        normalized = header.replace(" ", "").lower()
+        normalized = header.replace(" ", "").replace("/", "").lower()
+        if "카카오톡검색명" in normalized or "카톡검색명" in normalized or "검색명" in normalized:
+            return "홍길동"
+        if "고객명" in normalized:
+            return "홍길동"
+        if "호칭" in normalized:
+            return "고객님"
+        if "직책" in normalized or "직함" in normalized or "position" in normalized:
+            return "대표"
         if "사번" in normalized or "사원" in normalized or normalized in {"empid", "emp_id", "id"}:
             return "77777777"
         if "이름" in normalized or "성명" in normalized or normalized in {"name"}:

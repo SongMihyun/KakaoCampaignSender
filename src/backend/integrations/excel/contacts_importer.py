@@ -1,26 +1,45 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
-from typing import List, Sequence, Tuple
 import csv
 import io
 import re
 import zipfile
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Sequence
 
 from openpyxl import load_workbook
 
 
-PreviewRow = Tuple[str, str, str, str, str]  # (emp_id, name, phone, agency, branch)
+PreviewRow = dict[str, str]
 
+CONTACT_IMPORT_KEYS = [
+    "emp_id",
+    "name",
+    "customer_name",
+    "customer_honorific",
+    "customer_position",
+    "agency",
+    "branch",
+    "phone",
+    "customer_status",
+    "tags",
+    "memo2",
+]
 
 _HEADER_ALIASES: dict[str, set[str]] = {
-    "emp_id": {"사번", "사원번호", "empid", "emp_id", "employeeid", "employee_id", "id"},
-    "name": {"이름", "성명", "name"},
-    "phone": {"전화번호", "전화", "휴대폰", "휴대전화", "연락처", "phone", "mobile", "tel"},
-    "agency": {"대리점명", "대리점", "agency"},
+    "emp_id": {"사번", "사원번호", "고객번호", "empid", "emp_id", "employeeid", "employee_id", "id"},
+    "name": {"카카오톡검색명", "카톡검색명", "검색명", "이름", "성명", "name"},
+    "customer_name": {"고객명", "고객이름", "수신자명", "실제이름", "customername", "customer_name"},
+    "customer_honorific": {"호칭", "고객호칭", "honorific"},
+    "customer_position": {"직책", "직함", "직위", "position", "title"},
+    "agency": {"소속대리점", "소속", "대리점명", "대리점", "agency", "company"},
     "branch": {"지사명", "지사", "branch"},
+    "phone": {"연락처", "전화번호", "전화", "휴대폰", "핸드폰", "휴대전화", "phone", "mobile", "tel"},
+    "customer_status": {"상태", "고객상태", "status"},
+    "tags": {"태그", "tag", "tags"},
+    "memo2": {"메모", "비고", "memo", "note", "notes"},
 }
 
 _DOCX_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
@@ -30,9 +49,9 @@ _SUPPORTED_EXTS = {".xlsx", ".xlsm", ".docx", ".txt", ".csv", ".tsv"}
 
 @dataclass
 class ImportResult:
-    rows: List[PreviewRow]
+    rows: list[PreviewRow]
     skipped: int
-    errors: List[str]
+    errors: list[str]
 
 
 def supported_contact_import_exts() -> set[str]:
@@ -73,8 +92,6 @@ def import_contacts_text(text: str) -> ImportResult:
     return _build_import_result(raw_rows)
 
 
-# 하위 호환용
-
 def import_contacts_xlsx(path: str) -> ImportResult:
     return import_contacts_file(path)
 
@@ -82,11 +99,7 @@ def import_contacts_xlsx(path: str) -> ImportResult:
 def _read_xlsx_rows(path: str) -> list[list[str]]:
     wb = load_workbook(filename=path, data_only=True)
     ws = wb.active
-
-    rows: list[list[str]] = []
-    for row in ws.iter_rows(values_only=True):
-        rows.append([_normalize_cell(v) for v in row])
-    return rows
+    return [[_normalize_cell(v) for v in row] for row in ws.iter_rows(values_only=True)]
 
 
 def _read_text_rows(path: str) -> list[list[str]]:
@@ -152,8 +165,7 @@ def _extract_docx_table_rows(tbl_el: ET.Element) -> list[list[str]]:
         cells: list[str] = []
         for tc in tr.findall("w:tc", _DOCX_NS):
             parts = [t.text or "" for t in tc.findall(".//w:t", _DOCX_NS)]
-            cell_text = _cleanup_text("".join(parts))
-            cells.append(cell_text)
+            cells.append(_cleanup_text("".join(parts)))
         rows.append(cells)
     return rows
 
@@ -181,20 +193,15 @@ def _build_import_result(raw_rows: Sequence[Sequence[str]]) -> ImportResult:
             continue
 
         rec = _row_to_record(raw, active_header_map)
-        name = _cleanup_name(rec["name"])
-        if not name:
+        rec["name"] = _cleanup_name(rec["name"] or rec["customer_name"])
+        rec["customer_name"] = _cleanup_name(rec["customer_name"] or rec["name"])
+        rec["customer_honorific"] = rec["customer_honorific"] or "고객님"
+
+        if not rec["name"]:
             skipped += 1
             continue
 
-        rows.append(
-            (
-                rec["emp_id"],
-                name,
-                rec["phone"],
-                rec["agency"],
-                rec["branch"],
-            )
-        )
+        rows.append(rec)
 
     return ImportResult(rows=rows, skipped=skipped, errors=[])
 
@@ -210,48 +217,67 @@ def _detect_header_map(row: Sequence[str]) -> dict[str, int] | None:
     if not mapped:
         return None
 
-    if "name" in mapped or len(mapped) >= 2:
+    if "name" in mapped or "customer_name" in mapped:
+        return mapped
+    if len(mapped) >= 3 and 0 in mapped.values():
         return mapped
     return None
 
 
-def _row_to_record(row: Sequence[str], header_map: dict[str, int] | None) -> dict[str, str]:
+def _empty_record() -> PreviewRow:
+    return {key: "" for key in CONTACT_IMPORT_KEYS}
+
+
+def _row_to_record(row: Sequence[str], header_map: dict[str, int] | None) -> PreviewRow:
     if header_map:
-        return {
-            "emp_id": _get_cell(row, header_map.get("emp_id")),
-            "name": _get_cell(row, header_map.get("name")),
-            "phone": _get_cell(row, header_map.get("phone")),
-            "agency": _get_cell(row, header_map.get("agency")),
-            "branch": _get_cell(row, header_map.get("branch")),
-        }
+        rec = _empty_record()
+        for key in CONTACT_IMPORT_KEYS:
+            rec[key] = _get_cell(row, header_map.get(key))
+        return rec
 
     values = [_cleanup_text(v) for v in row if _cleanup_text(v)]
+    rec = _empty_record()
     if not values:
-        return {"emp_id": "", "name": "", "phone": "", "agency": "", "branch": ""}
+        return rec
+
+    if len(values) >= 10:
+        (
+            rec["name"],
+            rec["customer_name"],
+            rec["customer_honorific"],
+            rec["customer_position"],
+            rec["agency"],
+            rec["branch"],
+            rec["phone"],
+            rec["customer_status"],
+            rec["tags"],
+            rec["memo2"],
+        ) = values[:10]
+        return rec
 
     if len(values) == 1:
-        return {"emp_id": "", "name": values[0], "phone": "", "agency": "", "branch": ""}
+        rec["name"] = values[0]
+        return rec
 
     starts_with_emp_id = _looks_like_emp_id(values[0]) and len(values) >= 2 and _looks_like_nameish(values[1])
     if starts_with_emp_id:
-        return {
-            "emp_id": values[0],
-            "name": values[1] if len(values) >= 2 else "",
-            "phone": values[2] if len(values) >= 3 else "",
-            "agency": values[3] if len(values) >= 4 else "",
-            "branch": values[4] if len(values) >= 5 else "",
-        }
+        rec["emp_id"] = values[0]
+        rec["name"] = values[1] if len(values) >= 2 else ""
+        rec["phone"] = values[2] if len(values) >= 3 else ""
+        rec["agency"] = values[3] if len(values) >= 4 else ""
+        rec["branch"] = values[4] if len(values) >= 5 else ""
+        return rec
 
     if len(values) == 2 and _looks_like_phone(values[1]):
-        return {"emp_id": "", "name": values[0], "phone": values[1], "agency": "", "branch": ""}
+        rec["name"] = values[0]
+        rec["phone"] = values[1]
+        return rec
 
-    return {
-        "emp_id": "",
-        "name": values[0],
-        "phone": values[1] if len(values) >= 2 else "",
-        "agency": values[2] if len(values) >= 3 else "",
-        "branch": values[3] if len(values) >= 4 else "",
-    }
+    rec["name"] = values[0]
+    rec["phone"] = values[1] if len(values) >= 2 else ""
+    rec["agency"] = values[2] if len(values) >= 3 else ""
+    rec["branch"] = values[3] if len(values) >= 4 else ""
+    return rec
 
 
 def _split_text_line(line: str) -> list[str]:
@@ -275,18 +301,14 @@ def _looks_like_phone(value: str) -> bool:
 
 def _looks_like_emp_id(value: str) -> bool:
     x = (value or "").strip()
-    if not x:
-        return False
-    if _looks_like_phone(x):
+    if not x or _looks_like_phone(x):
         return False
     return bool(re.fullmatch(r"[A-Za-z0-9_-]{2,20}", x))
 
 
 def _looks_like_nameish(value: str) -> bool:
     x = _cleanup_text(value)
-    if not x:
-        return False
-    if _looks_like_phone(x):
+    if not x or _looks_like_phone(x):
         return False
     return bool(re.search(r"[A-Za-z가-힣]", x))
 
@@ -297,13 +319,13 @@ def _map_header(cell: str) -> str | None:
         return None
 
     for field, aliases in _HEADER_ALIASES.items():
-        if key in aliases:
+        if key in {_normalize_header(alias) for alias in aliases}:
             return field
     return None
 
 
 def _normalize_header(value: str) -> str:
-    return re.sub(r"\s+", "", (value or "").strip()).casefold()
+    return re.sub(r"[\s/_\-·()\[\]]+", "", (value or "").strip()).casefold()
 
 
 def _normalize_cell(value) -> str:
@@ -320,7 +342,7 @@ def _cleanup_text(value: str) -> str:
 
 def _cleanup_name(value: str) -> str:
     x = _cleanup_text(value)
-    x = re.sub(r"^[\u2022\-\*•·]+\s*", "", x)
+    x = re.sub(r"^[\u2022\-\*◈◆]+\s*", "", x)
     x = re.sub(r"^\d+[\.)]\s*", "", x)
     return x.strip("\"'").strip()
 

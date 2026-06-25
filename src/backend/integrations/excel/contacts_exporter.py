@@ -10,12 +10,23 @@ from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment, PatternFill
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
-ContactRow = Tuple[str, str, str, str, str]
-HEADERS = ["사번", "이름", "전화번호", "대리점명", "지사명"]
+ContactRow = Tuple[str, str, str, str, str, str, str, str, str, str]
+HEADERS = [
+    "카카오톡 검색명",
+    "고객명",
+    "호칭",
+    "직책",
+    "소속/대리점",
+    "지사",
+    "연락처",
+    "상태",
+    "태그",
+    "메모",
+]
 
 
 def _apply_sheet_style(ws) -> None:
@@ -34,7 +45,7 @@ def _apply_sheet_style(ws) -> None:
 
     ws.row_dimensions[1].height = 20
 
-    widths = [12, 12, 18, 18, 14]
+    widths = [22, 14, 10, 12, 18, 14, 16, 12, 16, 26]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -100,6 +111,24 @@ def _atomic_write_text(path: str, text: str, encoding: str = "utf-8-sig") -> Non
         raise
 
 
+def _sample_rows() -> list[ContactRow]:
+    return [
+        (
+            "홍길동",
+            "홍길동",
+            "고객님",
+            "대표",
+            "강남대리점",
+            "서울",
+            "01011112222",
+            "상담중",
+            "자동차보험",
+            "카카오톡 검색명은 실제 채팅방 검색값입니다.",
+        ),
+        ("김하늘 매니저님", "김하늘", "고객님", "매니저", "", "", "", "", "", ""),
+    ]
+
+
 def create_template_xlsx(path: str) -> None:
     wb = Workbook()
 
@@ -107,15 +136,15 @@ def create_template_xlsx(path: str) -> None:
     ws.title = "대상자"
     _apply_sheet_style(ws)
 
-    ws.append(["1001", "홍길동", "01011112222", "강남대리점", "서울"])
-    ws.append(["", "김영희", "", "", ""])
+    for row in _sample_rows():
+        ws.append(list(row))
 
     ws2 = wb.create_sheet("안내")
     ws2["A1"] = "입력 규칙"
     ws2["A1"].font = Font(bold=True)
-    ws2["A3"] = "1) 이름만 있어도 등록 가능합니다."
-    ws2["A4"] = "2) 권장 헤더: 사번 / 이름 / 전화번호 / 대리점명 / 지사명"
-    ws2["A5"] = "3) 빈 사번/전화번호는 허용됩니다."
+    ws2["A3"] = "1) 카카오톡 검색명은 실제 카카오톡에서 찾을 이름/채팅방명입니다."
+    ws2["A4"] = "2) 고객명은 메시지 개인화에 사용할 실제 고객명입니다."
+    ws2["A5"] = "3) 예전 파일처럼 '이름' 컬럼만 있어도 검색명과 고객명에 같이 반영됩니다."
     ws2["A6"] = f"4) 생성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
     _atomic_save_workbook(wb, path)
@@ -132,11 +161,7 @@ def create_template_docx(path: str) -> None:
     for i, h in enumerate(HEADERS):
         hdr[i].text = h
 
-    samples = [
-        ("1001", "홍길동", "01011112222", "강남대리점", "서울"),
-        ("", "김영희", "", "", ""),
-    ]
-    for row in samples:
+    for row in _sample_rows():
         cells = table.add_row().cells
         for i, v in enumerate(row):
             cells[i].text = str(v or "")
@@ -145,13 +170,9 @@ def create_template_docx(path: str) -> None:
 
 
 def create_template_txt(path: str) -> None:
-    lines = [
-        "사번\t이름\t전화번호\t대리점명\t지사명",
-        "1001\t홍길동\t01011112222\t강남대리점\t서울",
-        "\t김영희\t\t\t",
-        "박민수",
-        "최지은",
-    ]
+    lines = ["\t".join(HEADERS)]
+    for row in _sample_rows():
+        lines.append("\t".join([str(v or "") for v in row]))
     _atomic_write_text(path, "\n".join(lines))
 
 

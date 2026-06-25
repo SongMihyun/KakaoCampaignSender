@@ -1,13 +1,32 @@
-﻿# ✅ FILE: src/backend/domains/contacts/repository.py
+# FILE: src/backend/domains/contacts/repository.py
 
 from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from backend.database.schema import ensure_contacts_schema
+
+
+CONTACT_SELECT_COLUMNS = """
+    id,
+    emp_id,
+    name,
+    COALESCE(customer_name, name) AS customer_name,
+    COALESCE(NULLIF(TRIM(customer_honorific), ''), '고객님') AS customer_honorific,
+    COALESCE(customer_position, '') AS customer_position,
+    phone,
+    agency,
+    branch,
+    COALESCE(customer_status, '') AS customer_status,
+    COALESCE(tags, '') AS tags,
+    COALESCE(memo2, '') AS memo2,
+    last_assigned_code,
+    last_assigned_label,
+    last_assigned_at
+"""
 
 
 @dataclass
@@ -15,9 +34,15 @@ class ContactRow:
     id: int
     emp_id: str
     name: str
+    customer_name: str
+    customer_honorific: str
+    customer_position: str
     phone: str | None
     agency: str | None
     branch: str | None
+    customer_status: str = ""
+    tags: str = ""
+    memo2: str = ""
     last_assigned_code: str | None = None
     last_assigned_label: str | None = None
     last_assigned_at: str | None = None
@@ -38,17 +63,23 @@ class ContactsRepo:
         with self._conn() as conn:
             ensure_contacts_schema(conn)
 
-            # ✅ 정규화: emp_id는 TRIM만(빈값 삭제/NULL 변환 금지: NOT NULL 컬럼이라)
             conn.execute("UPDATE contacts SET emp_id = TRIM(emp_id);")
-            conn.execute("UPDATE contacts SET name   = TRIM(name);")
-            conn.execute("UPDATE contacts SET phone  = NULLIF(TRIM(phone), '');")
+            conn.execute("UPDATE contacts SET name = TRIM(name);")
+            conn.execute("UPDATE contacts SET customer_name = TRIM(COALESCE(customer_name, name));")
+            conn.execute(
+                """
+                UPDATE contacts
+                SET customer_honorific = COALESCE(NULLIF(TRIM(customer_honorific), ''), '고객님');
+                """
+            )
+            conn.execute("UPDATE contacts SET customer_position = TRIM(COALESCE(customer_position, ''));")
+            conn.execute("UPDATE contacts SET customer_status = TRIM(COALESCE(customer_status, ''));")
+            conn.execute("UPDATE contacts SET tags = TRIM(COALESCE(tags, ''));")
+            conn.execute("UPDATE contacts SET memo2 = TRIM(COALESCE(memo2, ''));")
+            conn.execute("UPDATE contacts SET phone = NULLIF(TRIM(phone), '');")
             conn.execute("UPDATE contacts SET agency = NULLIF(TRIM(agency), '');")
             conn.execute("UPDATE contacts SET branch = NULLIF(TRIM(branch), '');")
 
-            # ✅ (중요) 기존 로직: emp_id 빈값 삭제는 이제 하면 안 됨
-            # conn.execute("DELETE FROM contacts WHERE emp_id IS NULL OR TRIM(emp_id) = '';")  # 제거
-
-            # ✅ 1) emp_id 중복 제거(단, emp_id가 빈값인 건 제외)
             conn.execute(
                 """
                 DELETE FROM contacts
@@ -61,8 +92,6 @@ class ContactsRepo:
                   );
                 """
             )
-
-            # ✅ 2) phone 중복 제거(NULL 제외, 최소 id만 유지)
             conn.execute(
                 """
                 DELETE FROM contacts
@@ -76,9 +105,6 @@ class ContactsRepo:
                 """
             )
 
-            # ✅ 3) UNIQUE 인덱스 재구성
-            # - emp_id는 "빈값이 아닐 때만" UNIQUE
-            # - phone은 NULL 제외 UNIQUE
             conn.execute("DROP INDEX IF EXISTS ux_contacts_emp_id;")
             conn.execute("DROP INDEX IF EXISTS ux_contacts_phone;")
 
@@ -98,7 +124,6 @@ class ContactsRepo:
                     """
                 )
             except sqlite3.IntegrityError as e:
-                # 남아있는 중복 샘플 제공(디버깅)
                 dup = conn.execute(
                     """
                     SELECT emp_id, COUNT(*) AS cnt
@@ -114,14 +139,24 @@ class ContactsRepo:
 
             conn.commit()
 
+    @staticmethod
+    def _text(value: Any) -> str:
+        return str(value or "").strip()
+
     def _row_to_contact(self, r: sqlite3.Row) -> ContactRow:
         return ContactRow(
             id=int(r["id"]),
             emp_id=str(r["emp_id"] or ""),
             name=str(r["name"] or ""),
+            customer_name=str(r["customer_name"] or r["name"] or ""),
+            customer_honorific=str(r["customer_honorific"] or "고객님"),
+            customer_position=str(r["customer_position"] or ""),
             phone=(str(r["phone"]) if r["phone"] is not None else None),
             agency=(str(r["agency"]) if r["agency"] is not None else None),
             branch=(str(r["branch"]) if r["branch"] is not None else None),
+            customer_status=str(r["customer_status"] or ""),
+            tags=str(r["tags"] or ""),
+            memo2=str(r["memo2"] or ""),
             last_assigned_code=(
                 str(r["last_assigned_code"]) if r["last_assigned_code"] is not None else None
             ),
@@ -136,9 +171,8 @@ class ContactsRepo:
     def list_all(self) -> list[ContactRow]:
         with self._conn() as conn:
             cur = conn.execute(
-                """
-                SELECT id, emp_id, name, phone, agency, branch,
-                       last_assigned_code, last_assigned_label, last_assigned_at
+                f"""
+                SELECT {CONTACT_SELECT_COLUMNS}
                 FROM contacts
                 ORDER BY id DESC
                 """
@@ -153,84 +187,158 @@ class ContactsRepo:
         with self._conn() as conn:
             if not q:
                 cur = conn.execute(
-                    """
-                    SELECT id, emp_id, name, phone, agency, branch,
-                           last_assigned_code, last_assigned_label, last_assigned_at
+                    f"""
+                    SELECT {CONTACT_SELECT_COLUMNS}
                     FROM contacts
                     ORDER BY id ASC;
                     """
                 )
             else:
                 cur = conn.execute(
-                    """
-                    SELECT id, emp_id, name, phone, agency, branch,
-                           last_assigned_code, last_assigned_label, last_assigned_at
+                    f"""
+                    SELECT {CONTACT_SELECT_COLUMNS}
                     FROM contacts
                     WHERE COALESCE(emp_id,'') LIKE ?
                        OR name LIKE ?
+                       OR COALESCE(customer_name,'') LIKE ?
+                       OR COALESCE(customer_honorific,'') LIKE ?
+                       OR COALESCE(customer_position,'') LIKE ?
                        OR COALESCE(phone,'') LIKE ?
                        OR COALESCE(agency,'') LIKE ?
                        OR COALESCE(branch,'') LIKE ?
+                       OR COALESCE(customer_status,'') LIKE ?
+                       OR COALESCE(tags,'') LIKE ?
+                       OR COALESCE(memo2,'') LIKE ?
                     ORDER BY id ASC;
                     """,
-                    (like, like, like, like, like),
+                    (like, like, like, like, like, like, like, like, like, like, like),
                 )
             rows = cur.fetchall()
 
         return [self._row_to_contact(r) for r in rows]
 
-    def insert(self, emp_id: str, name: str, phone: str, agency: str, branch: str) -> int:
-        emp_id = (emp_id or "").strip()      # ✅ 빈값 허용
-        name = (name or "").strip()          # ✅ 이름만 필수
-        phone = (phone or "").strip()
-        agency = (agency or "").strip()
-        branch = (branch or "").strip()
+    def insert(
+        self,
+        emp_id: str,
+        name: str,
+        phone: str,
+        agency: str,
+        branch: str,
+        *,
+        customer_name: str = "",
+        customer_honorific: str = "고객님",
+        customer_position: str = "",
+        customer_status: str = "",
+        tags: str = "",
+        memo2: str = "",
+    ) -> int:
+        values = self._normalize_values(
+            emp_id=emp_id,
+            name=name,
+            customer_name=customer_name,
+            customer_honorific=customer_honorific,
+            customer_position=customer_position,
+            phone=phone,
+            agency=agency,
+            branch=branch,
+            customer_status=customer_status,
+            tags=tags,
+            memo2=memo2,
+        )
 
-        if not name:
-            raise ValueError("이름(name)은 필수입니다.")
-
-        phone_db = phone if phone else None
-        agency_db = agency if agency else None
-        branch_db = branch if branch else None
+        if not values["name"]:
+            raise ValueError("카카오톡 검색명(name)은 필수입니다.")
 
         try:
             with self._conn() as conn:
                 cur = conn.execute(
                     """
-                    INSERT INTO contacts(emp_id, name, phone, agency, branch)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO contacts(
+                        emp_id, name, customer_name, customer_honorific, customer_position,
+                        phone, agency, branch, customer_status, tags, memo2
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (emp_id, name, phone_db, agency_db, branch_db),
+                    self._db_tuple(values),
                 )
                 conn.commit()
                 return int(cur.lastrowid)
         except sqlite3.IntegrityError:
-            # emp_id(비어있지 않은 경우) 또는 phone 중복
             raise ValueError("사번(빈값 제외) 또는 전화번호가 이미 존재합니다.")
 
-    def update(self, row_id: int, emp_id: str, name: str, phone: str, agency: str, branch: str) -> None:
-        emp_id = (emp_id or "").strip()
-        name = (name or "").strip()
-        phone = (phone or "").strip()
-        agency = (agency or "").strip()
-        branch = (branch or "").strip()
+    def update(
+        self,
+        row_id: int,
+        emp_id: str,
+        name: str,
+        phone: str,
+        agency: str,
+        branch: str,
+        *,
+        customer_name: str = "",
+        customer_honorific: str = "고객님",
+        customer_position: str = "",
+        customer_status: str = "",
+        tags: str = "",
+        memo2: str = "",
+        last_assigned_code: str | None = None,
+        last_assigned_label: str | None = None,
+        last_assigned_at: str | None = None,
+    ) -> None:
+        values = self._normalize_values(
+            emp_id=emp_id,
+            name=name,
+            customer_name=customer_name,
+            customer_honorific=customer_honorific,
+            customer_position=customer_position,
+            phone=phone,
+            agency=agency,
+            branch=branch,
+            customer_status=customer_status,
+            tags=tags,
+            memo2=memo2,
+        )
 
-        if not name:
-            raise ValueError("이름(name)은 필수입니다.")
+        if not values["name"]:
+            raise ValueError("카카오톡 검색명(name)은 필수입니다.")
 
-        phone_db = phone if phone else None
-        agency_db = agency if agency else None
-        branch_db = branch if branch else None
+        assignments = """
+            emp_id=?,
+            name=?,
+            customer_name=?,
+            customer_honorific=?,
+            customer_position=?,
+            phone=?,
+            agency=?,
+            branch=?,
+            customer_status=?,
+            tags=?,
+            memo2=?,
+            updated_at=datetime('now','localtime')
+        """
+        params: list[Any] = list(self._db_tuple(values))
+
+        if last_assigned_code is not None:
+            assignments += ", last_assigned_code=?"
+            params.append(last_assigned_code)
+        if last_assigned_label is not None:
+            assignments += ", last_assigned_label=?"
+            params.append(last_assigned_label)
+        if last_assigned_at is not None:
+            assignments += ", last_assigned_at=?"
+            params.append(last_assigned_at)
+
+        params.append(int(row_id))
 
         try:
             with self._conn() as conn:
                 conn.execute(
-                    """
+                    f"""
                     UPDATE contacts
-                    SET emp_id=?, name=?, phone=?, agency=?, branch=?
+                    SET {assignments}
                     WHERE id=?
                     """,
-                    (emp_id, name, phone_db, agency_db, branch_db, row_id),
+                    tuple(params),
                 )
                 conn.commit()
         except sqlite3.IntegrityError:
@@ -250,34 +358,20 @@ class ContactsRepo:
 
         with self._conn() as conn:
             for r in rows:
-                if isinstance(r, dict):
-                    emp_id = (r.get("emp_id") or "").strip()
-                    name = (r.get("name") or "").strip()
-                    phone = (r.get("phone") or "").strip()
-                    agency = (r.get("agency") or "").strip()
-                    branch = (r.get("branch") or "").strip()
-                else:
-                    emp_id = str((r[0] if len(r) > 0 else "") or "").strip()
-                    name = str((r[1] if len(r) > 1 else "") or "").strip()
-                    phone = str((r[2] if len(r) > 2 else "") or "").strip()
-                    agency = str((r[3] if len(r) > 3 else "") or "").strip()
-                    branch = str((r[4] if len(r) > 4 else "") or "").strip()
-
-                # ✅ 이름만 필수
-                if not name:
+                values = self._values_from_import_row(r)
+                if not values["name"]:
                     continue
-
-                phone_db = phone if phone else None
-                agency_db = agency if agency else None
-                branch_db = branch if branch else None
 
                 try:
                     conn.execute(
                         """
-                        INSERT INTO contacts(emp_id, name, phone, agency, branch)
-                        VALUES (?, ?, ?, ?, ?)
+                        INSERT INTO contacts(
+                            emp_id, name, customer_name, customer_honorific, customer_position,
+                            phone, agency, branch, customer_status, tags, memo2
+                        )
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
-                        (emp_id, name, phone_db, agency_db, branch_db),
+                        self._db_tuple(values),
                     )
                     inserted += 1
                 except sqlite3.IntegrityError:
@@ -287,18 +381,11 @@ class ContactsRepo:
 
         return inserted, dup_skipped
 
-    # -----------------
-    # Single getters (for edit dialogs)
-    # -----------------
     def get_by_id(self, contact_id: int) -> ContactRow | None:
-        """
-        ✅ 정석: PK(id)로 1건 로드
-        """
         with self._conn() as conn:
             r = conn.execute(
-                """
-                SELECT id, emp_id, name, phone, agency, branch,
-                       last_assigned_code, last_assigned_label, last_assigned_at
+                f"""
+                SELECT {CONTACT_SELECT_COLUMNS}
                 FROM contacts
                 WHERE id = ? LIMIT 1;
                 """,
@@ -307,18 +394,13 @@ class ContactsRepo:
             return self._row_to_contact(r) if r else None
 
     def get_contact_by_emp_id(self, emp_id: str) -> ContactRow | None:
-        """
-        ✅ 레거시 호환용: 기존 UI에서 호출하던 메서드
-        - emp_id는 빈값이 있을 수 있으니 빈값은 None 처리
-        """
         eid = (emp_id or "").strip()
         if not eid:
             return None
         with self._conn() as conn:
             r = conn.execute(
-                """
-                SELECT id, emp_id, name, phone, agency, branch,
-                       last_assigned_code, last_assigned_label, last_assigned_at
+                f"""
+                SELECT {CONTACT_SELECT_COLUMNS}
                 FROM contacts
                 WHERE TRIM(emp_id) = TRIM(?)
                   AND TRIM(emp_id) <> ''
@@ -327,3 +409,98 @@ class ContactsRepo:
                 (eid,),
             ).fetchone()
             return self._row_to_contact(r) if r else None
+
+    def _values_from_import_row(self, row: Any) -> dict[str, str]:
+        if isinstance(row, dict):
+            return self._normalize_values(
+                emp_id=row.get("emp_id", ""),
+                name=row.get("name", ""),
+                customer_name=row.get("customer_name", ""),
+                customer_honorific=row.get("customer_honorific", "고객님"),
+                customer_position=row.get("customer_position", ""),
+                phone=row.get("phone", ""),
+                agency=row.get("agency", ""),
+                branch=row.get("branch", ""),
+                customer_status=row.get("customer_status", ""),
+                tags=row.get("tags", ""),
+                memo2=row.get("memo2", ""),
+            )
+
+        values = list(row or [])
+        if len(values) >= 10:
+            return self._normalize_values(
+                emp_id="",
+                name=values[0],
+                customer_name=values[1],
+                customer_honorific=values[2],
+                customer_position=values[3],
+                agency=values[4],
+                branch=values[5],
+                phone=values[6],
+                customer_status=values[7],
+                tags=values[8],
+                memo2=values[9],
+            )
+
+        return self._normalize_values(
+            emp_id=values[0] if len(values) > 0 else "",
+            name=values[1] if len(values) > 1 else "",
+            phone=values[2] if len(values) > 2 else "",
+            agency=values[3] if len(values) > 3 else "",
+            branch=values[4] if len(values) > 4 else "",
+            customer_name="",
+            customer_honorific="고객님",
+            customer_position="",
+            customer_status="",
+            tags="",
+            memo2="",
+        )
+
+    def _normalize_values(
+        self,
+        *,
+        emp_id: Any,
+        name: Any,
+        customer_name: Any = "",
+        customer_honorific: Any = "고객님",
+        customer_position: Any = "",
+        phone: Any = "",
+        agency: Any = "",
+        branch: Any = "",
+        customer_status: Any = "",
+        tags: Any = "",
+        memo2: Any = "",
+    ) -> dict[str, str]:
+        name_text = self._text(name)
+        return {
+            "emp_id": self._text(emp_id),
+            "name": name_text,
+            "customer_name": self._text(customer_name) or name_text,
+            "customer_honorific": self._text(customer_honorific) or "고객님",
+            "customer_position": self._text(customer_position),
+            "phone": self._text(phone),
+            "agency": self._text(agency),
+            "branch": self._text(branch),
+            "customer_status": self._text(customer_status),
+            "tags": self._text(tags),
+            "memo2": self._text(memo2),
+        }
+
+    @staticmethod
+    def _db_tuple(values: dict[str, str]) -> tuple[Any, ...]:
+        phone = values["phone"] if values["phone"] else None
+        agency = values["agency"] if values["agency"] else None
+        branch = values["branch"] if values["branch"] else None
+        return (
+            values["emp_id"],
+            values["name"],
+            values["customer_name"],
+            values["customer_honorific"],
+            values["customer_position"],
+            phone,
+            agency,
+            branch,
+            values["customer_status"],
+            values["tags"],
+            values["memo2"],
+        )
