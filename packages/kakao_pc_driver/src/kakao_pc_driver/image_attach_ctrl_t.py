@@ -1246,6 +1246,100 @@ def _submit_path_text_by_uia_fallback(
     return False
 
 
+def _submit_path_text_by_initial_focus_fastpath(
+    *,
+    dialog_hwnd: int,
+    text: str,
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    submit_timeout_sec: float,
+    debug_step: Optional[DebugStep],
+) -> bool:
+    extra = {
+        "expected_path": text,
+        "dialog_hwnd": int(dialog_hwnd or 0),
+        "method": "current_focus_ctrl_a_clipboard_enter",
+    }
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_INITIAL_FOCUS_INPUT",
+        ok=True,
+        detail="try filename input using the current focused field",
+        extra=extra,
+    )
+
+    try:
+        fg = int(get_foreground_hwnd() or 0)
+        fg_root = _root_hwnd(fg)
+        extra["foreground_hwnd_before"] = fg
+        extra["foreground_root_before"] = fg_root
+        if int(dialog_hwnd or 0) > 0 and fg_root != int(dialog_hwnd or 0):
+            user32.SetForegroundWindow(wintypes.HWND(int(dialog_hwnd or 0)))
+            extra["foreground_recovered"] = True
+            sleep_abs(0.05)
+
+        set_clipboard_text(str(text or ""))
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_CLIPBOARD_SET",
+            ok=True,
+            detail="path copied to clipboard for initial focus input",
+            extra={"expected_path": text, "clipboard_text_length": len(str(text or ""))},
+        )
+        sleep_abs(0.05)
+        send_keys_fast("^a")
+        sleep_abs(0.03)
+        send_keys_fast("^v")
+        sleep_abs(0.10)
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_PASTE",
+            ok=True,
+            detail="path pasted by initial focused field",
+            extra=extra,
+        )
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_ENTER",
+            ok=True,
+            detail="submit open dialog by initial focused field",
+            extra=extra,
+        )
+        send_keys_fast("{ENTER}")
+
+        if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_INITIAL_FOCUS_INPUT",
+                ok=True,
+                detail="open dialog closed after initial focus input",
+                extra=extra,
+            )
+            log("[CTRL+T-MULTI] dialog closed after initial focus input")
+            return True
+    except Exception as e:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_INITIAL_FOCUS_INPUT",
+            ok=False,
+            detail=str(e) or "initial focus input failed",
+            extra=extra,
+        )
+        log(f"[CTRL+T-MULTI] initial focus input fail err={e}")
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_INITIAL_FOCUS_INPUT",
+        ok=False,
+        detail="open dialog did not close after initial focus input",
+        extra=extra,
+    )
+    return False
+
+
 def _submit_path_text_by_keyboard_fallback(
     *,
     dialog_hwnd: int,
@@ -1660,10 +1754,17 @@ def _send_paths_via_ctrl_t_dialog(
             )
             return False
 
-        settle = max(0.30, min(0.70, _t("focus_settle", 0.35)))
-        sleep_abs(settle)
+        initial_settle = max(0.04, min(0.16, _t("initial_focus_settle", 0.08)))
+        sleep_abs(initial_settle)
         extra = _window_extra(dialog_hwnd)
-        extra.update({"elapsed_ms": elapsed_ms, "settle_ms": int(settle * 1000), "dialog_selection": dialog_meta})
+        extra.update(
+            {
+                "elapsed_ms": elapsed_ms,
+                "settle_ms": int(initial_settle * 1000),
+                "settle_kind": "initial_focus",
+                "dialog_selection": dialog_meta,
+            }
+        )
         _emit_debug_step(
             debug_step,
             "FILE_DIALOG_WAIT_ACTIVE",
@@ -1672,45 +1773,59 @@ def _send_paths_via_ctrl_t_dialog(
             extra=extra,
         )
 
-        submitted = False
-        edit_hwnd = _find_filename_edit_hwnd_retry(
-            dialog_hwnd,
+        submitted = _submit_path_text_by_initial_focus_fastpath(
+            dialog_hwnd=dialog_hwnd,
+            text=full_paths_text,
+            send_keys_fast=send_keys_fast,
+            set_clipboard_text=set_clipboard_text,
             sleep_abs=sleep_abs,
             log=log,
-            timeout_sec=1.5,
+            submit_timeout_sec=max(2.0, float(timeout_sec)),
+            debug_step=debug_step,
         )
-        if edit_hwnd:
-            if _set_path_text_with_clipboard_then_fallback(
-                dialog_hwnd=dialog_hwnd,
-                edit_hwnd=edit_hwnd,
-                text=full_paths_text,
-                send_keys_fast=send_keys_fast,
-                set_clipboard_text=set_clipboard_text,
+
+        if not submitted:
+            settle = max(0.05, min(0.70, _t("focus_settle", 0.35)) - initial_settle)
+            sleep_abs(settle)
+
+            edit_hwnd = _find_filename_edit_hwnd_retry(
+                dialog_hwnd,
                 sleep_abs=sleep_abs,
                 log=log,
-                clipboard_settle_sec=_t("clipboard_settle", 0.05),
-                after_paste_sec=_t("after_paste_path", 0.10),
-                debug_step=debug_step,
-            ):
-                _emit_debug_step(
-                    debug_step,
-                    "FILE_DIALOG_ENTER",
-                    ok=True,
-                    detail="submit open dialog",
-                    extra={"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)},
-                )
-                submitted = _confirm_dialog_fields_and_submit(
+                timeout_sec=1.5,
+            )
+            if edit_hwnd:
+                if _set_path_text_with_clipboard_then_fallback(
                     dialog_hwnd=dialog_hwnd,
                     edit_hwnd=edit_hwnd,
-                    expected_text=full_paths_text,
+                    text=full_paths_text,
+                    send_keys_fast=send_keys_fast,
+                    set_clipboard_text=set_clipboard_text,
                     sleep_abs=sleep_abs,
                     log=log,
-                    submit_timeout_sec=max(3.0, float(timeout_sec)),
-                )
+                    clipboard_settle_sec=_t("clipboard_settle", 0.05),
+                    after_paste_sec=_t("after_paste_path", 0.10),
+                    debug_step=debug_step,
+                ):
+                    _emit_debug_step(
+                        debug_step,
+                        "FILE_DIALOG_ENTER",
+                        ok=True,
+                        detail="submit open dialog",
+                        extra={"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)},
+                    )
+                    submitted = _confirm_dialog_fields_and_submit(
+                        dialog_hwnd=dialog_hwnd,
+                        edit_hwnd=edit_hwnd,
+                        expected_text=full_paths_text,
+                        sleep_abs=sleep_abs,
+                        log=log,
+                        submit_timeout_sec=max(3.0, float(timeout_sec)),
+                    )
+                else:
+                    log("[CTRL+T-MULTI] filename edit path input failed; trying keyboard fallback")
             else:
-                log("[CTRL+T-MULTI] filename edit path input failed; trying keyboard fallback")
-        else:
-            log("[CTRL+T-MULTI] filename edit not found after retry; trying keyboard fallback")
+                log("[CTRL+T-MULTI] filename edit not found after retry; trying keyboard fallback")
 
         if not submitted:
             submitted = _submit_path_text_by_dlgitem_fallback(
