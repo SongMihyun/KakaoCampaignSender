@@ -36,6 +36,10 @@ STATUS_CODES: dict[int, StatusInfo] = {
     4217: StatusInfo(4217, "파일 경로 클립보드 설정 실패", "clipboard_path", "파일 경로를 클립보드에 넣지 못했습니다.", ("클립보드 점유", "보안 프로그램 간섭"), ("잠시 후 재시도", "클립보드 사용 앱 종료")),
     4218: StatusInfo(4218, "파일 선택창 알 수 없는 상태", "file_dialog_unknown", "파일 선택/업로드 단계에서 분류되지 않은 상태가 발생했습니다.", ("Windows 파일창 비정상 상태", "카카오톡 UI 변경"), ("오류내용 운영자에게 보내기",)),
     4219: StatusInfo(4219, "임시 첨부 파일 복사 실패", "attach_temp_copy", "첨부 파일을 안정적인 임시 경로로 복사하지 못했습니다.", ("원본 파일 접근 권한 문제", "OneDrive 동기화 지연", "디스크 공간 부족"), ("원본 파일 위치 확인", "잠시 후 다시 발송")),
+    4220: StatusInfo(4220, "다중 파일 경고 확인 실패", "file_dialog_warning", "Windows 다중 파일 경고창을 확인하지 못했습니다.", ("확인 버튼 감지 실패", "경고창 응답 지연"), ("카카오톡/파일 선택창 상태 확인", "다시 발송")),
+    4221: StatusInfo(4221, "카카오 파일 전송 창 미감지", "file_transfer_dialog", "경고창 또는 파일 선택 후 카카오톡 파일 전송 창이 나타나지 않았습니다.", ("파일 선택창만 닫힘", "카카오톡 포커스 손실", "카카오톡 UI 응답 지연"), ("카카오톡 창 상태 확인", "속도 모드 낮추기")),
+    4222: StatusInfo(4222, "첨부 개수 불일치", "file_transfer_count", "예상 첨부 개수와 카카오톡 전송 버튼의 개수가 일치하지 않습니다.", ("일부 파일 선택 실패", "카카오톡 전송창 갱신 지연"), ("캠페인 이미지 개수 확인", "다시 발송")),
+    4223: StatusInfo(4223, "파일 전송 버튼 감지 실패", "file_transfer_button", "카카오톡 파일 전송 창의 전송 버튼을 누르지 못했습니다.", ("전송 버튼 비활성", "카카오톡 UI 변경", "포커스 손실"), ("카카오톡 창 상태 확인", "다시 발송")),
     4301: StatusInfo(4301, "업로드 타임아웃", "upload_wait", "파일 업로드 완료 신호를 제한 시간 안에 확인하지 못했습니다.", ("네트워크 지연", "PC 부하", "카카오톡 업로드 지연"), ("카카오톡 상태 확인", "일시정지 후 F9로 재개")),
     4302: StatusInfo(4302, "업로드 파이프라인 정지", "upload_pipeline", "파일 업로드가 진행 중인 상태로 파이프라인이 멈춘 것으로 보입니다.", ("업로드 지연", "카카오톡 세션 불안정", "채팅창 닫기 충돌"), ("카카오톡 재로그인", "F9로 재개")),
     4303: StatusInfo(4303, "채팅창 종료 실패", "close_chat", "업로드 또는 카카오톡 응답 문제로 채팅창을 닫지 못했습니다.", ("전송 중 파일 팝업", "카카오톡 응답 없음"), ("카카오톡 재로그인", "F9로 재개")),
@@ -74,6 +78,14 @@ def status_from_result(status: str, reason: str = "") -> StatusInfo:
         return STATUS_CODES[4212]
     if "FILE_DIALOG_OPEN_BUTTON_FAILED" in s or "file_dialog_open_button_failed" in r:
         return STATUS_CODES[4213]
+    if "MULTI_FILE_WARNING_CONFIRM_FAILED" in s or "multi_file_warning_confirm_failed" in r:
+        return STATUS_CODES[4220]
+    if "KAKAO_FILE_TRANSFER_DIALOG_NOT_FOUND" in s or "kakao_file_transfer_dialog_not_found" in r:
+        return STATUS_CODES[4221]
+    if "KAKAO_FILE_TRANSFER_COUNT_MISMATCH" in s or "kakao_file_transfer_count_mismatch" in r:
+        return STATUS_CODES[4222]
+    if "KAKAO_FILE_TRANSFER_BUTTON_NOT_FOUND" in s or "kakao_file_transfer_button_not_found" in r:
+        return STATUS_CODES[4223]
     if "KAKAO_UPLOAD_NOT_STARTED" in s or "kakao_upload_not_started" in r:
         return STATUS_CODES[4214]
     if "KAKAO_UPLOAD_TIMEOUT" in s or "kakao_upload_timeout" in r:

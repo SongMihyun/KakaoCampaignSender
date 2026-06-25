@@ -352,6 +352,7 @@ class KakaoPcDriver(KakaoSenderDriver):
 
         self._debug_log = bool(debug_log)
         self._logger = logging.getLogger(str(log_prefix or "kakao_pc_driver"))
+        self._last_debug_steps: list[dict[str, Any]] = []
 
         env_trace = str(os.getenv("KAKAO_TRACE", "")).strip().lower() in ("1", "true", "on", "yes")
         want_info = self._debug_log or env_trace
@@ -524,8 +525,15 @@ class KakaoPcDriver(KakaoSenderDriver):
             if extra:
                 item["extra"] = dict(extra)
             steps.append(item)
+            self._last_debug_steps = list(steps or [])
         except Exception:
             pass
+
+    def last_debug_steps(self) -> list[dict[str, Any]]:
+        try:
+            return list(self._last_debug_steps or [])
+        except Exception:
+            return []
 
     @staticmethod
     def _last_success_step(steps: list[dict[str, Any]]) -> str:
@@ -571,7 +579,20 @@ class KakaoPcDriver(KakaoSenderDriver):
 
     @staticmethod
     def _file_dialog_failure_from_steps(steps: list[dict[str, Any]]) -> tuple[str, str]:
-        for item in reversed(steps or []):
+        def _specific_file_transfer_failure(step: str) -> tuple[str, str] | None:
+            if step == "FILE_DIALOG_MULTI_SELECT_WARNING_CONFIRMED":
+                return "MULTI_FILE_WARNING_CONFIRM_FAILED", "file_dialog_warning"
+            if step == "KAKAO_FILE_TRANSFER_DIALOG_DETECTED":
+                return "KAKAO_FILE_TRANSFER_DIALOG_NOT_FOUND", "file_transfer_dialog"
+            if step == "KAKAO_FILE_TRANSFER_COUNT_MISMATCH":
+                return "KAKAO_FILE_TRANSFER_COUNT_MISMATCH", "file_transfer_count"
+            if step == "KAKAO_FILE_TRANSFER_BUTTON_NOT_FOUND":
+                return "KAKAO_FILE_TRANSFER_BUTTON_NOT_FOUND", "file_transfer_button"
+            return None
+
+        items = list(steps or [])
+        for idx in range(len(items) - 1, -1, -1):
+            item = items[idx]
             try:
                 if bool(item.get("ok")):
                     continue
@@ -579,6 +600,9 @@ class KakaoPcDriver(KakaoSenderDriver):
             except Exception:
                 continue
 
+            specific = _specific_file_transfer_failure(step)
+            if specific:
+                return specific
             if step in {"ATTACHMENT_PATH_VALIDATE", "FILE_CHECK"}:
                 return "FILE_NOT_FOUND", "load_file"
             if step == "ATTACHMENT_TEMP_COPY":
@@ -592,6 +616,17 @@ class KakaoPcDriver(KakaoSenderDriver):
             if step in {"FILE_DIALOG_OPEN_BUTTON_FAILED", "FILE_DIALOG_CLOSED_CHECK"}:
                 return "FILE_DIALOG_OPEN_BUTTON_FAILED", "file_dialog_submit"
             if step == "KAKAO_UPLOAD_NOT_STARTED":
+                for prev in range(idx - 1, -1, -1):
+                    try:
+                        prev_item = items[prev]
+                        if bool(prev_item.get("ok")):
+                            continue
+                        prev_step = str(prev_item.get("step") or "")
+                    except Exception:
+                        continue
+                    specific = _specific_file_transfer_failure(prev_step)
+                    if specific:
+                        return specific
                 return "KAKAO_UPLOAD_NOT_STARTED", "upload_start"
             if step == "KAKAO_UPLOAD_TIMEOUT":
                 return "KAKAO_UPLOAD_TIMEOUT", "upload_wait"

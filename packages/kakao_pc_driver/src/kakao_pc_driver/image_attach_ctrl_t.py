@@ -34,6 +34,7 @@ IDOK = 1
 EDT1 = 0x0480
 CMB13 = 0x047C
 OPEN_DIALOG_MIN_SCORE = 900
+MULTI_SELECT_WARNING_SNIPPETS = ("여러 항목", "같은 폴더")
 
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
@@ -263,10 +264,211 @@ def _click_uia_element(
     return False
 
 
+def _extract_transfer_count(text: str) -> Optional[int]:
+    match = re.search(r"(\d+)\s*개\s*전송", str(text or ""))
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _collect_dialog_texts(hwnd: int, *, limit: int = 80) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        texts.append(text)
+
+    try:
+        _add(get_window_text(int(hwnd or 0)))
+    except Exception:
+        pass
+
+    for child in _iter_child_windows(int(hwnd or 0), recursive=True):
+        if len(texts) >= limit:
+            break
+        try:
+            _add(get_window_text(child))
+        except Exception:
+            continue
+
+    return texts
+
+
+def _find_dialog_confirm_button(dialog_hwnd: int) -> int:
+    fallback = 0
+    for child in _iter_child_windows(int(dialog_hwnd or 0), recursive=True):
+        try:
+            if str(get_class_name(child) or "") != "Button":
+                continue
+            text = str(get_window_text(child) or "").strip()
+            ctrl_id = int(user32.GetDlgCtrlID(wintypes.HWND(child)) or 0)
+            if text in {"확인", "OK", "&OK"}:
+                return int(child)
+            if ctrl_id == IDOK:
+                fallback = int(child)
+        except Exception:
+            continue
+    return int(fallback or 0)
+
+
+def _multi_select_warning_meta(hwnd: int) -> Optional[dict[str, Any]]:
+    h = int(hwnd or 0)
+    if h <= 0:
+        return None
+    try:
+        if str(get_class_name(h) or "") != "#32770":
+            return None
+        if not bool(user32.IsWindowVisible(wintypes.HWND(h))):
+            return None
+    except Exception:
+        return None
+
+    texts = _collect_dialog_texts(h)
+    blob = "\n".join(texts)
+    if not all(snippet in blob for snippet in MULTI_SELECT_WARNING_SNIPPETS):
+        return None
+
+    return {
+        "warning_hwnd": h,
+        "active_window_class": "#32770",
+        "message": next((t for t in texts if all(s in t for s in MULTI_SELECT_WARNING_SNIPPETS)), blob[:500]),
+        "texts": texts[:12],
+        "confirm_button_hwnd": _find_dialog_confirm_button(h),
+    }
+
+
+def _find_multi_select_warning_dialog(
+    *,
+    get_foreground_hwnd_cb: Optional[Callable[[], int]] = None,
+) -> Optional[dict[str, Any]]:
+    ordered: list[int] = []
+    seen: set[int] = set()
+
+    try:
+        fg = int((get_foreground_hwnd_cb or get_foreground_hwnd)() or 0)
+        root = _root_hwnd(fg)
+        if root > 0:
+            ordered.append(root)
+            seen.add(root)
+    except Exception:
+        pass
+
+    for hwnd in _iter_top_windows():
+        if hwnd in seen:
+            continue
+        ordered.append(hwnd)
+        seen.add(hwnd)
+
+    for hwnd in ordered:
+        meta = _multi_select_warning_meta(hwnd)
+        if meta:
+            return meta
+    return None
+
+
+def _confirm_recoverable_multi_select_warning(
+    *,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    debug_step: Optional[DebugStep],
+    expected_file_count: int,
+    get_foreground_hwnd_cb: Optional[Callable[[], int]] = None,
+    timeout_sec: float = 0.8,
+) -> tuple[bool, bool]:
+    deadline = time.perf_counter() + max(0.05, float(timeout_sec))
+    meta: Optional[dict[str, Any]] = None
+    while time.perf_counter() < deadline:
+        meta = _find_multi_select_warning_dialog(get_foreground_hwnd_cb=get_foreground_hwnd_cb)
+        if meta:
+            break
+        sleep_abs(0.05)
+
+    if not meta:
+        return False, False
+
+    meta = dict(meta)
+    meta["attachment_count"] = int(expected_file_count or 0)
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_MULTI_SELECT_WARNING_DETECTED",
+        ok=True,
+        detail="recoverable multi-file warning detected",
+        extra=meta,
+    )
+    log(
+        "[CTRL+T-MULTI] recoverable multi-select warning detected "
+        f"hwnd={meta.get('warning_hwnd')} message={meta.get('message')!r}"
+    )
+
+    warning_hwnd = int(meta.get("warning_hwnd") or 0)
+    button_hwnd = int(meta.get("confirm_button_hwnd") or 0)
+    if warning_hwnd <= 0 or button_hwnd <= 0:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_MULTI_SELECT_WARNING_CONFIRMED",
+            ok=False,
+            detail="confirm button was not found on recoverable warning",
+            extra=meta,
+        )
+        return True, False
+
+    try:
+        user32.SetForegroundWindow(wintypes.HWND(warning_hwnd))
+        sleep_abs(0.05)
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning foreground fail err={e}")
+
+    clicked = False
+    try:
+        user32.SendMessageW(wintypes.HWND(button_hwnd), BM_CLICK, 0, 0)
+        clicked = True
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning BM_CLICK fail hwnd={button_hwnd} err={e}")
+
+    if not clicked:
+        try:
+            l, t, r, b = get_window_rect(button_hwnd)
+            if r > l and b > t:
+                _, _, click = lazy_pywinauto()
+                click(coords=(int((l + r) / 2), int((t + b) / 2)))
+                clicked = True
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] warning confirm click fallback fail err={e}")
+
+    if not clicked or not _wait_for_dialog_close(warning_hwnd, sleep_abs=sleep_abs, timeout_sec=1.2):
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_MULTI_SELECT_WARNING_CONFIRMED",
+            ok=False,
+            detail="recoverable warning confirm failed",
+            extra=meta,
+        )
+        return True, False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_MULTI_SELECT_WARNING_CONFIRMED",
+        ok=True,
+        detail="recoverable warning confirmed",
+        extra=meta,
+    )
+    log("[CTRL+T-MULTI] recoverable multi-select warning confirmed")
+    return True, True
+
+
 def _find_send_button_in_chat_surface(
     *,
     chat_hwnd: int,
     log: Callable[[str], None],
+    expected_file_count: int = 0,
+    debug_candidates: bool = True,
 ):
     """
     카카오 채팅창(UIA 트리) 안에서
@@ -276,69 +478,179 @@ def _find_send_button_in_chat_surface(
     """
     try:
         Desktop, _, _ = lazy_pywinauto()
-        root = Desktop(backend="uia").window(handle=int(chat_hwnd))
     except Exception as e:
-        log(f"[FILE_SEND][ROOT_ATTACH_FAIL] hwnd={chat_hwnd} err={e}")
+        log(f"[FILE_SEND][DESKTOP_ATTACH_FAIL] err={e}")
         return None
 
-    candidates = _iter_button_like_descendants(root)
+    handles: list[int] = []
+    seen_handles: set[int] = set()
 
+    def _add_handle(hwnd: int) -> None:
+        h = int(hwnd or 0)
+        if h <= 0 or h in seen_handles:
+            return
+        seen_handles.add(h)
+        handles.append(h)
+
+    _add_handle(int(chat_hwnd or 0))
+    try:
+        _add_handle(_root_hwnd(get_foreground_hwnd()))
+    except Exception:
+        pass
+    for hwnd in _iter_top_windows():
+        try:
+            title = str(get_window_text(hwnd) or "")
+            if "파일 전송" in title or "카카오" in title or "Kakao" in title:
+                _add_handle(hwnd)
+        except Exception:
+            continue
+
+    exact_count: list[Any] = []
     preferred: list[Any] = []
     fallback: list[Any] = []
 
     max_debug = 40
     debug_idx = 0
 
-    for el in candidates:
+    for root_hwnd in handles:
         try:
-            txt = _safe_window_text(el)
-            area = _safe_rect_area(el)
-
-            if debug_idx < max_debug:
-                try:
-                    ctrl_type = getattr(getattr(el, "element_info", None), "control_type", "")
-                except Exception:
-                    ctrl_type = ""
-                log(f"[FILE_SEND][CANDIDATE] idx={debug_idx} text={txt!r} area={area} type={ctrl_type!r}")
-                debug_idx += 1
-
-            if not txt:
-                continue
-
-            if re.search(r"\d+\s*개\s*전송", txt):
-                preferred.append((area, el))
-                continue
-
-            if txt == "전송":
-                preferred.append((area, el))
-                continue
-
-            if "전송" in txt:
-                fallback.append((area, el))
-                continue
+            root = Desktop(backend="uia").window(handle=int(root_hwnd))
+            candidates = _iter_button_like_descendants(root)
         except Exception as e:
-            log(f"[FILE_SEND][CANDIDATE_ERR] err={e}")
+            log(f"[FILE_SEND][ROOT_ATTACH_FAIL] hwnd={root_hwnd} err={e}")
             continue
 
-    if preferred:
-        preferred.sort(key=lambda x: x[0], reverse=True)
-        btn = preferred[0][1]
-        try:
-            log(f"[FILE_SEND][MATCH_PICK] preferred text={_safe_window_text(btn)!r}")
-        except Exception:
-            pass
-        return btn
+        for el in candidates:
+            try:
+                txt = _safe_window_text(el)
+                area = _safe_rect_area(el)
 
-    if fallback:
-        fallback.sort(key=lambda x: x[0], reverse=True)
-        btn = fallback[0][1]
+                if debug_candidates and debug_idx < max_debug:
+                    try:
+                        ctrl_type = getattr(getattr(el, "element_info", None), "control_type", "")
+                    except Exception:
+                        ctrl_type = ""
+                    log(
+                        "[FILE_SEND][CANDIDATE] "
+                        f"idx={debug_idx} root={root_hwnd} text={txt!r} area={area} type={ctrl_type!r}"
+                    )
+                    debug_idx += 1
+
+                if not txt:
+                    continue
+
+                transfer_count = _extract_transfer_count(txt)
+                if transfer_count is not None:
+                    if int(expected_file_count or 0) > 0 and transfer_count == int(expected_file_count):
+                        exact_count.append((area, el))
+                        continue
+                    preferred.append((area, el))
+                    continue
+
+                if txt == "전송":
+                    if int(expected_file_count or 0) <= 1:
+                        preferred.append((area, el))
+                    continue
+
+                if "전송" in txt:
+                    if int(expected_file_count or 0) > 1:
+                        continue
+                    fallback.append((area, el))
+                    continue
+            except Exception as e:
+                log(f"[FILE_SEND][CANDIDATE_ERR] err={e}")
+                continue
+
+    for label, matches in (("exact_count", exact_count), ("preferred", preferred), ("fallback", fallback)):
+        if not matches:
+            continue
+        matches.sort(key=lambda x: x[0], reverse=True)
+        btn = matches[0][1]
         try:
-            log(f"[FILE_SEND][MATCH_PICK] fallback text={_safe_window_text(btn)!r}")
+            log(f"[FILE_SEND][MATCH_PICK] {label} text={_safe_window_text(btn)!r}")
         except Exception:
             pass
         return btn
 
     return None
+
+
+def _wait_for_kakao_file_transfer_button(
+    *,
+    chat_hwnd: int,
+    expected_file_count: int,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    debug_step: Optional[DebugStep],
+    timeout_sec: float,
+) -> tuple[Optional[Any], dict[str, Any], str]:
+    deadline = time.perf_counter() + max(0.8, float(timeout_sec))
+    expected = int(expected_file_count or 0)
+    last_meta: dict[str, Any] = {
+        "chat_hwnd": int(chat_hwnd or 0),
+        "expected_file_count": expected,
+    }
+    mismatch_meta: Optional[dict[str, Any]] = None
+    attempt = 0
+
+    while time.perf_counter() < deadline:
+        button = _find_send_button_in_chat_surface(
+            chat_hwnd=int(chat_hwnd or 0),
+            log=log,
+            expected_file_count=expected,
+            debug_candidates=(attempt == 0),
+        )
+        attempt += 1
+        if button is None:
+            sleep_abs(0.08)
+            continue
+
+        text = _safe_window_text(button)
+        actual_count = _extract_transfer_count(text)
+        meta = {
+            "chat_hwnd": int(chat_hwnd or 0),
+            "expected_file_count": expected,
+            "button_text": text,
+            "actual_file_count": actual_count,
+        }
+        last_meta = meta
+
+        if expected > 1 and actual_count != expected:
+            mismatch_meta = meta
+            sleep_abs(0.10)
+            continue
+        if expected == 1 and actual_count not in (None, 1):
+            mismatch_meta = meta
+            sleep_abs(0.10)
+            continue
+
+        _emit_debug_step(
+            debug_step,
+            "KAKAO_FILE_TRANSFER_DIALOG_DETECTED",
+            ok=True,
+            detail="Kakao file transfer dialog detected",
+            extra=meta,
+        )
+        return button, meta, ""
+
+    if mismatch_meta is not None:
+        _emit_debug_step(
+            debug_step,
+            "KAKAO_FILE_TRANSFER_COUNT_MISMATCH",
+            ok=False,
+            detail="Kakao file transfer count did not match expected attachments",
+            extra=mismatch_meta,
+        )
+        return None, mismatch_meta, "count_mismatch"
+
+    _emit_debug_step(
+        debug_step,
+        "KAKAO_FILE_TRANSFER_DIALOG_DETECTED",
+        ok=False,
+        detail="Kakao file transfer dialog was not detected",
+        extra=last_meta,
+    )
+    return None, last_meta, "dialog_not_found"
 
 
 def send_files_dialog_hook(
@@ -348,23 +660,60 @@ def send_files_dialog_hook(
     sleep_abs: Callable[[float], None],
     log: Callable[[str], None],
     timeout_sec: float = 2.5,
+    expected_file_count: int = 0,
+    debug_step: Optional[DebugStep] = None,
 ) -> bool:
     """
     현재 환경 전용 최적화:
-    파일 전송 UI는 UIA 탐색보다 TAB->TAB->ENTER가 더 빠르고 안정적이다.
+    파일 전송 UI를 먼저 검증하고, 확인된 전송 버튼을 클릭한다.
     실패/잔류창 상황까지 고려해 정리 로직 포함.
     """
     try:
-        log(f"[FILE_SEND][DIRECT_BEGIN] hwnd={chat_hwnd}")
+        log(f"[FILE_SEND][VERIFY_BEGIN] hwnd={chat_hwnd} expected={expected_file_count}")
 
-        send_keys_fast("{TAB}")
-        sleep_abs(0.05)
+        _emit_debug_step(
+            debug_step,
+            "KAKAO_FILE_TRANSFER_DIALOG_WAIT",
+            ok=True,
+            detail="wait for Kakao file transfer dialog",
+            extra={
+                "chat_hwnd": int(chat_hwnd or 0),
+                "expected_file_count": int(expected_file_count or 0),
+                "timeout_ms": int(max(2.0, float(timeout_sec)) * 1000),
+            },
+        )
 
-        send_keys_fast("{TAB}")
-        sleep_abs(0.05)
+        button, meta, failure = _wait_for_kakao_file_transfer_button(
+            chat_hwnd=int(chat_hwnd or 0),
+            expected_file_count=int(expected_file_count or 0),
+            sleep_abs=sleep_abs,
+            log=log,
+            debug_step=debug_step,
+            timeout_sec=max(2.0, float(timeout_sec)),
+        )
+        if button is None:
+            log(f"[FILE_SEND][VERIFY_FAIL] reason={failure} meta={meta}")
+            return False
 
-        send_keys_fast("{ENTER}")
-        sleep_abs(0.18)
+        if not _click_uia_element(button, sleep_abs=sleep_abs, log=log):
+            try:
+                log("[FILE_SEND][CLICK_FALLBACK] TAB->TAB->ENTER")
+                send_keys_fast("{TAB}")
+                sleep_abs(0.05)
+                send_keys_fast("{TAB}")
+                sleep_abs(0.05)
+                send_keys_fast("{ENTER}")
+                sleep_abs(0.18)
+            except Exception as e:
+                log(f"[FILE_SEND][CLICK_FALLBACK_FAIL] err={e}")
+                _emit_debug_step(
+                    debug_step,
+                    "KAKAO_FILE_TRANSFER_BUTTON_NOT_FOUND",
+                    ok=False,
+                    detail="Kakao file transfer button click failed",
+                    extra=meta,
+                )
+                return False
 
         _safe_cleanup_after_file_dialog(
             prefer_hwnd=int(chat_hwnd or 0),
@@ -372,11 +721,11 @@ def send_files_dialog_hook(
             log=log,
         )
 
-        log("[FILE_SEND][DIRECT_OK] TAB->TAB->ENTER")
+        log("[FILE_SEND][VERIFY_OK] file transfer button clicked")
         return True
 
     except Exception as e:
-        log(f"[FILE_SEND][DIRECT_FAIL] err={e}")
+        log(f"[FILE_SEND][VERIFY_FAIL] err={e}")
 
         _safe_cleanup_after_file_dialog(
             prefer_hwnd=int(chat_hwnd or 0),
@@ -1827,6 +2176,8 @@ def _send_paths_via_ctrl_t_dialog(
             else:
                 log("[CTRL+T-MULTI] filename edit not found after retry; trying keyboard fallback")
 
+        submitted_via_warning = False
+
         if not submitted:
             submitted = _submit_path_text_by_dlgitem_fallback(
                 dialog_hwnd=dialog_hwnd,
@@ -1874,6 +2225,29 @@ def _send_paths_via_ctrl_t_dialog(
             )
 
         if not submitted:
+            warning_seen, warning_confirmed = _confirm_recoverable_multi_select_warning(
+                sleep_abs=sleep_abs,
+                log=log,
+                debug_step=debug_step,
+                expected_file_count=len(valid_paths),
+                get_foreground_hwnd_cb=get_foreground_hwnd_cb,
+                timeout_sec=0.8,
+            )
+            if warning_seen:
+                if not warning_confirmed:
+                    _cleanup_file_dialog_flow(
+                        prefer_hwnd=int(prefer_hwnd or 0),
+                        sleep_abs=sleep_abs,
+                        log=log,
+                        debug_step=debug_step,
+                        ok=True,
+                        detail="cleanup after recoverable warning confirm failure",
+                    )
+                    return False
+                submitted = True
+                submitted_via_warning = True
+
+        if not submitted:
             extra = _window_extra(dialog_hwnd)
             extra.update({"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)})
             _emit_debug_step(
@@ -1901,12 +2275,41 @@ def _send_paths_via_ctrl_t_dialog(
             )
             return False
 
+        warning_seen, warning_confirmed = _confirm_recoverable_multi_select_warning(
+            sleep_abs=sleep_abs,
+            log=log,
+            debug_step=debug_step,
+            expected_file_count=len(valid_paths),
+            get_foreground_hwnd_cb=get_foreground_hwnd_cb,
+            timeout_sec=0.35,
+        )
+        if warning_seen:
+            if not warning_confirmed:
+                _cleanup_file_dialog_flow(
+                    prefer_hwnd=int(prefer_hwnd or 0),
+                    sleep_abs=sleep_abs,
+                    log=log,
+                    debug_step=debug_step,
+                    ok=True,
+                    detail="cleanup after recoverable warning confirm failure",
+                )
+                return False
+            submitted_via_warning = True
+
+        dialog_closed = not bool(user32.IsWindow(wintypes.HWND(int(dialog_hwnd or 0))))
+        if not dialog_closed and not submitted_via_warning:
+            dialog_closed = _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=0.5)
         _emit_debug_step(
             debug_step,
             "FILE_DIALOG_CLOSED_CHECK",
-            ok=True,
-            detail="open dialog closed",
-            extra={"dialog_hwnd": int(dialog_hwnd or 0), "expected_path": full_paths_text},
+            ok=bool(dialog_closed or submitted_via_warning),
+            detail="open dialog submitted after recoverable warning" if submitted_via_warning else "open dialog closed",
+            extra={
+                "dialog_hwnd": int(dialog_hwnd or 0),
+                "expected_path": full_paths_text,
+                "submitted_via_warning": bool(submitted_via_warning),
+                "dialog_closed": bool(dialog_closed),
+            },
         )
         sleep_abs(max(0.15, _t("after_enter_path", 0.25)))
 
@@ -1924,6 +2327,8 @@ def _send_paths_via_ctrl_t_dialog(
             sleep_abs=sleep_abs,
             log=log,
             timeout_sec=max(2.0, float(timeout_sec)),
+            expected_file_count=len(valid_paths),
+            debug_step=debug_step,
         )
         if not ok:
             _emit_debug_step(

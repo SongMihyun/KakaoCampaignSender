@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import time
+from datetime import datetime
+from types import SimpleNamespace
 from typing import Callable, Optional
 
 from backend.domains.sending.result import SendRunResult
@@ -397,6 +399,7 @@ class SendExecutor:
                     status="STOPPED_BY_USER",
                     reason="USER_STOP",
                     attempt=used_attempt,
+                    driver_result=self._driver_stop_debug_snapshot(),
                 )
                 return {
                     "ok": False,
@@ -557,6 +560,7 @@ class SendExecutor:
                         status="STOPPED_BY_USER",
                         reason="USER_STOP",
                         attempt=used_attempt,
+                        driver_result=self._driver_stop_debug_snapshot(),
                     )
                     return {
                         "ok": False,
@@ -857,6 +861,47 @@ class SendExecutor:
             )
         except Exception:
             pass
+
+    @staticmethod
+    def _last_success_debug_step(steps: list[dict]) -> str:
+        for item in reversed(steps or []):
+            try:
+                if bool(item.get("ok")):
+                    return str(item.get("step") or "")
+            except Exception:
+                pass
+        return ""
+
+    def _driver_stop_debug_snapshot(self):
+        steps: list[dict] = []
+        try:
+            getter = getattr(self._driver, "last_debug_steps", None)
+            if callable(getter):
+                steps = list(getter() or [])
+            else:
+                steps = list(getattr(self._driver, "_last_debug_steps", []) or [])
+        except Exception:
+            steps = []
+
+        try:
+            if not steps or str(steps[-1].get("step") or "") != "USER_STOP":
+                steps.append(
+                    {
+                        "step": "USER_STOP",
+                        "at": datetime.now().isoformat(timespec="milliseconds"),
+                        "ok": False,
+                        "detail": "user requested stop",
+                    }
+                )
+        except Exception:
+            pass
+
+        return SimpleNamespace(
+            retryable=False,
+            failure_step="USER_STOP",
+            last_success_step=self._last_success_debug_step(steps),
+            debug_steps=steps,
+        )
 
     def _finalize_report(self, result: SendRunResult) -> None:
         try:
