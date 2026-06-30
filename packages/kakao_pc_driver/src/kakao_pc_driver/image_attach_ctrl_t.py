@@ -117,6 +117,16 @@ def _build_absolute_paths_text(paths: Sequence[str]) -> str:
     return " ".join([f'"{ap}"' for ap in out])
 
 
+def _build_folder_and_names_text(paths: Sequence[str]) -> str:
+    shared_parent = _shared_parent_dir(paths)
+    names_text = _build_names_text(paths)
+    clean_count = len([p for p in paths or [] if str(p or "").strip()])
+    if clean_count <= 1 or not shared_parent or not names_text:
+        return _build_absolute_paths_text(paths)
+    folder = shared_parent.replace('"', "")
+    return f'"{folder}" {names_text}'
+
+
 def _shared_parent_dir(paths: Sequence[str]) -> str:
     parents: list[str] = []
     normalized: set[str] = set()
@@ -132,15 +142,25 @@ def _shared_parent_dir(paths: Sequence[str]) -> str:
     return parents[0]
 
 
-def _build_dialog_input_plan(paths: Sequence[str]) -> dict[str, str]:
+def _build_dialog_input_plan(paths: Sequence[str], *, input_mode: str = "folder_and_names") -> dict[str, str]:
     names_text = _build_names_text(paths)
     full_paths_text = _build_absolute_paths_text(paths)
     shared_parent = _shared_parent_dir(paths)
+    folder_and_names_text = _build_folder_and_names_text(paths)
+    mode = str(input_mode or "").strip().lower()
+    if mode not in {"absolute_paths", "folder_and_names", "same_folder_names"}:
+        mode = "folder_and_names"
+    input_text = full_paths_text
+    if mode == "folder_and_names":
+        input_text = folder_and_names_text
+    elif mode == "same_folder_names":
+        input_text = names_text or full_paths_text
     return {
-        "input_text": full_paths_text,
-        "input_mode": "absolute_paths",
+        "input_text": input_text,
+        "input_mode": mode,
         "names_text": names_text,
         "full_paths_text": full_paths_text,
+        "folder_and_names_text": folder_and_names_text,
         "shared_parent_dir": shared_parent,
     }
 
@@ -2173,6 +2193,7 @@ def _send_paths_via_ctrl_t_dialog(
     get_foreground_hwnd_cb: Optional[Callable[[], int]] = None,
     debug_step: Optional[DebugStep] = None,
     post_open_hook: Optional[Callable[..., bool]] = None,
+    dialog_input_mode: str = "folder_and_names",
 ) -> bool:
     valid_paths = [str(p).strip() for p in (file_paths or []) if str(p).strip()]
     if not valid_paths:
@@ -2195,7 +2216,7 @@ def _send_paths_via_ctrl_t_dialog(
     def _t(key: str, default: float = 0.0) -> float:
         return float(tm.get(key, default))
 
-    input_plan = _build_dialog_input_plan(valid_paths)
+    input_plan = _build_dialog_input_plan(valid_paths, input_mode=dialog_input_mode)
     names_text = input_plan["names_text"]
     full_paths_text = input_plan["full_paths_text"]
     dialog_input_text = input_plan["input_text"]
@@ -2213,6 +2234,7 @@ def _send_paths_via_ctrl_t_dialog(
         "dialog_input_text": dialog_input_text,
         "dialog_input_mode": dialog_input_mode,
         "full_paths_text": full_paths_text,
+        "folder_and_names_text": input_plan.get("folder_and_names_text", ""),
         "names_text": names_text,
         "shared_parent_dir": shared_parent_dir,
         "file_count": len(valid_paths),
@@ -2222,7 +2244,7 @@ def _send_paths_via_ctrl_t_dialog(
         debug_step,
         "FILE_DIALOG_INPUT_STRATEGY",
         ok=True,
-        detail="absolute paths are used for file dialog input",
+        detail=f"{dialog_input_mode} is used for file dialog input",
         extra=dialog_input_extra,
     )
 
@@ -2606,6 +2628,7 @@ def send_png_via_ctrl_t(
     prefer_hwnd: int = 0,
     get_foreground_hwnd: Optional[Callable[[], int]] = None,
     debug_step: Optional[DebugStep] = None,
+    dialog_input_mode: str = "absolute_paths",
 ) -> bool:
     """
     단일 파일 Ctrl+T.
@@ -2651,6 +2674,7 @@ def send_png_via_ctrl_t(
         get_foreground_hwnd_cb=get_foreground_hwnd,
         debug_step=debug_step,
         post_open_hook=_single_image_post_open_hook,
+        dialog_input_mode=dialog_input_mode,
     )
 
 
@@ -2670,6 +2694,7 @@ def send_files_via_ctrl_t(
     prefer_hwnd: int = 0,
     get_foreground_hwnd: Optional[Callable[[], int]] = None,
     debug_step: Optional[DebugStep] = None,
+    dialog_input_mode: str = "folder_and_names",
 ) -> bool:
     return _send_paths_via_ctrl_t_dialog(
         file_paths=file_paths,
@@ -2684,4 +2709,5 @@ def send_files_via_ctrl_t(
         prefer_hwnd=int(prefer_hwnd or 0),
         get_foreground_hwnd_cb=get_foreground_hwnd,
         debug_step=debug_step,
+        dialog_input_mode=dialog_input_mode,
     )

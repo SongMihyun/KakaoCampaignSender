@@ -3679,6 +3679,24 @@ class KakaoPcDriver(KakaoSenderDriver):
             self._log("[CTRL+T-MULTI] temp attachment preparation failed")
             return False
 
+        dialog_input_mode = "folder_and_names"
+        try:
+            from backend.core.app_settings import get_setting
+
+            value = str(get_setting("kakao_ctrl_t_multi_attach_input_mode", "folder_and_names") or "").strip().lower()
+            if value in {"absolute_paths", "folder_and_names", "same_folder_names"}:
+                dialog_input_mode = value
+        except Exception as e:
+            self._log(f"[CTRL+T-MULTI] dialog input mode setting load failed: {e}")
+
+        self._append_debug_step(
+            debug_steps,
+            "FILE_DIALOG_PC_INPUT_MODE",
+            ok=True,
+            detail="loaded PC-specific Ctrl+T multi-attach input mode",
+            extra={"dialog_input_mode": dialog_input_mode},
+        )
+
         try:
             ok = send_files_via_ctrl_t(
                 file_paths=dialog_paths,
@@ -3694,6 +3712,7 @@ class KakaoPcDriver(KakaoSenderDriver):
                 prefer_hwnd=int(self._chat_hwnd or self._hwnd),
                 get_foreground_hwnd=w32.get_foreground_hwnd,
                 debug_step=self._ctrl_t_debug_callback(debug_steps),
+                dialog_input_mode=dialog_input_mode,
                 timings={
                     "focus_settle": self._sf(self._profile.ctrl_t.focus_settle),
                     "after_ctrl_t": self._sf(self._profile.ctrl_t.after_ctrl_t),
