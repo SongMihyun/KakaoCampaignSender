@@ -106,6 +106,42 @@ def _build_absolute_paths_text(paths: Sequence[str]) -> str:
     return " ".join([f'"{ap}"' for ap in out])
 
 
+def _shared_parent_dir(paths: Sequence[str]) -> str:
+    parents: list[str] = []
+    normalized: set[str] = set()
+    for p in paths or []:
+        ap = os.path.abspath(str(p or "").strip())
+        if not ap:
+            continue
+        parent = os.path.dirname(ap)
+        parents.append(parent)
+        normalized.add(os.path.normcase(os.path.normpath(parent)))
+    if len(normalized) != 1 or not parents:
+        return ""
+    return parents[0]
+
+
+def _build_dialog_input_plan(paths: Sequence[str]) -> dict[str, str]:
+    names_text = _build_names_text(paths)
+    full_paths_text = _build_absolute_paths_text(paths)
+    shared_parent = _shared_parent_dir(paths)
+    if len([p for p in paths or [] if str(p or "").strip()]) > 1 and shared_parent and names_text:
+        return {
+            "input_text": names_text,
+            "input_mode": "same_folder_names",
+            "names_text": names_text,
+            "full_paths_text": full_paths_text,
+            "shared_parent_dir": shared_parent,
+        }
+    return {
+        "input_text": full_paths_text,
+        "input_mode": "absolute_paths",
+        "names_text": names_text,
+        "full_paths_text": full_paths_text,
+        "shared_parent_dir": shared_parent,
+    }
+
+
 def _normalize_compare_text(text: str) -> str:
     s = str(text or "").strip().strip('"')
     s = s.replace("/", "\\")
@@ -2044,13 +2080,38 @@ def _send_paths_via_ctrl_t_dialog(
     def _t(key: str, default: float = 0.0) -> float:
         return float(tm.get(key, default))
 
-    names_text = _build_names_text(valid_paths)
-    full_paths_text = _build_absolute_paths_text(valid_paths)
+    input_plan = _build_dialog_input_plan(valid_paths)
+    names_text = input_plan["names_text"]
+    full_paths_text = input_plan["full_paths_text"]
+    dialog_input_text = input_plan["input_text"]
+    dialog_input_mode = input_plan["input_mode"]
+    shared_parent_dir = input_plan["shared_parent_dir"]
     if not full_paths_text:
         return False
 
     log(f"[CTRL+T-MULTI] names_text={names_text}")
     log(f"[CTRL+T-MULTI] full_paths_text={full_paths_text}")
+    log(f"[CTRL+T-MULTI] dialog_input_mode={dialog_input_mode} input_text={dialog_input_text}")
+
+    dialog_input_extra = {
+        "expected_path": dialog_input_text,
+        "dialog_input_text": dialog_input_text,
+        "dialog_input_mode": dialog_input_mode,
+        "full_paths_text": full_paths_text,
+        "names_text": names_text,
+        "shared_parent_dir": shared_parent_dir,
+        "file_count": len(valid_paths),
+    }
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_INPUT_STRATEGY",
+        ok=True,
+        detail="same-folder filenames are used for multi-file dialog input"
+        if dialog_input_mode == "same_folder_names"
+        else "absolute paths are used for file dialog input",
+        extra=dialog_input_extra,
+    )
 
     try:
         ensure_foreground_chat()
@@ -2065,7 +2126,7 @@ def _send_paths_via_ctrl_t_dialog(
             "FILE_DIALOG_OPEN_ATTEMPT",
             ok=True,
             detail="press Ctrl+T",
-            extra={"expected_path": full_paths_text, "file_count": len(valid_paths), "prefer_hwnd": int(prefer_hwnd or 0)},
+            extra={**dialog_input_extra, "prefer_hwnd": int(prefer_hwnd or 0)},
         )
         send_keys_fast("^t")
         t_wait0 = time.perf_counter()
@@ -2124,7 +2185,7 @@ def _send_paths_via_ctrl_t_dialog(
 
         submitted = _submit_path_text_by_initial_focus_fastpath(
             dialog_hwnd=dialog_hwnd,
-            text=full_paths_text,
+            text=dialog_input_text,
             send_keys_fast=send_keys_fast,
             set_clipboard_text=set_clipboard_text,
             sleep_abs=sleep_abs,
@@ -2147,7 +2208,7 @@ def _send_paths_via_ctrl_t_dialog(
                 if _set_path_text_with_clipboard_then_fallback(
                     dialog_hwnd=dialog_hwnd,
                     edit_hwnd=edit_hwnd,
-                    text=full_paths_text,
+                    text=dialog_input_text,
                     send_keys_fast=send_keys_fast,
                     set_clipboard_text=set_clipboard_text,
                     sleep_abs=sleep_abs,
@@ -2161,12 +2222,12 @@ def _send_paths_via_ctrl_t_dialog(
                         "FILE_DIALOG_ENTER",
                         ok=True,
                         detail="submit open dialog",
-                        extra={"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)},
+                        extra={**dialog_input_extra, "dialog_hwnd": int(dialog_hwnd or 0)},
                     )
                     submitted = _confirm_dialog_fields_and_submit(
                         dialog_hwnd=dialog_hwnd,
                         edit_hwnd=edit_hwnd,
-                        expected_text=full_paths_text,
+                        expected_text=dialog_input_text,
                         sleep_abs=sleep_abs,
                         log=log,
                         submit_timeout_sec=max(3.0, float(timeout_sec)),
@@ -2181,7 +2242,7 @@ def _send_paths_via_ctrl_t_dialog(
         if not submitted:
             submitted = _submit_path_text_by_dlgitem_fallback(
                 dialog_hwnd=dialog_hwnd,
-                text=full_paths_text,
+                text=dialog_input_text,
                 sleep_abs=sleep_abs,
                 log=log,
                 submit_timeout_sec=max(3.0, float(timeout_sec)),
@@ -2191,7 +2252,7 @@ def _send_paths_via_ctrl_t_dialog(
         if not submitted:
             submitted = _submit_path_text_by_uia_fallback(
                 dialog_hwnd=dialog_hwnd,
-                text=full_paths_text,
+                text=dialog_input_text,
                 send_keys_fast=send_keys_fast,
                 set_clipboard_text=set_clipboard_text,
                 sleep_abs=sleep_abs,
@@ -2203,7 +2264,7 @@ def _send_paths_via_ctrl_t_dialog(
         if not submitted:
             submitted = _submit_path_text_by_keyboard_fallback(
                 dialog_hwnd=dialog_hwnd,
-                text=full_paths_text,
+                text=dialog_input_text,
                 send_keys_fast=send_keys_fast,
                 set_clipboard_text=set_clipboard_text,
                 sleep_abs=sleep_abs,
@@ -2215,7 +2276,7 @@ def _send_paths_via_ctrl_t_dialog(
         if not submitted:
             submitted = _submit_path_text_by_geometry_fallback(
                 dialog_hwnd=dialog_hwnd,
-                text=full_paths_text,
+                text=dialog_input_text,
                 send_keys_fast=send_keys_fast,
                 set_clipboard_text=set_clipboard_text,
                 sleep_abs=sleep_abs,
@@ -2249,7 +2310,7 @@ def _send_paths_via_ctrl_t_dialog(
 
         if not submitted:
             extra = _window_extra(dialog_hwnd)
-            extra.update({"expected_path": full_paths_text, "dialog_hwnd": int(dialog_hwnd or 0)})
+            extra.update({**dialog_input_extra, "dialog_hwnd": int(dialog_hwnd or 0)})
             _emit_debug_step(
                 debug_step,
                 "FILE_DIALOG_CLOSED_CHECK",
@@ -2281,7 +2342,7 @@ def _send_paths_via_ctrl_t_dialog(
             debug_step=debug_step,
             expected_file_count=len(valid_paths),
             get_foreground_hwnd_cb=get_foreground_hwnd_cb,
-            timeout_sec=0.35,
+            timeout_sec=1.2,
         )
         if warning_seen:
             if not warning_confirmed:
@@ -2306,7 +2367,7 @@ def _send_paths_via_ctrl_t_dialog(
             detail="open dialog submitted after recoverable warning" if submitted_via_warning else "open dialog closed",
             extra={
                 "dialog_hwnd": int(dialog_hwnd or 0),
-                "expected_path": full_paths_text,
+                **dialog_input_extra,
                 "submitted_via_warning": bool(submitted_via_warning),
                 "dialog_closed": bool(dialog_closed),
             },
