@@ -3679,13 +3679,17 @@ class KakaoPcDriver(KakaoSenderDriver):
             self._log("[CTRL+T-MULTI] temp attachment preparation failed")
             return False
 
-        dialog_input_mode = "folder_and_names"
+        dialog_input_mode = "navigate_then_names"
+        legacy_dialog_input_mode = ""
         try:
             from backend.core.app_settings import get_setting
 
-            value = str(get_setting("kakao_ctrl_t_multi_attach_input_mode", "folder_and_names") or "").strip().lower()
-            if value in {"absolute_paths", "folder_and_names", "same_folder_names"}:
+            value = str(get_setting("kakao_ctrl_t_multi_attach_input_mode", "navigate_then_names") or "").strip().lower()
+            if value in {"absolute_paths", "folder_and_names", "same_folder_names", "navigate_then_names"}:
                 dialog_input_mode = value
+            if dialog_input_mode == "folder_and_names":
+                legacy_dialog_input_mode = dialog_input_mode
+                dialog_input_mode = "navigate_then_names"
         except Exception as e:
             self._log(f"[CTRL+T-MULTI] dialog input mode setting load failed: {e}")
 
@@ -3694,7 +3698,10 @@ class KakaoPcDriver(KakaoSenderDriver):
             "FILE_DIALOG_PC_INPUT_MODE",
             ok=True,
             detail="loaded PC-specific Ctrl+T multi-attach input mode",
-            extra={"dialog_input_mode": dialog_input_mode},
+            extra={
+                "dialog_input_mode": dialog_input_mode,
+                "legacy_dialog_input_mode": legacy_dialog_input_mode,
+            },
         )
 
         try:

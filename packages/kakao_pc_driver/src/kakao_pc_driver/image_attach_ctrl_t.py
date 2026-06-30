@@ -142,16 +142,23 @@ def _shared_parent_dir(paths: Sequence[str]) -> str:
     return parents[0]
 
 
-def _build_dialog_input_plan(paths: Sequence[str], *, input_mode: str = "folder_and_names") -> dict[str, str]:
+def _build_dialog_input_plan(paths: Sequence[str], *, input_mode: str = "navigate_then_names") -> dict[str, str]:
     names_text = _build_names_text(paths)
     full_paths_text = _build_absolute_paths_text(paths)
     shared_parent = _shared_parent_dir(paths)
     folder_and_names_text = _build_folder_and_names_text(paths)
     mode = str(input_mode or "").strip().lower()
-    if mode not in {"absolute_paths", "folder_and_names", "same_folder_names"}:
-        mode = "folder_and_names"
+    if mode not in {"absolute_paths", "folder_and_names", "same_folder_names", "navigate_then_names"}:
+        mode = "navigate_then_names"
     input_text = full_paths_text
-    if mode == "folder_and_names":
+    requires_folder_navigation = False
+    if mode == "navigate_then_names":
+        if shared_parent and names_text:
+            input_text = names_text
+            requires_folder_navigation = True
+        else:
+            mode = "absolute_paths"
+    elif mode == "folder_and_names":
         input_text = folder_and_names_text
     elif mode == "same_folder_names":
         input_text = names_text or full_paths_text
@@ -162,6 +169,7 @@ def _build_dialog_input_plan(paths: Sequence[str], *, input_mode: str = "folder_
         "full_paths_text": full_paths_text,
         "folder_and_names_text": folder_and_names_text,
         "shared_parent_dir": shared_parent,
+        "requires_folder_navigation": "1" if requires_folder_navigation else "",
     }
 
 
@@ -2302,6 +2310,75 @@ def _confirm_dialog_fields_and_submit(
     return False
 
 
+def _navigate_open_dialog_to_folder(
+    *,
+    dialog_hwnd: int,
+    folder_path: str,
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    debug_step: Optional[DebugStep],
+) -> bool:
+    folder = str(folder_path or "").strip()
+    extra = {
+        "dialog_hwnd": int(dialog_hwnd or 0),
+        "target_folder": folder,
+        "method": "ctrl_l_clipboard_enter",
+    }
+    if not folder or not os.path.isdir(folder):
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_NAVIGATE_FOLDER",
+            ok=False,
+            detail="target folder does not exist",
+            extra={**extra, "exists": False},
+        )
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_NAVIGATE_FOLDER",
+        ok=True,
+        detail="navigate open dialog to attachment folder",
+        extra={**extra, "exists": True},
+    )
+
+    try:
+        if int(dialog_hwnd or 0) > 0:
+            user32.SetForegroundWindow(wintypes.HWND(int(dialog_hwnd or 0)))
+            sleep_abs(0.08)
+        set_clipboard_text(folder)
+        sleep_abs(0.05)
+        send_keys_fast("^l")
+        sleep_abs(0.08)
+        send_keys_fast("^a")
+        sleep_abs(0.03)
+        send_keys_fast("^v")
+        sleep_abs(0.08)
+        send_keys_fast("{ENTER}")
+        sleep_abs(0.55)
+        ok = bool(user32.IsWindow(wintypes.HWND(int(dialog_hwnd or 0))))
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_NAVIGATE_FOLDER_DONE",
+            ok=ok,
+            detail="open dialog folder navigation completed" if ok else "open dialog closed during folder navigation",
+            extra=extra,
+        )
+        return ok
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] folder navigation failed folder={folder!r} err={e}")
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_NAVIGATE_FOLDER_DONE",
+            ok=False,
+            detail=str(e) or "folder navigation failed",
+            extra=extra,
+        )
+        return False
+
+
 def _cleanup_file_dialog_flow(
     *,
     prefer_hwnd: int,
@@ -2340,7 +2417,7 @@ def _send_paths_via_ctrl_t_dialog(
     get_foreground_hwnd_cb: Optional[Callable[[], int]] = None,
     debug_step: Optional[DebugStep] = None,
     post_open_hook: Optional[Callable[..., bool]] = None,
-    dialog_input_mode: str = "folder_and_names",
+    dialog_input_mode: str = "navigate_then_names",
 ) -> bool:
     valid_paths = [str(p).strip() for p in (file_paths or []) if str(p).strip()]
     if not valid_paths:
@@ -2369,6 +2446,7 @@ def _send_paths_via_ctrl_t_dialog(
     dialog_input_text = input_plan["input_text"]
     dialog_input_mode = input_plan["input_mode"]
     shared_parent_dir = input_plan["shared_parent_dir"]
+    requires_folder_navigation = bool(input_plan.get("requires_folder_navigation"))
     if not full_paths_text:
         return False
 
@@ -2376,16 +2454,20 @@ def _send_paths_via_ctrl_t_dialog(
     log(f"[CTRL+T-MULTI] full_paths_text={full_paths_text}")
     log(f"[CTRL+T-MULTI] dialog_input_mode={dialog_input_mode} input_text={dialog_input_text}")
 
-    dialog_input_extra = {
-        "expected_path": dialog_input_text,
-        "dialog_input_text": dialog_input_text,
-        "dialog_input_mode": dialog_input_mode,
-        "full_paths_text": full_paths_text,
-        "folder_and_names_text": input_plan.get("folder_and_names_text", ""),
-        "names_text": names_text,
-        "shared_parent_dir": shared_parent_dir,
-        "file_count": len(valid_paths),
-    }
+    def _dialog_input_extra() -> dict[str, Any]:
+        return {
+            "expected_path": dialog_input_text,
+            "dialog_input_text": dialog_input_text,
+            "dialog_input_mode": dialog_input_mode,
+            "requires_folder_navigation": bool(requires_folder_navigation),
+            "full_paths_text": full_paths_text,
+            "folder_and_names_text": input_plan.get("folder_and_names_text", ""),
+            "names_text": names_text,
+            "shared_parent_dir": shared_parent_dir,
+            "file_count": len(valid_paths),
+        }
+
+    dialog_input_extra = _dialog_input_extra()
 
     _emit_debug_step(
         debug_step,
@@ -2465,16 +2547,41 @@ def _send_paths_via_ctrl_t_dialog(
             extra=extra,
         )
 
-        submitted = _submit_path_text_by_initial_focus_fastpath(
-            dialog_hwnd=dialog_hwnd,
-            text=dialog_input_text,
-            send_keys_fast=send_keys_fast,
-            set_clipboard_text=set_clipboard_text,
-            sleep_abs=sleep_abs,
-            log=log,
-            submit_timeout_sec=max(2.0, float(timeout_sec)),
-            debug_step=debug_step,
-        )
+        if dialog_input_mode == "navigate_then_names" and requires_folder_navigation:
+            navigated = _navigate_open_dialog_to_folder(
+                dialog_hwnd=dialog_hwnd,
+                folder_path=shared_parent_dir,
+                send_keys_fast=send_keys_fast,
+                set_clipboard_text=set_clipboard_text,
+                sleep_abs=sleep_abs,
+                log=log,
+                debug_step=debug_step,
+            )
+            if not navigated:
+                dialog_input_mode = "absolute_paths"
+                dialog_input_text = full_paths_text
+                requires_folder_navigation = False
+                dialog_input_extra = _dialog_input_extra()
+                _emit_debug_step(
+                    debug_step,
+                    "FILE_DIALOG_INPUT_STRATEGY_FALLBACK",
+                    ok=True,
+                    detail="folder navigation failed; fallback to absolute paths",
+                    extra=dialog_input_extra,
+                )
+
+        submitted = False
+        if not requires_folder_navigation:
+            submitted = _submit_path_text_by_initial_focus_fastpath(
+                dialog_hwnd=dialog_hwnd,
+                text=dialog_input_text,
+                send_keys_fast=send_keys_fast,
+                set_clipboard_text=set_clipboard_text,
+                sleep_abs=sleep_abs,
+                log=log,
+                submit_timeout_sec=max(2.0, float(timeout_sec)),
+                debug_step=debug_step,
+            )
 
         submitted_via_warning = False
         if not submitted:
@@ -2841,7 +2948,7 @@ def send_files_via_ctrl_t(
     prefer_hwnd: int = 0,
     get_foreground_hwnd: Optional[Callable[[], int]] = None,
     debug_step: Optional[DebugStep] = None,
-    dialog_input_mode: str = "folder_and_names",
+    dialog_input_mode: str = "navigate_then_names",
 ) -> bool:
     return _send_paths_via_ctrl_t_dialog(
         file_paths=file_paths,

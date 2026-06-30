@@ -11,7 +11,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "pc_environment": "public",
     "support_chat_name": "카센더 운영자",
     "support_openchat_url": "",
-    "kakao_ctrl_t_multi_attach_input_mode": "folder_and_names",
+    "kakao_ctrl_t_multi_attach_input_mode": "navigate_then_names",
 }
 
 
