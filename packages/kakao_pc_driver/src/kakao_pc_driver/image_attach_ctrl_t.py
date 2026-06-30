@@ -236,6 +236,43 @@ def _safe_rect_area(el) -> int:
         return 0
 
 
+def _safe_element_hwnd(el) -> int:
+    try:
+        return int(getattr(getattr(el, "element_info", None), "handle", 0) or 0)
+    except Exception:
+        return 0
+
+
+def _safe_top_level_hwnd(el) -> int:
+    try:
+        parent = el.top_level_parent()
+        return _safe_element_hwnd(parent)
+    except Exception:
+        return 0
+
+
+def _wait_for_uia_element_gone(el, *, sleep_abs: Callable[[float], None], timeout_sec: float = 1.0) -> bool:
+    root_hwnd = _safe_top_level_hwnd(el)
+    deadline = time.perf_counter() + max(0.15, float(timeout_sec))
+    while time.perf_counter() < deadline:
+        if root_hwnd > 0:
+            try:
+                if not bool(user32.IsWindow(wintypes.HWND(root_hwnd))):
+                    return True
+            except Exception:
+                return True
+        try:
+            exists = getattr(el, "exists", None)
+            if callable(exists) and not bool(exists(timeout=0)):
+                return True
+            if not _safe_window_text(el):
+                return True
+        except Exception:
+            return True
+        sleep_abs(0.05)
+    return False
+
+
 def _iter_button_like_descendants(root) -> list[Any]:
     """
     UIA 기준으로 버튼/분할버튼/하이퍼링크/커스텀 버튼성 요소를 넓게 수집.
@@ -321,6 +358,88 @@ def _click_uia_element(
         log(f"[FILE_SEND][ELEMENT_CLICK_EXCEPTION] text={txt!r} err={e}")
 
     return False
+
+
+def _click_transfer_button_until_gone(
+    button,
+    *,
+    send_keys_fast: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+) -> tuple[bool, str]:
+    txt = _safe_window_text(button)
+
+    def _gone(method: str, timeout_sec: float = 1.0) -> tuple[bool, str]:
+        if _wait_for_uia_element_gone(button, sleep_abs=sleep_abs, timeout_sec=timeout_sec):
+            log(f"[FILE_SEND][CLICK_CONFIRMED] method={method} text={txt!r}")
+            return True, method
+        log(f"[FILE_SEND][CLICK_STILL_OPEN] method={method} text={txt!r}")
+        return False, method
+
+    try:
+        log(f"[FILE_SEND][CLICK_TRY] method=invoke_wait text={txt!r}")
+        button.invoke()
+        sleep_abs(0.10)
+        ok, method = _gone("invoke")
+        if ok:
+            return ok, method
+    except Exception as e:
+        log(f"[FILE_SEND][CLICK_FAIL] method=invoke_wait text={txt!r} err={e}")
+
+    try:
+        log(f"[FILE_SEND][CLICK_TRY] method=click_input_wait text={txt!r}")
+        button.click_input()
+        sleep_abs(0.10)
+        ok, method = _gone("click_input")
+        if ok:
+            return ok, method
+    except Exception as e:
+        log(f"[FILE_SEND][CLICK_FAIL] method=click_input_wait text={txt!r} err={e}")
+
+    try:
+        rect = button.rectangle()
+        x = int((int(rect.left) + int(rect.right)) / 2)
+        y = int((int(rect.top) + int(rect.bottom)) / 2)
+        log(f"[FILE_SEND][CLICK_TRY] method=coordinate_click_wait text={txt!r} coords=({x},{y})")
+        _, _, click = lazy_pywinauto()
+        click(coords=(x, y))
+        sleep_abs(0.12)
+        ok, method = _gone("coordinate_click", timeout_sec=1.2)
+        if ok:
+            return ok, method
+    except Exception as e:
+        log(f"[FILE_SEND][CLICK_FAIL] method=coordinate_click_wait text={txt!r} err={e}")
+
+    try:
+        log(f"[FILE_SEND][CLICK_TRY] method=focus_enter_wait text={txt!r}")
+        button.set_focus()
+        sleep_abs(0.06)
+        send_keys_fast("{ENTER}")
+        sleep_abs(0.12)
+        ok, method = _gone("focus_enter", timeout_sec=1.2)
+        if ok:
+            return ok, method
+    except Exception as e:
+        log(f"[FILE_SEND][CLICK_FAIL] method=focus_enter_wait text={txt!r} err={e}")
+
+    try:
+        log(f"[FILE_SEND][CLICK_TRY] method=focus_space_wait text={txt!r}")
+        button.set_focus()
+        sleep_abs(0.06)
+        send_keys_fast("{SPACE}")
+        sleep_abs(0.12)
+        ok, method = _gone("focus_space", timeout_sec=1.2)
+        if ok:
+            return ok, method
+    except Exception as e:
+        log(f"[FILE_SEND][CLICK_FAIL] method=focus_space_wait text={txt!r} err={e}")
+
+    if _click_uia_element(button, sleep_abs=sleep_abs, log=log):
+        ok, method = _gone("legacy_uia_click", timeout_sec=1.2)
+        if ok:
+            return ok, method
+
+    return False, "not_closed"
 
 
 def _extract_transfer_count(text: str) -> Optional[int]:
@@ -866,7 +985,24 @@ def send_files_dialog_hook(
             log(f"[FILE_SEND][VERIFY_FAIL] reason={failure} meta={meta}")
             return False
 
-        if not _click_uia_element(button, sleep_abs=sleep_abs, log=log):
+        _emit_debug_step(
+            debug_step,
+            "KAKAO_FILE_TRANSFER_SEND_BUTTON_FOUND",
+            ok=True,
+            detail="Kakao file transfer send button found",
+            extra=meta,
+        )
+
+        clicked, click_method = _click_transfer_button_until_gone(
+            button,
+            send_keys_fast=send_keys_fast,
+            sleep_abs=sleep_abs,
+            log=log,
+        )
+        meta = dict(meta)
+        meta["click_method"] = click_method
+
+        if not clicked:
             try:
                 log("[FILE_SEND][CLICK_FALLBACK] TAB->TAB->ENTER")
                 send_keys_fast("{TAB}")
@@ -875,6 +1011,9 @@ def send_files_dialog_hook(
                 sleep_abs(0.05)
                 send_keys_fast("{ENTER}")
                 sleep_abs(0.18)
+                if not _wait_for_uia_element_gone(button, sleep_abs=sleep_abs, timeout_sec=1.0):
+                    raise RuntimeError("file transfer dialog still open after TAB fallback")
+                meta["click_method"] = "tab_tab_enter"
             except Exception as e:
                 log(f"[FILE_SEND][CLICK_FALLBACK_FAIL] err={e}")
                 _emit_debug_step(
@@ -885,6 +1024,14 @@ def send_files_dialog_hook(
                     extra=meta,
                 )
                 return False
+
+        _emit_debug_step(
+            debug_step,
+            "KAKAO_FILE_TRANSFER_SEND_BUTTON_CLICKED",
+            ok=True,
+            detail="Kakao file transfer send button clicked",
+            extra=meta,
+        )
 
         _safe_cleanup_after_file_dialog(
             prefer_hwnd=int(chat_hwnd or 0),
