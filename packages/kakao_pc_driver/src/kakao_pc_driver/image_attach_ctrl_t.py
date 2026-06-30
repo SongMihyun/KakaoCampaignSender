@@ -407,6 +407,7 @@ def _confirm_warning_button_until_closed(
     *,
     warning_hwnd: int,
     button_hwnd: int,
+    send_keys_fast: Optional[Callable[[str], None]],
     sleep_abs: Callable[[float], None],
     log: Callable[[str], None],
 ) -> tuple[bool, str]:
@@ -423,6 +424,14 @@ def _confirm_warning_button_until_closed(
         sleep_abs(0.06)
     except Exception as e:
         log(f"[CTRL+T-MULTI] warning foreground fail err={e}")
+
+    if send_keys_fast is not None:
+        try:
+            send_keys_fast("{ENTER}")
+            if _closed(0.55):
+                return True, "focused_enter"
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] warning focused ENTER fail hwnd={warning} err={e}")
 
     try:
         user32.SendMessageW(wintypes.HWND(button), BM_CLICK, 0, 0)
@@ -455,6 +464,25 @@ def _confirm_warning_button_until_closed(
     except Exception as e:
         log(f"[CTRL+T-MULTI] warning confirm click fallback fail err={e}")
 
+    if send_keys_fast is not None:
+        try:
+            user32.SetForegroundWindow(wintypes.HWND(warning))
+            sleep_abs(0.05)
+            send_keys_fast("{SPACE}")
+            if _closed(0.55):
+                return True, "focused_space"
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] warning focused SPACE fail hwnd={warning} err={e}")
+
+        try:
+            user32.SetForegroundWindow(wintypes.HWND(warning))
+            sleep_abs(0.05)
+            send_keys_fast("{ENTER}")
+            if _closed(0.75):
+                return True, "focused_enter_retry"
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] warning focused ENTER retry fail hwnd={warning} err={e}")
+
     return False, "not_closed"
 
 
@@ -464,6 +492,7 @@ def _confirm_recoverable_multi_select_warning(
     log: Callable[[str], None],
     debug_step: Optional[DebugStep],
     expected_file_count: int,
+    send_keys_fast: Optional[Callable[[str], None]] = None,
     get_foreground_hwnd_cb: Optional[Callable[[], int]] = None,
     timeout_sec: float = 0.8,
 ) -> tuple[bool, bool]:
@@ -507,6 +536,7 @@ def _confirm_recoverable_multi_select_warning(
     confirmed, method = _confirm_warning_button_until_closed(
         warning_hwnd=warning_hwnd,
         button_hwnd=button_hwnd,
+        send_keys_fast=send_keys_fast,
         sleep_abs=sleep_abs,
         log=log,
     )
@@ -2232,6 +2262,7 @@ def _send_paths_via_ctrl_t_dialog(
                 log=log,
                 debug_step=debug_step,
                 expected_file_count=len(valid_paths),
+                send_keys_fast=send_keys_fast,
                 get_foreground_hwnd_cb=get_foreground_hwnd_cb,
                 timeout_sec=0.8,
             )
@@ -2344,6 +2375,7 @@ def _send_paths_via_ctrl_t_dialog(
                 log=log,
                 debug_step=debug_step,
                 expected_file_count=len(valid_paths),
+                send_keys_fast=send_keys_fast,
                 get_foreground_hwnd_cb=get_foreground_hwnd_cb,
                 timeout_sec=0.8,
             )
@@ -2394,6 +2426,7 @@ def _send_paths_via_ctrl_t_dialog(
             log=log,
             debug_step=debug_step,
             expected_file_count=len(valid_paths),
+            send_keys_fast=send_keys_fast,
             get_foreground_hwnd_cb=get_foreground_hwnd_cb,
             timeout_sec=1.2,
         )
