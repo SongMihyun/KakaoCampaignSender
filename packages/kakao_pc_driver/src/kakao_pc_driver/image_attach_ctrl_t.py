@@ -49,6 +49,8 @@ user32.GetParent.argtypes = [wintypes.HWND]
 user32.GetParent.restype = wintypes.HWND
 user32.SetDlgItemTextW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_wchar_p]
 user32.SetDlgItemTextW.restype = wintypes.BOOL
+user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
+user32.PostMessageW.restype = wintypes.BOOL
 
 
 def _safe_cleanup_after_file_dialog(
@@ -409,6 +411,61 @@ def _find_multi_select_warning_dialog(
     return None
 
 
+def _confirm_warning_button_until_closed(
+    *,
+    warning_hwnd: int,
+    button_hwnd: int,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+) -> tuple[bool, str]:
+    warning = int(warning_hwnd or 0)
+    button = int(button_hwnd or 0)
+    if warning <= 0 or button <= 0:
+        return False, "invalid_hwnd"
+
+    def _closed(timeout_sec: float = 0.45) -> bool:
+        return _wait_for_dialog_close(warning, sleep_abs=sleep_abs, timeout_sec=timeout_sec)
+
+    try:
+        user32.SetForegroundWindow(wintypes.HWND(warning))
+        sleep_abs(0.06)
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning foreground fail err={e}")
+
+    try:
+        user32.SendMessageW(wintypes.HWND(button), BM_CLICK, 0, 0)
+        if _closed(0.55):
+            return True, "bm_click"
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning BM_CLICK fail hwnd={button} err={e}")
+
+    try:
+        user32.SendMessageW(wintypes.HWND(warning), WM_COMMAND, IDOK, button)
+        if _closed(0.55):
+            return True, "wm_command_idok"
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning WM_COMMAND IDOK fail hwnd={warning} err={e}")
+
+    try:
+        user32.PostMessageW(wintypes.HWND(warning), WM_COMMAND, IDOK, button)
+        if _closed(0.55):
+            return True, "post_wm_command_idok"
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning PostMessage IDOK fail hwnd={warning} err={e}")
+
+    try:
+        l, t, r, b = get_window_rect(button)
+        if r > l and b > t:
+            _, _, click = lazy_pywinauto()
+            click(coords=(int((l + r) / 2), int((t + b) / 2)))
+            if _closed(0.9):
+                return True, "coordinate_click"
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning confirm click fallback fail err={e}")
+
+    return False, "not_closed"
+
+
 def _confirm_recoverable_multi_select_warning(
     *,
     sleep_abs: Callable[[float], None],
@@ -455,30 +512,14 @@ def _confirm_recoverable_multi_select_warning(
         )
         return True, False
 
-    try:
-        user32.SetForegroundWindow(wintypes.HWND(warning_hwnd))
-        sleep_abs(0.05)
-    except Exception as e:
-        log(f"[CTRL+T-MULTI] warning foreground fail err={e}")
-
-    clicked = False
-    try:
-        user32.SendMessageW(wintypes.HWND(button_hwnd), BM_CLICK, 0, 0)
-        clicked = True
-    except Exception as e:
-        log(f"[CTRL+T-MULTI] warning BM_CLICK fail hwnd={button_hwnd} err={e}")
-
-    if not clicked:
-        try:
-            l, t, r, b = get_window_rect(button_hwnd)
-            if r > l and b > t:
-                _, _, click = lazy_pywinauto()
-                click(coords=(int((l + r) / 2), int((t + b) / 2)))
-                clicked = True
-        except Exception as e:
-            log(f"[CTRL+T-MULTI] warning confirm click fallback fail err={e}")
-
-    if not clicked or not _wait_for_dialog_close(warning_hwnd, sleep_abs=sleep_abs, timeout_sec=1.2):
+    confirmed, method = _confirm_warning_button_until_closed(
+        warning_hwnd=warning_hwnd,
+        button_hwnd=button_hwnd,
+        sleep_abs=sleep_abs,
+        log=log,
+    )
+    meta["confirm_method"] = method
+    if not confirmed:
         _emit_debug_step(
             debug_step,
             "FILE_DIALOG_MULTI_SELECT_WARNING_CONFIRMED",
