@@ -29,6 +29,13 @@ WM_GETTEXT = 0x000D
 WM_GETTEXTLENGTH = 0x000E
 BM_CLICK = 0x00F5
 WM_COMMAND = 0x0111
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+VK_RETURN = 0x0D
+VK_SPACE = 0x20
+MK_LBUTTON = 0x0001
 EM_SETSEL = 0x00B1
 IDOK = 1
 EDT1 = 0x0480
@@ -47,6 +54,8 @@ user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
 user32.GetDlgItem.restype = wintypes.HWND
 user32.GetParent.argtypes = [wintypes.HWND]
 user32.GetParent.restype = wintypes.HWND
+user32.SetFocus.argtypes = [wintypes.HWND]
+user32.SetFocus.restype = wintypes.HWND
 user32.SetDlgItemTextW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_wchar_p]
 user32.SetDlgItemTextW.restype = wintypes.BOOL
 user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM]
@@ -419,6 +428,9 @@ def _confirm_warning_button_until_closed(
     def _closed(timeout_sec: float = 0.45) -> bool:
         return _wait_for_dialog_close(warning, sleep_abs=sleep_abs, timeout_sec=timeout_sec)
 
+    def _button_lparam() -> int:
+        return (8 & 0xFFFF) | ((8 & 0xFFFF) << 16)
+
     try:
         user32.SetForegroundWindow(wintypes.HWND(warning))
         sleep_abs(0.06)
@@ -432,6 +444,28 @@ def _confirm_warning_button_until_closed(
                 return True, "focused_enter"
         except Exception as e:
             log(f"[CTRL+T-MULTI] warning focused ENTER fail hwnd={warning} err={e}")
+
+    try:
+        user32.SetFocus(wintypes.HWND(button))
+        sleep_abs(0.03)
+        user32.SendMessageW(wintypes.HWND(button), WM_KEYDOWN, VK_RETURN, 0)
+        sleep_abs(0.03)
+        user32.SendMessageW(wintypes.HWND(button), WM_KEYUP, VK_RETURN, 0)
+        if _closed(0.55):
+            return True, "button_return_key_message"
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning button RETURN message fail hwnd={button} err={e}")
+
+    try:
+        user32.SetFocus(wintypes.HWND(button))
+        sleep_abs(0.03)
+        user32.SendMessageW(wintypes.HWND(button), WM_KEYDOWN, VK_SPACE, 0)
+        sleep_abs(0.03)
+        user32.SendMessageW(wintypes.HWND(button), WM_KEYUP, VK_SPACE, 0)
+        if _closed(0.55):
+            return True, "button_space_key_message"
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning button SPACE message fail hwnd={button} err={e}")
 
     try:
         user32.SendMessageW(wintypes.HWND(button), BM_CLICK, 0, 0)
@@ -453,6 +487,24 @@ def _confirm_warning_button_until_closed(
             return True, "post_wm_command_idok"
     except Exception as e:
         log(f"[CTRL+T-MULTI] warning PostMessage IDOK fail hwnd={warning} err={e}")
+
+    try:
+        user32.SendMessageW(wintypes.HWND(button), WM_LBUTTONDOWN, MK_LBUTTON, _button_lparam())
+        sleep_abs(0.04)
+        user32.SendMessageW(wintypes.HWND(button), WM_LBUTTONUP, 0, _button_lparam())
+        if _closed(0.55):
+            return True, "button_mouse_message"
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning button mouse message fail hwnd={button} err={e}")
+
+    try:
+        Desktop, _, _ = lazy_pywinauto()
+        btn = Desktop(backend="uia").window(handle=button)
+        if _click_uia_element(btn, sleep_abs=sleep_abs, log=log):
+            if _closed(0.75):
+                return True, "uia_button_click"
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] warning UIA button click fail hwnd={button} err={e}")
 
     try:
         l, t, r, b = get_window_rect(button)
