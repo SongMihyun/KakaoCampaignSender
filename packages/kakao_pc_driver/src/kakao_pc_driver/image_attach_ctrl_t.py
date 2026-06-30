@@ -127,14 +127,6 @@ def _build_dialog_input_plan(paths: Sequence[str]) -> dict[str, str]:
     names_text = _build_names_text(paths)
     full_paths_text = _build_absolute_paths_text(paths)
     shared_parent = _shared_parent_dir(paths)
-    if len([p for p in paths or [] if str(p or "").strip()]) > 1 and shared_parent and names_text:
-        return {
-            "input_text": names_text,
-            "input_mode": "same_folder_names",
-            "names_text": names_text,
-            "full_paths_text": full_paths_text,
-            "shared_parent_dir": shared_parent,
-        }
     return {
         "input_text": full_paths_text,
         "input_mode": "absolute_paths",
@@ -2148,9 +2140,7 @@ def _send_paths_via_ctrl_t_dialog(
         debug_step,
         "FILE_DIALOG_INPUT_STRATEGY",
         ok=True,
-        detail="same-folder filenames are used for multi-file dialog input"
-        if dialog_input_mode == "same_folder_names"
-        else "absolute paths are used for file dialog input",
+        detail="absolute paths are used for file dialog input",
         extra=dialog_input_extra,
     )
 
@@ -2235,6 +2225,30 @@ def _send_paths_via_ctrl_t_dialog(
             debug_step=debug_step,
         )
 
+        submitted_via_warning = False
+        if not submitted:
+            warning_seen, warning_confirmed = _confirm_recoverable_multi_select_warning(
+                sleep_abs=sleep_abs,
+                log=log,
+                debug_step=debug_step,
+                expected_file_count=len(valid_paths),
+                get_foreground_hwnd_cb=get_foreground_hwnd_cb,
+                timeout_sec=0.8,
+            )
+            if warning_seen:
+                if not warning_confirmed:
+                    _cleanup_file_dialog_flow(
+                        prefer_hwnd=int(prefer_hwnd or 0),
+                        sleep_abs=sleep_abs,
+                        log=log,
+                        debug_step=debug_step,
+                        ok=True,
+                        detail="cleanup after recoverable warning confirm failure",
+                    )
+                    return False
+                submitted = True
+                submitted_via_warning = True
+
         if not submitted:
             settle = max(0.05, min(0.70, _t("focus_settle", 0.35)) - initial_settle)
             sleep_abs(settle)
@@ -2277,8 +2291,6 @@ def _send_paths_via_ctrl_t_dialog(
                     log("[CTRL+T-MULTI] filename edit path input failed; trying keyboard fallback")
             else:
                 log("[CTRL+T-MULTI] filename edit not found after retry; trying keyboard fallback")
-
-        submitted_via_warning = False
 
         if not submitted:
             submitted = _submit_path_text_by_dlgitem_fallback(
