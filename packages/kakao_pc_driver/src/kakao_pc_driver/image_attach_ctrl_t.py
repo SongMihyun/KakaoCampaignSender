@@ -2701,6 +2701,188 @@ def _navigate_open_dialog_to_folder(
         return False
 
 
+def _dismiss_file_dialog_error_popup(
+    *,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    debug_step: Optional[DebugStep],
+    send_keys_fast: Optional[Callable[[str], None]] = None,
+    timeout_sec: float = 0.7,
+) -> bool:
+    deadline = time.perf_counter() + max(0.05, float(timeout_sec))
+    meta: Optional[dict[str, Any]] = None
+    while time.perf_counter() < deadline:
+        try:
+            for hwnd in _iter_top_windows():
+                if str(get_class_name(hwnd) or "") != "#32770":
+                    continue
+                if not bool(user32.IsWindowVisible(wintypes.HWND(hwnd))):
+                    continue
+                texts = _collect_dialog_texts(hwnd)
+                blob = "\n".join(texts).casefold()
+                if not (
+                    "파일 이름" in blob
+                    or "file name" in blob
+                    or "올바르지" in blob
+                    or "없습니다" in blob
+                    or "cannot find" in blob
+                    or "not valid" in blob
+                ):
+                    continue
+                meta = {
+                    "popup_hwnd": int(hwnd),
+                    "texts": texts[:12],
+                    "confirm_button_hwnd": _find_dialog_confirm_button(hwnd),
+                }
+                break
+            if meta:
+                break
+        except Exception:
+            pass
+        sleep_abs(0.05)
+
+    if not meta:
+        return False
+
+    button_hwnd = int(meta.get("confirm_button_hwnd") or 0)
+    popup_hwnd = int(meta.get("popup_hwnd") or 0)
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_ERROR_POPUP_DETECTED",
+        ok=True,
+        detail="file dialog error popup detected",
+        extra=meta,
+    )
+    if popup_hwnd <= 0 or button_hwnd <= 0:
+        return False
+
+    confirmed, method = _confirm_warning_button_until_closed(
+        warning_hwnd=popup_hwnd,
+        button_hwnd=button_hwnd,
+        send_keys_fast=send_keys_fast,
+        sleep_abs=sleep_abs,
+        log=log,
+    )
+    meta["confirm_method"] = method
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_ERROR_POPUP_DISMISSED",
+        ok=bool(confirmed),
+        detail="file dialog error popup dismissed" if confirmed else "file dialog error popup dismiss failed",
+        extra=meta,
+    )
+    return bool(confirmed)
+
+
+def _submit_filenames_from_current_folder(
+    *,
+    dialog_hwnd: int,
+    names_text: str,
+    send_keys_fast: Callable[[str], None],
+    set_clipboard_text: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    clipboard_settle_sec: float,
+    after_paste_sec: float,
+    submit_timeout_sec: float,
+    debug_step: Optional[DebugStep],
+) -> bool:
+    text = str(names_text or "").strip()
+    extra = {
+        "dialog_hwnd": int(dialog_hwnd or 0),
+        "names_text": text,
+        "method": "filename_edit_names_after_folder_navigation",
+    }
+    if not text:
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_FILENAME_EDIT_FASTPATH",
+        ok=True,
+        detail="try filename edit input after folder navigation",
+        extra=extra,
+    )
+
+    edit_hwnd = _find_filename_edit_hwnd_retry(
+        dialog_hwnd,
+        sleep_abs=sleep_abs,
+        log=log,
+        timeout_sec=1.0,
+    )
+    if not edit_hwnd:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_FILENAME_EDIT_FASTPATH",
+            ok=False,
+            detail="filename edit was not found after folder navigation",
+            extra=extra,
+        )
+        return False
+
+    if not _set_path_text_with_clipboard_then_fallback(
+        dialog_hwnd=dialog_hwnd,
+        edit_hwnd=edit_hwnd,
+        text=text,
+        send_keys_fast=send_keys_fast,
+        set_clipboard_text=set_clipboard_text,
+        sleep_abs=sleep_abs,
+        log=log,
+        clipboard_settle_sec=clipboard_settle_sec,
+        after_paste_sec=after_paste_sec,
+        debug_step=debug_step,
+    ):
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_FILENAME_EDIT_FASTPATH",
+            ok=False,
+            detail="filename edit input failed after folder navigation",
+            extra={**extra, "edit_hwnd": int(edit_hwnd or 0)},
+        )
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_ENTER",
+        ok=True,
+        detail="submit open dialog by filename edit after folder navigation",
+        extra={**extra, "edit_hwnd": int(edit_hwnd or 0)},
+    )
+    submitted = _confirm_dialog_fields_and_submit(
+        dialog_hwnd=dialog_hwnd,
+        edit_hwnd=edit_hwnd,
+        expected_text=text,
+        sleep_abs=sleep_abs,
+        log=log,
+        submit_timeout_sec=submit_timeout_sec,
+    )
+    if submitted:
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_FILENAME_EDIT_FASTPATH",
+            ok=True,
+            detail="open dialog closed after filename edit input",
+            extra={**extra, "edit_hwnd": int(edit_hwnd or 0)},
+        )
+        return True
+
+    _dismiss_file_dialog_error_popup(
+        sleep_abs=sleep_abs,
+        log=log,
+        debug_step=debug_step,
+        send_keys_fast=send_keys_fast,
+        timeout_sec=0.6,
+    )
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_FILENAME_EDIT_FASTPATH",
+        ok=False,
+        detail="open dialog did not close after filename edit input",
+        extra={**extra, "edit_hwnd": int(edit_hwnd or 0)},
+    )
+    return False
+
+
 def _click_file_dialog_item(
     item: Any,
     *,
@@ -3090,15 +3272,28 @@ def _send_paths_via_ctrl_t_dialog(
                 debug_step=debug_step,
             )
             if navigated:
-                submitted = _select_file_items_and_submit_open_dialog(
+                submitted = _submit_filenames_from_current_folder(
                     dialog_hwnd=dialog_hwnd,
-                    filenames=valid_paths,
+                    names_text=names_text,
                     send_keys_fast=send_keys_fast,
+                    set_clipboard_text=set_clipboard_text,
                     sleep_abs=sleep_abs,
                     log=log,
-                    submit_timeout_sec=max(3.0, float(timeout_sec)),
+                    clipboard_settle_sec=_t("clipboard_settle", 0.05),
+                    after_paste_sec=_t("after_paste_path", 0.10),
+                    submit_timeout_sec=max(2.0, float(timeout_sec)),
                     debug_step=debug_step,
                 )
+                if not submitted:
+                    submitted = _select_file_items_and_submit_open_dialog(
+                        dialog_hwnd=dialog_hwnd,
+                        filenames=valid_paths,
+                        send_keys_fast=send_keys_fast,
+                        sleep_abs=sleep_abs,
+                        log=log,
+                        submit_timeout_sec=max(3.0, float(timeout_sec)),
+                        debug_step=debug_step,
+                    )
                 if not submitted:
                     dialog_input_mode = "absolute_paths"
                     dialog_input_text = full_paths_text
@@ -3108,7 +3303,7 @@ def _send_paths_via_ctrl_t_dialog(
                         debug_step,
                         "FILE_DIALOG_INPUT_STRATEGY_FALLBACK",
                         ok=True,
-                        detail="list item selection failed; fallback to absolute paths",
+                        detail="filename edit and list item selection failed; fallback to absolute paths",
                         extra=dialog_input_extra,
                     )
             else:
