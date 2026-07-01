@@ -617,6 +617,7 @@ def _probable_kakao_file_transfer_window_meta(
     *,
     expected_file_count: int = 0,
     collect_texts: bool = True,
+    allow_textless_small_eva: bool = False,
 ) -> Optional[dict[str, Any]]:
     h = int(hwnd or 0)
     if h <= 0:
@@ -647,12 +648,14 @@ def _probable_kakao_file_transfer_window_meta(
     has_any_transfer_count = any(_extract_transfer_count(t) is not None for t in texts)
     has_file_transfer_text = "파일 전송" in blob
     has_attachment_hint = ("attach_" in blob) or (".jpg" in blob.lower()) or (".png" in blob.lower()) or (".jpeg" in blob.lower())
+    assumed_textless_small_eva = bool(allow_textless_small_eva and expected > 0 and is_eva and is_small_float and not title)
 
     if not (
         has_file_transfer_text
         or has_expected_count
         or has_any_transfer_count
         or (is_eva and is_small_float and has_attachment_hint)
+        or assumed_textless_small_eva
     ):
         return None
 
@@ -667,6 +670,7 @@ def _probable_kakao_file_transfer_window_meta(
         "has_expected_count": bool(has_expected_count),
         "has_any_transfer_count": bool(has_any_transfer_count),
         "has_attachment_hint": bool(has_attachment_hint),
+        "assumed_textless_small_eva": bool(assumed_textless_small_eva),
         "texts": texts[:40],
     }
 
@@ -686,8 +690,10 @@ def _find_probable_kakao_file_transfer_window(
         seen.add(h)
         ordered.append(h)
 
+    foreground_root = 0
     try:
-        _add(_root_hwnd(get_foreground_hwnd()))
+        foreground_root = _root_hwnd(get_foreground_hwnd())
+        _add(foreground_root)
     except Exception:
         pass
     try:
@@ -702,6 +708,7 @@ def _find_probable_kakao_file_transfer_window(
             hwnd,
             expected_file_count=int(expected_file_count or 0),
             collect_texts=True,
+            allow_textless_small_eva=(int(hwnd or 0) == int(foreground_root or 0)),
         )
         if meta:
             return int(hwnd), meta
