@@ -475,7 +475,103 @@ def _click_transfer_button_until_gone(
         if ok:
             return ok, method
 
+    root_hwnd = _safe_top_level_hwnd(button)
+    ok, method = _click_transfer_window_bottom_area_until_gone(
+        root_hwnd,
+        send_keys_fast=send_keys_fast,
+        sleep_abs=sleep_abs,
+        log=log,
+        method_prefix="button_root",
+    )
+    if ok:
+        return ok, method
+
     return False, "not_closed"
+
+
+def _click_transfer_window_bottom_area_until_gone(
+    window_hwnd: int,
+    *,
+    send_keys_fast: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    method_prefix: str = "window",
+) -> tuple[bool, str]:
+    hwnd = int(window_hwnd or 0)
+    if hwnd <= 0:
+        return False, f"{method_prefix}_invalid_hwnd"
+
+    try:
+        if not bool(user32.IsWindow(wintypes.HWND(hwnd))):
+            return False, f"{method_prefix}_window_missing"
+    except Exception:
+        return False, f"{method_prefix}_window_missing"
+
+    def _gone(method: str, timeout_sec: float = 1.2) -> tuple[bool, str]:
+        if _wait_for_dialog_close(hwnd, sleep_abs=sleep_abs, timeout_sec=timeout_sec):
+            log(f"[FILE_SEND][CLICK_CONFIRMED] method={method} hwnd={hwnd}")
+            return True, method
+        log(f"[FILE_SEND][CLICK_STILL_OPEN] method={method} hwnd={hwnd}")
+        return False, method
+
+    try:
+        l, t, r, b = get_window_rect(hwnd)
+        if r <= l or b <= t:
+            return False, f"{method_prefix}_bad_rect"
+        x = int((l + r) / 2)
+        # Kakao's file-transfer button is a wide split button near the bottom.
+        # Click several nearby vertical points because PC scaling changes the exact center.
+        y_candidates = [
+            int(b - max(34, min(52, (b - t) * 0.13))),
+            int(b - max(42, min(64, (b - t) * 0.17))),
+            int(b - max(26, min(44, (b - t) * 0.10))),
+        ]
+    except Exception as e:
+        log(f"[FILE_SEND][CLICK_FAIL] method={method_prefix}_bottom_area_rect hwnd={hwnd} err={e}")
+        return False, f"{method_prefix}_rect_failed"
+
+    for idx, y in enumerate(y_candidates):
+        try:
+            user32.SetForegroundWindow(wintypes.HWND(hwnd))
+            sleep_abs(0.06)
+        except Exception:
+            pass
+        try:
+            log(f"[FILE_SEND][CLICK_TRY] method={method_prefix}_bottom_area_{idx} hwnd={hwnd} coords=({x},{y})")
+            _, _, click = lazy_pywinauto()
+            click(coords=(x, int(y)))
+            sleep_abs(0.14)
+            ok, method = _gone(f"{method_prefix}_bottom_area_{idx}", timeout_sec=1.25)
+            if ok:
+                return ok, method
+        except Exception as e:
+            log(f"[FILE_SEND][CLICK_FAIL] method={method_prefix}_bottom_area_{idx} hwnd={hwnd} err={e}")
+
+    try:
+        user32.SetForegroundWindow(wintypes.HWND(hwnd))
+        sleep_abs(0.06)
+        log(f"[FILE_SEND][CLICK_TRY] method={method_prefix}_window_enter hwnd={hwnd}")
+        send_keys_fast("{ENTER}")
+        sleep_abs(0.14)
+        ok, method = _gone(f"{method_prefix}_window_enter", timeout_sec=1.25)
+        if ok:
+            return ok, method
+    except Exception as e:
+        log(f"[FILE_SEND][CLICK_FAIL] method={method_prefix}_window_enter hwnd={hwnd} err={e}")
+
+    try:
+        user32.SetForegroundWindow(wintypes.HWND(hwnd))
+        sleep_abs(0.06)
+        log(f"[FILE_SEND][CLICK_TRY] method={method_prefix}_window_space hwnd={hwnd}")
+        send_keys_fast("{SPACE}")
+        sleep_abs(0.14)
+        ok, method = _gone(f"{method_prefix}_window_space", timeout_sec=1.25)
+        if ok:
+            return ok, method
+    except Exception as e:
+        log(f"[FILE_SEND][CLICK_FAIL] method={method_prefix}_window_space hwnd={hwnd} err={e}")
+
+    return False, f"{method_prefix}_not_closed"
 
 
 def _extract_transfer_count(text: str) -> Optional[int]:
@@ -486,6 +582,130 @@ def _extract_transfer_count(text: str) -> Optional[int]:
         return int(match.group(1))
     except Exception:
         return None
+
+
+def _collect_uia_texts_for_hwnd(hwnd: int, *, limit: int = 120) -> list[str]:
+    texts: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        texts.append(text)
+
+    try:
+        Desktop, _, _ = lazy_pywinauto()
+        root = Desktop(backend="uia").window(handle=int(hwnd or 0))
+        _add(_safe_window_text(root))
+        try:
+            descendants = root.descendants()
+        except Exception:
+            descendants = []
+        for el in descendants:
+            if len(texts) >= limit:
+                break
+            _add(_safe_window_text(el))
+    except Exception:
+        pass
+    return texts
+
+
+def _probable_kakao_file_transfer_window_meta(
+    hwnd: int,
+    *,
+    expected_file_count: int = 0,
+    collect_texts: bool = True,
+) -> Optional[dict[str, Any]]:
+    h = int(hwnd or 0)
+    if h <= 0:
+        return None
+    try:
+        if not bool(user32.IsWindowVisible(wintypes.HWND(h))):
+            return None
+        cls = str(get_class_name(h) or "").strip()
+        title = str(get_window_text(h) or "").strip()
+        l, t, r, b = get_window_rect(h)
+    except Exception:
+        return None
+
+    width = max(0, int(r - l))
+    height = max(0, int(b - t))
+    if width <= 0 or height <= 0:
+        return None
+
+    is_eva = cls.startswith("EVA_")
+    is_small_float = 180 <= width <= 520 and 170 <= height <= 720
+    if not is_eva and "파일 전송" not in title and "Kakao" not in title:
+        return None
+
+    texts = _collect_uia_texts_for_hwnd(h, limit=120) if collect_texts else []
+    blob = "\n".join([title, *texts])
+    expected = int(expected_file_count or 0)
+    has_expected_count = expected > 0 and any(_extract_transfer_count(t) == expected for t in texts)
+    has_any_transfer_count = any(_extract_transfer_count(t) is not None for t in texts)
+    has_file_transfer_text = "파일 전송" in blob
+    has_attachment_hint = ("attach_" in blob) or (".jpg" in blob.lower()) or (".png" in blob.lower()) or (".jpeg" in blob.lower())
+
+    if not (
+        has_file_transfer_text
+        or has_expected_count
+        or has_any_transfer_count
+        or (is_eva and is_small_float and has_attachment_hint)
+    ):
+        return None
+
+    return {
+        "window_hwnd": h,
+        "window_title": title,
+        "window_class": cls,
+        "window_rect": (int(l), int(t), int(r), int(b)),
+        "window_size": (width, height),
+        "is_small_float": bool(is_small_float),
+        "has_file_transfer_text": bool(has_file_transfer_text),
+        "has_expected_count": bool(has_expected_count),
+        "has_any_transfer_count": bool(has_any_transfer_count),
+        "has_attachment_hint": bool(has_attachment_hint),
+        "texts": texts[:40],
+    }
+
+
+def _find_probable_kakao_file_transfer_window(
+    *,
+    chat_hwnd: int,
+    expected_file_count: int,
+) -> tuple[int, dict[str, Any]]:
+    ordered: list[int] = []
+    seen: set[int] = set()
+
+    def _add(hwnd: int) -> None:
+        h = int(hwnd or 0)
+        if h <= 0 or h in seen:
+            return
+        seen.add(h)
+        ordered.append(h)
+
+    try:
+        _add(_root_hwnd(get_foreground_hwnd()))
+    except Exception:
+        pass
+    try:
+        _add(_root_hwnd(int(chat_hwnd or 0)))
+    except Exception:
+        pass
+    for hwnd in _iter_top_windows():
+        _add(hwnd)
+
+    for hwnd in ordered:
+        meta = _probable_kakao_file_transfer_window_meta(
+            hwnd,
+            expected_file_count=int(expected_file_count or 0),
+            collect_texts=True,
+        )
+        if meta:
+            return int(hwnd), meta
+    return 0, {}
 
 
 def _collect_dialog_texts(hwnd: int, *, limit: int = 80) -> list[str]:
@@ -826,7 +1046,17 @@ def _find_send_button_in_chat_surface(
     for hwnd in _iter_top_windows():
         try:
             title = str(get_window_text(hwnd) or "")
-            if "파일 전송" in title or "카카오" in title or "Kakao" in title:
+            cls = str(get_class_name(hwnd) or "")
+            l, t, r, b = get_window_rect(hwnd)
+            width = max(0, int(r - l))
+            height = max(0, int(b - t))
+            is_small_eva = cls.startswith("EVA_") and 180 <= width <= 520 and 170 <= height <= 720
+            probable_meta = _probable_kakao_file_transfer_window_meta(
+                hwnd,
+                expected_file_count=int(expected_file_count or 0),
+                collect_texts=False,
+            )
+            if probable_meta or is_small_eva or "파일 전송" in title or "카카오" in title or "Kakao" in title:
                 _add_handle(hwnd)
         except Exception:
             continue
@@ -1018,6 +1248,57 @@ def send_files_dialog_hook(
             timeout_sec=max(2.0, float(timeout_sec)),
         )
         if button is None:
+            transfer_hwnd, transfer_meta = _find_probable_kakao_file_transfer_window(
+                chat_hwnd=int(chat_hwnd or 0),
+                expected_file_count=int(expected_file_count or 0),
+            )
+            if transfer_hwnd > 0:
+                fallback_meta = {
+                    **dict(meta or {}),
+                    "fallback_transfer_window": transfer_meta,
+                    "click_method": "transfer_window_bottom_area",
+                }
+                _emit_debug_step(
+                    debug_step,
+                    "KAKAO_FILE_TRANSFER_DIALOG_DETECTED",
+                    ok=True,
+                    detail="Kakao file transfer dialog detected by floating window fallback",
+                    extra=fallback_meta,
+                )
+                clicked, click_method = _click_transfer_window_bottom_area_until_gone(
+                    transfer_hwnd,
+                    send_keys_fast=send_keys_fast,
+                    sleep_abs=sleep_abs,
+                    log=log,
+                    method_prefix="floating_window",
+                )
+                fallback_meta["click_method"] = click_method
+                if clicked:
+                    _emit_debug_step(
+                        debug_step,
+                        "KAKAO_FILE_TRANSFER_SEND_BUTTON_CLICKED",
+                        ok=True,
+                        detail="Kakao file transfer send button clicked by floating window fallback",
+                        extra=fallback_meta,
+                    )
+                    _safe_cleanup_after_file_dialog(
+                        prefer_hwnd=int(chat_hwnd or 0),
+                        sleep_abs=sleep_abs,
+                        log=log,
+                    )
+                    log("[FILE_SEND][VERIFY_OK] file transfer floating window clicked")
+                    return True
+
+                _emit_debug_step(
+                    debug_step,
+                    "KAKAO_FILE_TRANSFER_BUTTON_NOT_FOUND",
+                    ok=False,
+                    detail="Kakao file transfer floating window click failed",
+                    extra=fallback_meta,
+                )
+                log(f"[FILE_SEND][VERIFY_FAIL] floating window click failed meta={fallback_meta}")
+                return False
+
             log(f"[FILE_SEND][VERIFY_FAIL] reason={failure} meta={meta}")
             return False
 
