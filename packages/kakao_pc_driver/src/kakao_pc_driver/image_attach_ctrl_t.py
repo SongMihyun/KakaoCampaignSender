@@ -180,6 +180,34 @@ def _normalize_compare_text(text: str) -> str:
     return s.casefold()
 
 
+def _normalize_filename_match_key(text: str) -> str:
+    s = os.path.basename(str(text or "").strip().strip('"'))
+    s = s.replace("/", "\\")
+    s = re.sub(r"\s+", "", s)
+    return s.casefold()
+
+
+def _filename_match_keys(filename: str) -> set[str]:
+    name = os.path.basename(str(filename or "").strip().strip('"'))
+    if not name:
+        return set()
+    stem, _ext = os.path.splitext(name)
+    keys = {_normalize_filename_match_key(name)}
+    if stem:
+        keys.add(_normalize_filename_match_key(stem))
+    return {key for key in keys if key}
+
+
+def _file_dialog_item_matches(item_text: str, filename: str) -> bool:
+    item_key = _normalize_filename_match_key(item_text)
+    if not item_key:
+        return False
+    for key in _filename_match_keys(filename):
+        if item_key == key or item_key.startswith(key) or key in item_key:
+            return True
+    return False
+
+
 def _safe_window_text(el) -> str:
     try:
         return str(el.window_text() or "").strip()
@@ -2357,7 +2385,13 @@ def _navigate_open_dialog_to_folder(
         send_keys_fast("^v")
         sleep_abs(0.08)
         send_keys_fast("{ENTER}")
-        sleep_abs(0.55)
+        sleep_abs(0.35)
+        try:
+            send_keys_fast("{F5}")
+            sleep_abs(0.25)
+        except Exception as refresh_error:
+            log(f"[CTRL+T-MULTI] folder refresh after navigation failed err={refresh_error}")
+            sleep_abs(0.20)
         ok = bool(user32.IsWindow(wintypes.HWND(int(dialog_hwnd or 0))))
         _emit_debug_step(
             debug_step,
@@ -2377,6 +2411,215 @@ def _navigate_open_dialog_to_folder(
             extra=extra,
         )
         return False
+
+
+def _click_file_dialog_item(
+    item: Any,
+    *,
+    add_to_selection: bool,
+    send_keys_fast: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+) -> bool:
+    try:
+        scroll_into_view = getattr(item, "scroll_into_view", None)
+        if callable(scroll_into_view):
+            scroll_into_view()
+            sleep_abs(0.05)
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] file item scroll_into_view failed err={e}")
+
+    try:
+        rect = item.rectangle()
+        x = int((int(rect.left) + int(rect.right)) / 2)
+        y = int((int(rect.top) + int(rect.bottom)) / 2)
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] file item rectangle failed err={e}")
+        return False
+
+    try:
+        _, _, click = lazy_pywinauto()
+        if add_to_selection:
+            send_keys_fast("{VK_CONTROL down}")
+            sleep_abs(0.03)
+        click(coords=(x, y))
+        sleep_abs(0.08)
+        return True
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] file item coordinate click failed err={e}")
+        return False
+    finally:
+        if add_to_selection:
+            try:
+                send_keys_fast("{VK_CONTROL up}")
+                sleep_abs(0.03)
+            except Exception:
+                pass
+
+
+def _select_file_items_and_submit_open_dialog(
+    *,
+    dialog_hwnd: int,
+    filenames: Sequence[str],
+    send_keys_fast: Callable[[str], None],
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    submit_timeout_sec: float,
+    debug_step: Optional[DebugStep],
+) -> bool:
+    targets = [os.path.basename(str(name or "").strip()) for name in (filenames or []) if str(name or "").strip()]
+    targets = [name for name in targets if name]
+    extra: dict[str, Any] = {
+        "dialog_hwnd": int(dialog_hwnd or 0),
+        "target_filenames": targets,
+        "target_count": len(targets),
+        "method": "uia_list_item_ctrl_click",
+    }
+    if not targets:
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_LIST_SELECT_ATTEMPT",
+        ok=True,
+        detail="select files from current folder list before opening",
+        extra=extra,
+    )
+
+    try:
+        if int(dialog_hwnd or 0) > 0:
+            user32.SetForegroundWindow(wintypes.HWND(int(dialog_hwnd or 0)))
+            sleep_abs(0.08)
+
+        Desktop, _, _ = lazy_pywinauto()
+        dialog = Desktop(backend="uia").window(handle=int(dialog_hwnd or 0))
+        try:
+            dialog.set_focus()
+        except Exception:
+            pass
+
+        items = list(dialog.descendants(control_type="ListItem"))
+        item_names = [_safe_window_text(item) for item in items]
+        extra.update({"visible_item_count": len(items), "visible_item_names": item_names[:40]})
+
+        matched: list[tuple[str, Any, str]] = []
+        used_handles: set[int] = set()
+        missing: list[str] = []
+        for target in targets:
+            found_item = None
+            found_name = ""
+            for item, item_name in zip(items, item_names):
+                item_hwnd = _safe_element_hwnd(item)
+                if item_hwnd and item_hwnd in used_handles:
+                    continue
+                if _file_dialog_item_matches(item_name, target):
+                    found_item = item
+                    found_name = item_name
+                    if item_hwnd:
+                        used_handles.add(item_hwnd)
+                    break
+            if found_item is None:
+                missing.append(target)
+                continue
+            matched.append((target, found_item, found_name))
+
+        if missing:
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_LIST_SELECT_FOUND",
+                ok=False,
+                detail="some target files were not visible in the file list",
+                extra={**extra, "matched_count": len(matched), "missing_filenames": missing},
+            )
+            return False
+
+        for idx, (target, item, item_name) in enumerate(matched):
+            clicked = False
+            try:
+                if idx == 0:
+                    select = getattr(item, "select", None)
+                    if callable(select):
+                        select()
+                        sleep_abs(0.08)
+                        clicked = True
+                else:
+                    iface = getattr(item, "iface_selection_item", None)
+                    add_to_selection = getattr(iface, "AddToSelection", None)
+                    if callable(add_to_selection):
+                        add_to_selection()
+                        sleep_abs(0.08)
+                        clicked = True
+            except Exception as e:
+                log(f"[CTRL+T-MULTI] UIA selection pattern failed target={target!r} err={e}")
+
+            if not clicked:
+                clicked = _click_file_dialog_item(
+                    item,
+                    add_to_selection=idx > 0,
+                    send_keys_fast=send_keys_fast,
+                    sleep_abs=sleep_abs,
+                    log=log,
+                )
+
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_LIST_SELECT_ITEM",
+                ok=bool(clicked),
+                detail="selected file list item" if clicked else "failed to select file list item",
+                extra={"target_filename": target, "item_text": item_name, "index": idx},
+            )
+            if not clicked:
+                return False
+
+        btn_hwnd = _find_open_button_hwnd(dialog_hwnd, log=log)
+        if btn_hwnd:
+            try:
+                user32.SendMessageW(wintypes.HWND(btn_hwnd), BM_CLICK, 0, 0)
+                if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+                    _emit_debug_step(
+                        debug_step,
+                        "FILE_DIALOG_LIST_SELECT_SUBMIT",
+                        ok=True,
+                        detail="open dialog closed after list item selection",
+                        extra={**extra, "matched_count": len(matched), "submit_method": "bm_click"},
+                    )
+                    return True
+            except Exception as e:
+                log(f"[CTRL+T-MULTI] open button BM_CLICK after list select failed err={e}")
+
+        try:
+            send_keys_fast("{ENTER}")
+            if _wait_for_dialog_close(dialog_hwnd, sleep_abs=sleep_abs, timeout_sec=submit_timeout_sec):
+                _emit_debug_step(
+                    debug_step,
+                    "FILE_DIALOG_LIST_SELECT_SUBMIT",
+                    ok=True,
+                    detail="open dialog closed by ENTER after list item selection",
+                    extra={**extra, "matched_count": len(matched), "submit_method": "enter"},
+                )
+                return True
+        except Exception as e:
+            log(f"[CTRL+T-MULTI] ENTER after list select failed err={e}")
+
+    except Exception as e:
+        log(f"[CTRL+T-MULTI] list item select submit failed err={e}")
+        _emit_debug_step(
+            debug_step,
+            "FILE_DIALOG_LIST_SELECT_ATTEMPT",
+            ok=False,
+            detail=str(e) or "list item select failed",
+            extra=extra,
+        )
+        return False
+
+    _emit_debug_step(
+        debug_step,
+        "FILE_DIALOG_LIST_SELECT_SUBMIT",
+        ok=False,
+        detail="open dialog did not close after list item selection",
+        extra=extra,
+    )
+    return False
 
 
 def _cleanup_file_dialog_flow(
@@ -2547,6 +2790,7 @@ def _send_paths_via_ctrl_t_dialog(
             extra=extra,
         )
 
+        submitted = False
         if dialog_input_mode == "navigate_then_names" and requires_folder_navigation:
             navigated = _navigate_open_dialog_to_folder(
                 dialog_hwnd=dialog_hwnd,
@@ -2557,7 +2801,29 @@ def _send_paths_via_ctrl_t_dialog(
                 log=log,
                 debug_step=debug_step,
             )
-            if not navigated:
+            if navigated:
+                submitted = _select_file_items_and_submit_open_dialog(
+                    dialog_hwnd=dialog_hwnd,
+                    filenames=valid_paths,
+                    send_keys_fast=send_keys_fast,
+                    sleep_abs=sleep_abs,
+                    log=log,
+                    submit_timeout_sec=max(3.0, float(timeout_sec)),
+                    debug_step=debug_step,
+                )
+                if not submitted:
+                    dialog_input_mode = "absolute_paths"
+                    dialog_input_text = full_paths_text
+                    requires_folder_navigation = False
+                    dialog_input_extra = _dialog_input_extra()
+                    _emit_debug_step(
+                        debug_step,
+                        "FILE_DIALOG_INPUT_STRATEGY_FALLBACK",
+                        ok=True,
+                        detail="list item selection failed; fallback to absolute paths",
+                        extra=dialog_input_extra,
+                    )
+            else:
                 dialog_input_mode = "absolute_paths"
                 dialog_input_text = full_paths_text
                 requires_folder_navigation = False
@@ -2570,7 +2836,6 @@ def _send_paths_via_ctrl_t_dialog(
                     extra=dialog_input_extra,
                 )
 
-        submitted = False
         if not requires_folder_navigation:
             submitted = _submit_path_text_by_initial_focus_fastpath(
                 dialog_hwnd=dialog_hwnd,
