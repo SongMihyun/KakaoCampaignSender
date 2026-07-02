@@ -3552,6 +3552,23 @@ class KakaoPcDriver(KakaoSenderDriver):
             self._log(f"[CTRL+T-MULTI] temp attachment batch dir failed: {batch_dir}: {e}")
             return []
 
+        planned_temp_names: list[str] = []
+        for idx, raw in enumerate(clean_paths, start=1):
+            planned_temp_names.append(f"a{idx:03d}{self._safe_attachment_ext(Path(raw))}")
+        self._append_debug_step(
+            debug_steps,
+            "ATTACHMENT_TEMP_COPY_STRATEGY",
+            ok=True,
+            detail="use short per-send batch folder for Ctrl+T multi attach",
+            extra={
+                "strategy": "short_per_send_batch_v1",
+                "temp_dir": str(root),
+                "batch_dir": str(batch_dir),
+                "file_count": len(clean_paths),
+                "planned_temp_names": planned_temp_names,
+            },
+        )
+
         for idx, raw in enumerate(clean_paths, start=1):
             detail = self._attachment_path_detail(raw)
             self._append_debug_step(

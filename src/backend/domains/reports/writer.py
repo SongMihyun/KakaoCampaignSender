@@ -16,6 +16,11 @@ from backend.domains.reports.models import (
 )
 from backend.core.status_codes import status_from_result
 
+try:
+    from app.version import __version__ as _APP_VERSION
+except Exception:
+    _APP_VERSION = ""
+
 
 def _now_ts() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -40,7 +45,7 @@ class SendReportWriter:
         self._filename_prefix = str(filename_prefix or "send_report").strip() or "send_report"
         self._path = self._reports_dir / f"{self._filename_prefix}_{self._run_id}.json"
 
-        self._report = SendReport(run_id=self._run_id, started_at=_now_ts())
+        self._report = SendReport(run_id=self._run_id, app_version=str(_APP_VERSION or ""), started_at=_now_ts())
         self._list_map: Dict[int, int] = {}
 
     @property

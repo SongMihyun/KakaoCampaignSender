@@ -48,6 +48,8 @@ class ReportList:
 class SendReport:
     run_id: str
     report_type: str = "send"
+    app_version: str = ""
+    report_schema: int = 2
     batch_id: str = ""
     source_batch_id: str = ""
     source_report_file: str = ""
