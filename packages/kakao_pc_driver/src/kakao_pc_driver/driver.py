@@ -3474,6 +3474,14 @@ class KakaoPcDriver(KakaoSenderDriver):
                         p.unlink()
                 except Exception:
                     pass
+            for p in root.glob("batch_*"):
+                try:
+                    if not p.is_dir():
+                        continue
+                    if (now - p.stat().st_mtime) > ttl_sec:
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass
         except Exception:
             pass
 
@@ -3526,7 +3534,24 @@ class KakaoPcDriver(KakaoSenderDriver):
         self._prune_temp_attachments(root)
 
         out: List[str] = []
-        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
+        batch_dir = root / f"batch_{stamp}_{os.getpid()}"
+        try:
+            batch_dir.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            batch_dir = root / f"batch_{stamp}_{os.getpid()}_{int(time.time() * 1000) % 10000:04d}"
+            batch_dir.mkdir(parents=True, exist_ok=False)
+        except Exception as e:
+            self._append_debug_step(
+                debug_steps,
+                "ATTACHMENT_TEMP_COPY",
+                ok=False,
+                detail=str(e) or "temp attachment batch directory failed",
+                extra={"temp_dir": str(root), "batch_dir": str(batch_dir)},
+            )
+            self._log(f"[CTRL+T-MULTI] temp attachment batch dir failed: {batch_dir}: {e}")
+            return []
+
         for idx, raw in enumerate(clean_paths, start=1):
             detail = self._attachment_path_detail(raw)
             self._append_debug_step(
@@ -3545,20 +3570,25 @@ class KakaoPcDriver(KakaoSenderDriver):
                 digest_src = f"{src.resolve()}|{st.st_size}|{getattr(st, 'st_mtime_ns', int(st.st_mtime * 1000))}"
                 digest = hashlib.sha1(digest_src.encode("utf-8", "ignore")).hexdigest()[:10]
                 ext = self._safe_attachment_ext(src)
-                dst = root / f"attach_{stamp}_{idx:03d}_{digest}{ext}"
+                dst = batch_dir / f"a{idx:03d}{ext}"
                 shutil.copy2(src, dst)
                 temp_path = str(dst)
                 self._append_debug_step(
                     debug_steps,
                     "ATTACHMENT_TEMP_COPY",
                     ok=True,
-                    detail="copied attachment to stable temp path",
+                    detail="copied attachment to short per-send temp path",
                     extra={
                         "original_path": str(src),
                         "temp_path": temp_path,
+                        "temp_dir": str(root),
+                        "batch_dir": str(batch_dir),
+                        "temp_filename": dst.name,
                         "size": int(dst.stat().st_size),
                         "extension": ext,
                         "path_length": len(temp_path),
+                        "source_digest": digest,
+                        "file_count": len(clean_paths),
                     },
                 )
                 out.append(temp_path)
@@ -3568,7 +3598,7 @@ class KakaoPcDriver(KakaoSenderDriver):
                     "ATTACHMENT_TEMP_COPY",
                     ok=False,
                     detail=str(e) or "temp attachment copy failed",
-                    extra={"original_path": raw, "temp_dir": str(root)},
+                    extra={"original_path": raw, "temp_dir": str(root), "batch_dir": str(batch_dir)},
                 )
                 self._log(f"[CTRL+T-MULTI] temp attachment copy failed: {raw} -> {root}: {e}")
                 return []
