@@ -42,6 +42,18 @@ EDT1 = 0x0480
 CMB13 = 0x047C
 OPEN_DIALOG_MIN_SCORE = 900
 MULTI_SELECT_WARNING_SNIPPETS = ("여러 항목", "같은 폴더")
+FILE_DIALOG_ERROR_MARKERS = (
+    "올바르지",
+    "잘못",
+    "찾을 수 없",
+    "찾을 수가 없",
+    "not valid",
+    "invalid",
+    "cannot find",
+)
+FILE_DIALOG_WARNING_MARKER_GROUPS = (
+    ("여러 항목", "같은 폴더"),
+)
 
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
@@ -142,16 +154,21 @@ def _shared_parent_dir(paths: Sequence[str]) -> str:
     return parents[0]
 
 
-def _build_dialog_input_plan(paths: Sequence[str], *, input_mode: str = "navigate_then_names") -> dict[str, str]:
+def _build_dialog_input_plan(paths: Sequence[str], *, input_mode: str = "direct_paths_then_names") -> dict[str, str]:
     names_text = _build_names_text(paths)
     full_paths_text = _build_absolute_paths_text(paths)
     shared_parent = _shared_parent_dir(paths)
     folder_and_names_text = _build_folder_and_names_text(paths)
     mode = str(input_mode or "").strip().lower()
-    if mode not in {"absolute_paths", "folder_and_names", "same_folder_names", "navigate_then_names"}:
-        mode = "navigate_then_names"
+    if mode not in {"absolute_paths", "folder_and_names", "same_folder_names", "navigate_then_names", "direct_paths_then_names"}:
+        mode = "direct_paths_then_names"
     input_text = full_paths_text
     requires_folder_navigation = False
+    if mode == "direct_paths_then_names":
+        input_text = full_paths_text
+        requires_folder_navigation = False
+        if not full_paths_text:
+            mode = "navigate_then_names"
     if mode == "navigate_then_names":
         if shared_parent and names_text:
             input_text = names_text
@@ -740,6 +757,16 @@ def _collect_dialog_texts(hwnd: int, *, limit: int = 80) -> list[str]:
             continue
 
     return texts
+
+
+def _looks_like_file_dialog_error(texts: Sequence[str]) -> bool:
+    blob = "\n".join(str(t or "") for t in texts).casefold()
+    if any(str(marker).casefold() in blob for marker in FILE_DIALOG_ERROR_MARKERS):
+        return True
+    for group in FILE_DIALOG_WARNING_MARKER_GROUPS:
+        if all(str(marker).casefold() in blob for marker in group):
+            return True
+    return False
 
 
 def _find_dialog_confirm_button(dialog_hwnd: int) -> int:
@@ -2719,15 +2746,7 @@ def _dismiss_file_dialog_error_popup(
                 if not bool(user32.IsWindowVisible(wintypes.HWND(hwnd))):
                     continue
                 texts = _collect_dialog_texts(hwnd)
-                blob = "\n".join(texts).casefold()
-                if not (
-                    "파일 이름" in blob
-                    or "file name" in blob
-                    or "올바르지" in blob
-                    or "없습니다" in blob
-                    or "cannot find" in blob
-                    or "not valid" in blob
-                ):
+                if not _looks_like_file_dialog_error(texts):
                     continue
                 meta = {
                     "popup_hwnd": int(hwnd),
@@ -3261,6 +3280,93 @@ def _send_paths_via_ctrl_t_dialog(
         )
 
         submitted = False
+        if dialog_input_mode == "direct_paths_then_names":
+            _emit_debug_step(
+                debug_step,
+                "FILE_DIALOG_DIRECT_PATH_FASTPATH",
+                ok=True,
+                detail="try full path input before folder navigation",
+                extra=dialog_input_extra,
+            )
+            edit_hwnd = _find_filename_edit_hwnd_retry(
+                dialog_hwnd,
+                sleep_abs=sleep_abs,
+                log=log,
+                timeout_sec=0.7,
+            )
+            if edit_hwnd and _set_path_text_with_clipboard_then_fallback(
+                dialog_hwnd=dialog_hwnd,
+                edit_hwnd=edit_hwnd,
+                text=full_paths_text,
+                send_keys_fast=send_keys_fast,
+                set_clipboard_text=set_clipboard_text,
+                sleep_abs=sleep_abs,
+                log=log,
+                clipboard_settle_sec=_t("clipboard_settle", 0.05),
+                after_paste_sec=_t("after_paste_path", 0.10),
+                debug_step=debug_step,
+            ):
+                _emit_debug_step(
+                    debug_step,
+                    "FILE_DIALOG_ENTER",
+                    ok=True,
+                    detail="submit open dialog by direct full paths",
+                    extra=dialog_input_extra,
+                )
+                submitted = _confirm_dialog_fields_and_submit(
+                    dialog_hwnd=dialog_hwnd,
+                    edit_hwnd=edit_hwnd,
+                    expected_text=full_paths_text,
+                    sleep_abs=sleep_abs,
+                    log=log,
+                    submit_timeout_sec=max(1.2, min(2.5, float(timeout_sec))),
+                )
+            if not submitted:
+                _dismiss_file_dialog_error_popup(
+                    sleep_abs=sleep_abs,
+                    log=log,
+                    debug_step=debug_step,
+                    send_keys_fast=send_keys_fast,
+                    timeout_sec=0.5,
+                )
+            if not submitted:
+                submitted = _submit_path_text_by_initial_focus_fastpath(
+                    dialog_hwnd=dialog_hwnd,
+                    text=full_paths_text,
+                    send_keys_fast=send_keys_fast,
+                    set_clipboard_text=set_clipboard_text,
+                    sleep_abs=sleep_abs,
+                    log=log,
+                    submit_timeout_sec=max(1.1, min(2.0, float(timeout_sec))),
+                    debug_step=debug_step,
+                )
+                if not submitted:
+                    _dismiss_file_dialog_error_popup(
+                        sleep_abs=sleep_abs,
+                        log=log,
+                        debug_step=debug_step,
+                        send_keys_fast=send_keys_fast,
+                        timeout_sec=0.5,
+                    )
+            if not submitted:
+                if shared_parent_dir and names_text:
+                    dialog_input_mode = "navigate_then_names"
+                    dialog_input_text = names_text
+                    requires_folder_navigation = True
+                    dialog_input_extra = _dialog_input_extra()
+                    _emit_debug_step(
+                        debug_step,
+                        "FILE_DIALOG_INPUT_STRATEGY_FALLBACK",
+                        ok=True,
+                        detail="direct full path input failed; fallback to folder navigation and short names",
+                        extra=dialog_input_extra,
+                    )
+                else:
+                    dialog_input_mode = "absolute_paths"
+                    dialog_input_text = full_paths_text
+                    requires_folder_navigation = False
+                    dialog_input_extra = _dialog_input_extra()
+
         if dialog_input_mode == "navigate_then_names" and requires_folder_navigation:
             navigated = _navigate_open_dialog_to_folder(
                 dialog_hwnd=dialog_hwnd,
@@ -3284,6 +3390,34 @@ def _send_paths_via_ctrl_t_dialog(
                     submit_timeout_sec=max(2.0, float(timeout_sec)),
                     debug_step=debug_step,
                 )
+                if not submitted:
+                    folder_and_names_text = str(input_plan.get("folder_and_names_text", "") or "").strip()
+                    if folder_and_names_text and folder_and_names_text != names_text:
+                        submitted = _submit_filenames_from_current_folder(
+                            dialog_hwnd=dialog_hwnd,
+                            names_text=folder_and_names_text,
+                            send_keys_fast=send_keys_fast,
+                            set_clipboard_text=set_clipboard_text,
+                            sleep_abs=sleep_abs,
+                            log=log,
+                            clipboard_settle_sec=_t("clipboard_settle", 0.05),
+                            after_paste_sec=_t("after_paste_path", 0.10),
+                            submit_timeout_sec=max(2.0, float(timeout_sec)),
+                            debug_step=debug_step,
+                        )
+                if not submitted:
+                    submitted = _submit_filenames_from_current_folder(
+                        dialog_hwnd=dialog_hwnd,
+                        names_text=full_paths_text,
+                        send_keys_fast=send_keys_fast,
+                        set_clipboard_text=set_clipboard_text,
+                        sleep_abs=sleep_abs,
+                        log=log,
+                        clipboard_settle_sec=_t("clipboard_settle", 0.05),
+                        after_paste_sec=_t("after_paste_path", 0.10),
+                        submit_timeout_sec=max(2.0, float(timeout_sec)),
+                        debug_step=debug_step,
+                    )
                 if not submitted:
                     submitted = _select_file_items_and_submit_open_dialog(
                         dialog_hwnd=dialog_hwnd,
@@ -3319,7 +3453,7 @@ def _send_paths_via_ctrl_t_dialog(
                     extra=dialog_input_extra,
                 )
 
-        if not requires_folder_navigation:
+        if not submitted and not requires_folder_navigation:
             submitted = _submit_path_text_by_initial_focus_fastpath(
                 dialog_hwnd=dialog_hwnd,
                 text=dialog_input_text,
