@@ -54,6 +54,14 @@ FILE_DIALOG_ERROR_MARKERS = (
 FILE_DIALOG_WARNING_MARKER_GROUPS = (
     ("여러 항목", "같은 폴더"),
 )
+UPLOAD_PENDING_TEXT_MARKERS = (
+    "전송 중",
+    "전송중",
+    "업로드",
+    "보내는 중",
+    "sending",
+    "uploading",
+)
 
 EnumWindowsProc = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 user32.EnumWindows.argtypes = [EnumWindowsProc, wintypes.LPARAM]
@@ -1243,6 +1251,150 @@ def _wait_for_kakao_file_transfer_button(
     return None, last_meta, "dialog_not_found"
 
 
+def _chat_upload_pending_meta(
+    *,
+    chat_hwnd: int,
+    expected_file_count: int,
+    log: Callable[[str], None],
+) -> tuple[bool, dict[str, Any]]:
+    expected = int(expected_file_count or 0)
+
+    transfer_hwnd, transfer_meta = _find_probable_kakao_file_transfer_window(
+        chat_hwnd=int(chat_hwnd or 0),
+        expected_file_count=expected,
+    )
+    if transfer_hwnd > 0:
+        return True, {
+            "pending_reason": "file_transfer_window_visible",
+            "chat_hwnd": int(chat_hwnd or 0),
+            "expected_file_count": expected,
+            "transfer_window": transfer_meta,
+        }
+
+    button = _find_send_button_in_chat_surface(
+        chat_hwnd=int(chat_hwnd or 0),
+        log=log,
+        expected_file_count=expected,
+        debug_candidates=False,
+    )
+    if button is not None:
+        return True, {
+            "pending_reason": "file_transfer_button_visible",
+            "chat_hwnd": int(chat_hwnd or 0),
+            "expected_file_count": expected,
+            "button_text": _safe_window_text(button),
+        }
+
+    texts = _collect_uia_texts_for_hwnd(int(chat_hwnd or 0), limit=180)
+    pending_texts: list[str] = []
+    for raw in texts:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        folded = text.casefold()
+        if any(marker.casefold() in folded for marker in UPLOAD_PENDING_TEXT_MARKERS):
+            pending_texts.append(text)
+            continue
+        if re.search(r"\b\d+\s*/\s*\d+\b", text):
+            pending_texts.append(text)
+            continue
+        if re.search(r"\b\d{1,3}\s*%\b", text):
+            pending_texts.append(text)
+            continue
+
+    if pending_texts:
+        return True, {
+            "pending_reason": "upload_pending_text_visible",
+            "chat_hwnd": int(chat_hwnd or 0),
+            "expected_file_count": expected,
+            "pending_texts": pending_texts[:12],
+        }
+
+    return False, {
+        "pending_reason": "",
+        "chat_hwnd": int(chat_hwnd or 0),
+        "expected_file_count": expected,
+    }
+
+
+def _wait_for_kakao_upload_complete(
+    *,
+    chat_hwnd: int,
+    expected_file_count: int,
+    sleep_abs: Callable[[float], None],
+    log: Callable[[str], None],
+    debug_step: Optional[DebugStep],
+    timeout_sec: float,
+    stable_sec: float = 1.2,
+) -> bool:
+    timeout = max(3.0, float(timeout_sec))
+    stable_for = max(0.25, float(stable_sec))
+    deadline = time.perf_counter() + timeout
+    stable_since: Optional[float] = None
+    last_meta: dict[str, Any] = {
+        "chat_hwnd": int(chat_hwnd or 0),
+        "expected_file_count": int(expected_file_count or 0),
+        "timeout_ms": int(timeout * 1000),
+        "stable_ms": int(stable_for * 1000),
+    }
+
+    _emit_debug_step(
+        debug_step,
+        "KAKAO_UPLOAD_COMPLETE_WAIT",
+        ok=True,
+        detail="wait until Kakao upload pending UI disappears",
+        extra=last_meta,
+    )
+
+    while time.perf_counter() < deadline:
+        pending, meta = _chat_upload_pending_meta(
+            chat_hwnd=int(chat_hwnd or 0),
+            expected_file_count=int(expected_file_count or 0),
+            log=log,
+        )
+        last_meta = {**last_meta, **dict(meta or {})}
+        now = time.perf_counter()
+
+        if pending:
+            stable_since = None
+            log(f"[FILE_SEND][UPLOAD_PENDING] reason={last_meta.get('pending_reason')}")
+            sleep_abs(0.25)
+            continue
+
+        if stable_since is None:
+            stable_since = now
+            sleep_abs(0.18)
+            continue
+
+        stable_elapsed = now - stable_since
+        if stable_elapsed >= stable_for:
+            done_meta = {
+                **last_meta,
+                "elapsed_ms": int((timeout - max(0.0, deadline - now)) * 1000),
+                "stable_elapsed_ms": int(stable_elapsed * 1000),
+            }
+            _emit_debug_step(
+                debug_step,
+                "KAKAO_UPLOAD_COMPLETED",
+                ok=True,
+                detail="Kakao upload completion confirmed",
+                extra=done_meta,
+            )
+            return True
+
+        sleep_abs(0.18)
+
+    _emit_debug_step(
+        debug_step,
+        "KAKAO_UPLOAD_TIMEOUT",
+        ok=False,
+        detail="Kakao upload pending UI did not disappear before timeout",
+        extra=last_meta,
+    )
+    log(f"[FILE_SEND][UPLOAD_TIMEOUT] meta={last_meta}")
+    return False
+
+
 def send_files_dialog_hook(
     *,
     chat_hwnd: int,
@@ -1250,6 +1402,7 @@ def send_files_dialog_hook(
     sleep_abs: Callable[[float], None],
     log: Callable[[str], None],
     timeout_sec: float = 2.5,
+    upload_complete_timeout_sec: float = 45.0,
     expected_file_count: int = 0,
     debug_step: Optional[DebugStep] = None,
 ) -> bool:
@@ -1315,6 +1468,16 @@ def send_files_dialog_hook(
                         detail="Kakao file transfer send button clicked by floating window fallback",
                         extra=fallback_meta,
                     )
+                    upload_ok = _wait_for_kakao_upload_complete(
+                        chat_hwnd=int(chat_hwnd or 0),
+                        expected_file_count=int(expected_file_count or 0),
+                        sleep_abs=sleep_abs,
+                        log=log,
+                        debug_step=debug_step,
+                        timeout_sec=max(3.0, float(upload_complete_timeout_sec)),
+                    )
+                    if not upload_ok:
+                        return False
                     _safe_cleanup_after_file_dialog(
                         prefer_hwnd=int(chat_hwnd or 0),
                         sleep_abs=sleep_abs,
@@ -1383,6 +1546,17 @@ def send_files_dialog_hook(
             detail="Kakao file transfer send button clicked",
             extra=meta,
         )
+
+        upload_ok = _wait_for_kakao_upload_complete(
+            chat_hwnd=int(chat_hwnd or 0),
+            expected_file_count=int(expected_file_count or 0),
+            sleep_abs=sleep_abs,
+            log=log,
+            debug_step=debug_step,
+            timeout_sec=max(3.0, float(upload_complete_timeout_sec)),
+        )
+        if not upload_ok:
+            return False
 
         _safe_cleanup_after_file_dialog(
             prefer_hwnd=int(chat_hwnd or 0),
@@ -3182,6 +3356,20 @@ def _send_paths_via_ctrl_t_dialog(
     if not full_paths_text:
         return False
 
+    total_bytes = 0
+    for p in valid_paths:
+        try:
+            total_bytes += int(os.path.getsize(p))
+        except Exception:
+            pass
+    total_mb = float(total_bytes) / (1024.0 * 1024.0) if total_bytes > 0 else 0.0
+    upload_complete_timeout_sec = float(
+        tm.get(
+            "upload_complete_timeout",
+            max(30.0, min(180.0, 15.0 + (len(valid_paths) * 10.0) + (total_mb * 4.0))),
+        )
+    )
+
     log(f"[CTRL+T-MULTI] names_text={names_text}")
     log(f"[CTRL+T-MULTI] full_paths_text={full_paths_text}")
     log(f"[CTRL+T-MULTI] dialog_input_mode={dialog_input_mode} input_text={dialog_input_text}")
@@ -3197,6 +3385,9 @@ def _send_paths_via_ctrl_t_dialog(
             "names_text": names_text,
             "shared_parent_dir": shared_parent_dir,
             "file_count": len(valid_paths),
+            "total_bytes": int(total_bytes),
+            "total_mb": round(total_mb, 3),
+            "upload_complete_timeout_ms": int(upload_complete_timeout_sec * 1000),
         }
 
     dialog_input_extra = _dialog_input_extra()
@@ -3684,6 +3875,7 @@ def _send_paths_via_ctrl_t_dialog(
             sleep_abs=sleep_abs,
             log=log,
             timeout_sec=max(2.0, float(timeout_sec)),
+            upload_complete_timeout_sec=upload_complete_timeout_sec,
             expected_file_count=len(valid_paths),
             debug_step=debug_step,
         )

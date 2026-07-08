@@ -624,6 +624,8 @@ class KakaoPcDriver(KakaoSenderDriver):
                         prev_step = str(prev_item.get("step") or "")
                     except Exception:
                         continue
+                    if prev_step == "KAKAO_UPLOAD_TIMEOUT":
+                        return "KAKAO_UPLOAD_TIMEOUT", "upload_wait"
                     specific = _specific_file_transfer_failure(prev_step)
                     if specific:
                         return specific
@@ -1933,6 +1935,9 @@ class KakaoPcDriver(KakaoSenderDriver):
                             if force_action == "CONFIRM":
                                 primary = ("확인", "예", "계속", "닫기", "OK", "Yes")
                                 secondary = ("취소", "아니오", "No", "Cancel")
+                            elif force_action == "CANCEL_ONLY":
+                                secondary = ()
+                                primary = ("취소", "아니오", "No", "Cancel")
                             else:
                                 primary = ("취소", "아니오", "No", "Cancel")
                                 secondary = ("확인", "예", "계속", "닫기", "OK", "Yes")
@@ -1957,6 +1962,9 @@ class KakaoPcDriver(KakaoSenderDriver):
 
                             if r in ("CANCEL", "CONFIRM"):
                                 return r
+
+                            if force_action == "CANCEL_ONLY":
+                                continue
 
                             try:
                                 dlg.set_focus()
@@ -1983,10 +1991,13 @@ class KakaoPcDriver(KakaoSenderDriver):
     def _close_chat_esc_with_popup_handling(self) -> None:
         self._check_stop()
 
-        max_esc_attempts = 6
-        retry_gap_sec = 0.18
+        deadline = time.time() + 75.0
+        retry_gap_sec = 0.55
+        no_popup_attempts = 0
+        attempt = 0
 
-        for attempt in range(1, max_esc_attempts + 1):
+        while time.time() < deadline:
+            attempt += 1
             self._check_stop()
 
             if not (self._chat_hwnd and is_window(self._chat_hwnd)):
@@ -2010,24 +2021,32 @@ class KakaoPcDriver(KakaoSenderDriver):
             if not (self._chat_hwnd and is_window(self._chat_hwnd)):
                 return
 
-            force = "CONFIRM" if attempt == 6 else "CANCEL"
-
             pop_result = ""
             try:
-                pop_result = self._dismiss_file_sending_close_popup(timeout_sec=0.9, force_action=force)
+                pop_result = self._dismiss_file_sending_close_popup(timeout_sec=0.9, force_action="CANCEL_ONLY")
             except Exception:
                 pop_result = ""
 
             if pop_result == "CANCEL":
+                no_popup_attempts = 0
+                self._trace(
+                    "CLOSE_CHAT:upload_pending_wait",
+                    attempt=attempt,
+                    remaining_ms=int(max(0.0, deadline - time.time()) * 1000),
+                )
                 self._sleep_abs(retry_gap_sec)
                 continue
 
             if pop_result == "CONFIRM":
                 raise UploadPipelineStalled("UPLOAD_PIPELINE_STALLED: file upload is still pending while closing chat")
 
+            no_popup_attempts += 1
+            if no_popup_attempts >= 8:
+                raise UploadPipelineStalled("CHAT_CLOSE_TIMEOUT: chat window did not close after upload popup disappeared")
+
             self._sleep_abs(0.10)
 
-        raise UploadPipelineStalled("CHAT_CLOSE_TIMEOUT: chat window did not close after repeated ESC attempts")
+        raise UploadPipelineStalled("UPLOAD_TIMEOUT: file upload did not finish before chat close timeout")
 
     def _close_chat(self) -> None:
         self._check_stop()
