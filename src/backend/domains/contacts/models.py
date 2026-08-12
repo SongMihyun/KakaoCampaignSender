@@ -10,3 +10,5 @@ class Contact:
     phone: str
     agency: str
     branch: str
+    title: str = ""
+    kakao_search_name: str = ""

@@ -1632,11 +1632,17 @@ class KakaoPcDriver(KakaoSenderDriver):
         if not png_bytes:
             return True
 
-        # 3번은 클립보드, 1번은 Ctrl+T
-        rr_mod = 4
+        # ✅ Ctrl+T 라운드로빈 비활성화(전량 클립보드).
+        #    카카오 서버 입장에서는 클립보드 붙여넣기와 Ctrl+T 파일첨부가
+        #    동일한 "이미지 전송"이라 섞어 보내도 벤 방지 효과가 없고,
+        #    Ctrl+T 쪽 지연 이슈만 유발해서 껐다. 다시 섞고 싶으면 rr_mod를
+        #    0이 아닌 값(예: 10 -> 9번 클립보드/1번 Ctrl+T)으로 바꾸면 된다.
+        rr_mod = 0
         idx = int(getattr(self, "_img_rr_idx", 0))
-        use_ctrl_t = (idx % rr_mod) == (rr_mod - 1)
-        self._img_rr_idx = idx + 1
+        use_ctrl_t = False
+        if rr_mod:
+            use_ctrl_t = (idx % rr_mod) == (rr_mod - 1)
+            self._img_rr_idx = idx + 1
 
         if use_ctrl_t:
             self._trace("IMG:route", route="CTRL_T", rr_idx=idx)

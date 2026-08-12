@@ -10,11 +10,11 @@ from PySide6.QtWidgets import (
 )
 
 
-PreviewRow = Tuple[str, str, str, str, str]  # (emp_id, name, phone, agency, branch)
+PreviewRow = Tuple[str, str, str, str, str, str, str]  # (emp_id, name, phone, agency, branch, title, kakao_search_name)
 
 
 class _PreviewModel(QAbstractTableModel):
-    HEADERS = ["사번", "이름", "전화", "대리점", "지사"]
+    HEADERS = ["사번", "이름", "전화", "법인명", "점포명", "호칭", "카카오톡검색명"]
 
     def __init__(self, rows: Sequence[PreviewRow]) -> None:
         super().__init__()
@@ -24,7 +24,7 @@ class _PreviewModel(QAbstractTableModel):
         return len(self._rows)
 
     def columnCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return 5
+        return 7
 
     def headerData(self, section: int, orientation: Qt.Orientation, role: int = Qt.DisplayRole):
         if role != Qt.DisplayRole:
@@ -59,18 +59,18 @@ class ImportPreviewDialog(QDialog):
         root.setSpacing(10)
 
         title = QLabel("불러온 데이터를 확인한 뒤 저장을 진행합니다.")
-        title.setStyleSheet("font-size:14px; font-weight:700;")
+        title.setStyleSheet("font-size:14px; font-weight:700; color:#f2f4f7;")
         root.addWidget(title)
 
         sub = QLabel(f"총 {len(list(rows))}건")
-        sub.setStyleSheet("color:#6b7280;")
+        sub.setStyleSheet("color:#8b93a1;")
         root.addWidget(sub)
 
         card = QFrame()
         card.setStyleSheet("""
             QFrame {
-                background:#ffffff;
-                border:1px solid #e5e7eb;
+                background:#191d26;
+                border:1px solid rgba(255, 255, 255, 36);
                 border-radius:12px;
             }
         """)
@@ -87,11 +87,13 @@ class ImportPreviewDialog(QDialog):
         self.model = _PreviewModel(rows)
         self.table.setModel(self.model)
 
-        self.table.setColumnWidth(0, 120)
-        self.table.setColumnWidth(1, 140)
-        self.table.setColumnWidth(2, 160)
-        self.table.setColumnWidth(3, 200)
-        self.table.setColumnWidth(4, 200)
+        self.table.setColumnWidth(0, 110)
+        self.table.setColumnWidth(1, 110)
+        self.table.setColumnWidth(2, 140)
+        self.table.setColumnWidth(3, 140)
+        self.table.setColumnWidth(4, 140)
+        self.table.setColumnWidth(5, 100)
+        self.table.setColumnWidth(6, 160)
 
         cv.addWidget(self.table, 1)
         root.addWidget(card, 1)

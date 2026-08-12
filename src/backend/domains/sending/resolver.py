@@ -33,6 +33,8 @@ def build_recipients_and_snapshot(contacts_mem) -> tuple[list[Recipient], list[d
         phone = str(getattr(m, "phone", "") or "").strip()
         agency = str(getattr(m, "agency", "") or "").strip()
         branch = str(getattr(m, "branch", "") or "").strip()
+        title = str(getattr(m, "title", "") or "").strip()
+        kakao_search_name = str(getattr(m, "kakao_search_name", "") or "").strip()
 
         recipients.append(
             Recipient(
@@ -42,6 +44,8 @@ def build_recipients_and_snapshot(contacts_mem) -> tuple[list[Recipient], list[d
                 phone=phone,
                 agency=agency,
                 branch=branch,
+                title=title,
+                kakao_search_name=kakao_search_name,
             )
         )
 
@@ -53,6 +57,8 @@ def build_recipients_and_snapshot(contacts_mem) -> tuple[list[Recipient], list[d
                 "phone": phone,
                 "agency": agency,
                 "branch": branch,
+                "title": title,
+                "kakao_search_name": kakao_search_name,
             }
         )
 

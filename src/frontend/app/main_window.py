@@ -7,7 +7,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QColor, QPalette
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -65,6 +65,28 @@ from frontend.pages.logs.page import LogsPage
 from frontend.pages.sending.page import SendPage
 
 
+def _dark_palette() -> QPalette:
+    pal = QPalette()
+    pal.setColor(QPalette.Window, QColor("#12151c"))
+    pal.setColor(QPalette.WindowText, QColor("#e8eaed"))
+    pal.setColor(QPalette.Base, QColor("#0f1218"))
+    pal.setColor(QPalette.AlternateBase, QColor("#191d26"))
+    pal.setColor(QPalette.Text, QColor("#e8eaed"))
+    pal.setColor(QPalette.Button, QColor("#171b24"))
+    pal.setColor(QPalette.ButtonText, QColor("#e8eaed"))
+    pal.setColor(QPalette.BrightText, QColor("#ffffff"))
+    pal.setColor(QPalette.Highlight, QColor("#3b82f6"))
+    pal.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    pal.setColor(QPalette.ToolTipBase, QColor("#14171f"))
+    pal.setColor(QPalette.ToolTipText, QColor("#e8eaed"))
+    pal.setColor(QPalette.PlaceholderText, QColor("#6d7686"))
+    pal.setColor(QPalette.Link, QColor("#3b82f6"))
+    pal.setColor(QPalette.Disabled, QPalette.Text, QColor("#5b6270"))
+    pal.setColor(QPalette.Disabled, QPalette.WindowText, QColor("#5b6270"))
+    pal.setColor(QPalette.Disabled, QPalette.ButtonText, QColor("#5b6270"))
+    return pal
+
+
 class MainWindow(QMainWindow):
     TITLES = ["대상자 관리", "발송 그룹", "캠페인 설정", "발송", "로그/리포트"]
 
@@ -73,6 +95,8 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle(__display_name__)
         self.resize(1180, 760)
+        self.setMinimumSize(900, 600)
+        self.setWindowOpacity(0.97)
         self._skip_finalize_pending_update_once = False
 
         root = QWidget()
@@ -302,7 +326,13 @@ class MainWindow(QMainWindow):
         self.header.set_subtitle("편집 도구")
 
     def _apply_style(self) -> None:
-        self.setStyleSheet(APP_STYLESHEET)
+        app = QApplication.instance()
+        if app is not None:
+            app.setPalette(_dark_palette())
+            app.setStyleSheet(APP_STYLESHEET)
+        else:
+            self.setPalette(_dark_palette())
+            self.setStyleSheet(APP_STYLESHEET)
 
     def _on_contacts_changed_global(self) -> None:
         from frontend.utils.worker import run_bg
@@ -341,7 +371,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
 
-        run_bg(self, _load_contacts_rows, done=_apply)
+        run_bg(_load_contacts_rows, on_done=_apply)
 
     def export_settings_bundle(self) -> None:
         default_name = f"kakao_sender_settings_{datetime.now().strftime('%Y%m%d_%H%M%S')}.kcsbundle"

@@ -38,6 +38,8 @@ class ContactsService:
             phone=dto.phone,
             agency=dto.agency,
             branch=dto.branch,
+            title=dto.title,
+            kakao_search_name=dto.kakao_search_name,
         )
         self.store.upsert(
             type(
@@ -50,6 +52,8 @@ class ContactsService:
                     "phone": dto.phone,
                     "agency": dto.agency,
                     "branch": dto.branch,
+                    "title": dto.title,
+                    "kakao_search_name": dto.kakao_search_name,
                 },
             )()
         )
@@ -64,6 +68,8 @@ class ContactsService:
             phone=dto.phone,
             agency=dto.agency,
             branch=dto.branch,
+            title=dto.title,
+            kakao_search_name=dto.kakao_search_name,
         )
         self.store.update(
             contact_id=dto.row_id,
@@ -72,6 +78,8 @@ class ContactsService:
             phone=dto.phone,
             agency=dto.agency,
             branch=dto.branch,
+            title=dto.title,
+            kakao_search_name=dto.kakao_search_name,
         )
 
     def delete_contacts(self, ids: list[int]) -> None:
@@ -96,4 +104,6 @@ class ContactsService:
             phone=str(getattr(row, "phone", "") or ""),
             agency=str(getattr(row, "agency", "") or ""),
             branch=str(getattr(row, "branch", "") or ""),
+            title=str(getattr(row, "title", "") or ""),
+            kakao_search_name=str(getattr(row, "kakao_search_name", "") or ""),
         )

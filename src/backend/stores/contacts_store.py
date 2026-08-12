@@ -10,6 +10,8 @@ class ContactMem:
     phone: str
     agency: str
     branch: str
+    title: str = ""
+    kakao_search_name: str = ""
 
 
 class ContactsStore:
@@ -39,6 +41,8 @@ class ContactsStore:
                 phone=str(getattr(r, "phone", "") or ""),
                 agency=str(getattr(r, "agency", "") or ""),
                 branch=str(getattr(r, "branch", "") or ""),
+                title=str(getattr(r, "title", "") or ""),
+                kakao_search_name=str(getattr(r, "kakao_search_name", "") or ""),
             )
         self._loaded = True
 
@@ -50,6 +54,8 @@ class ContactsStore:
             phone=(m.phone or ""),
             agency=(m.agency or ""),
             branch=(m.branch or ""),
+            title=(getattr(m, "title", "") or ""),
+            kakao_search_name=(getattr(m, "kakao_search_name", "") or ""),
         )
         self._loaded = True
 
@@ -79,7 +85,9 @@ class ContactsStore:
         name: str,
         phone: str,
         agency: str,
-        branch: str
+        branch: str,
+        title: str = "",
+        kakao_search_name: str = "",
     ) -> None:
         cid = int(contact_id)
         cur = self._by_id.get(cid)
@@ -91,6 +99,8 @@ class ContactsStore:
                 phone=phone or "",
                 agency=agency or "",
                 branch=branch or "",
+                title=title or "",
+                kakao_search_name=kakao_search_name or "",
             )
             self._loaded = True
             return
@@ -100,6 +110,8 @@ class ContactsStore:
         cur.phone = phone or ""
         cur.agency = agency or ""
         cur.branch = branch or ""
+        cur.title = title or ""
+        cur.kakao_search_name = kakao_search_name or ""
 
     def search(self, keyword: str) -> List[ContactMem]:
         kw = (keyword or "").strip().lower()
@@ -107,7 +119,7 @@ class ContactsStore:
             return sorted(self._by_id.values(), key=lambda x: (x.name, x.emp_id, x.id))
 
         def hay(m: ContactMem) -> str:
-            return " ".join([m.emp_id, m.name, m.phone, m.agency, m.branch]).lower()
+            return " ".join([m.emp_id, m.name, m.phone, m.agency, m.branch, m.title, m.kakao_search_name]).lower()
 
         out = [m for m in self._by_id.values() if kw in hay(m)]
         return sorted(out, key=lambda x: (x.name, x.emp_id, x.id))

@@ -369,9 +369,9 @@ class SendPage(QWidget):
         self.tbl_preview.verticalHeader().setVisible(False)
         self.tbl_preview.setSortingEnabled(False)
 
-        self.preview_model = QStandardItemModel(0, 6, self)
+        self.preview_model = QStandardItemModel(0, 8, self)
         self.preview_model.setHorizontalHeaderLabels(
-            ["No", "사번", "이름", "전화번호", "대리점명", "지사명"]
+            ["No", "사번", "이름", "전화번호", "법인명", "점포명", "호칭", "카카오톡검색명"]
         )
         self.tbl_preview.setModel(self.preview_model)
 
@@ -379,7 +379,9 @@ class SendPage(QWidget):
         self.tbl_preview.setColumnWidth(1, 95)
         self.tbl_preview.setColumnWidth(2, 80)
         self.tbl_preview.setColumnWidth(3, 130)
-        self.tbl_preview.setColumnWidth(4, 130)
+        self.tbl_preview.setColumnWidth(4, 110)
+        self.tbl_preview.setColumnWidth(5, 110)
+        self.tbl_preview.setColumnWidth(6, 80)
         self.tbl_preview.horizontalHeader().setStretchLastSection(True)
 
         rv.addWidget(self.tbl_preview, 1)
@@ -1074,6 +1076,8 @@ class SendPage(QWidget):
             QStandardItem(str(row_data["phone"] or "")),
             QStandardItem(str(row_data["agency"] or "")),
             QStandardItem(str(row_data["branch"] or "")),
+            QStandardItem(str(row_data.get("title") or "")),
+            QStandardItem(str(row_data.get("kakao_search_name") or "")),
         ]
         for item in row_items:
             item.setEditable(False)
@@ -1157,6 +1161,8 @@ class SendPage(QWidget):
             "phone": self.preview_model.item(row, 3).text() if self.preview_model.item(row, 3) else "",
             "agency": self.preview_model.item(row, 4).text() if self.preview_model.item(row, 4) else "",
             "branch": self.preview_model.item(row, 5).text() if self.preview_model.item(row, 5) else "",
+            "title": self.preview_model.item(row, 6).text() if self.preview_model.item(row, 6) else "",
+            "kakao_search_name": self.preview_model.item(row, 7).text() if self.preview_model.item(row, 7) else "",
         }
 
     def _sync_after_contact_change(self) -> None:

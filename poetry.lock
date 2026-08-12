@@ -983,6 +983,18 @@ pywin32 = {version = "*", markers = "python_version > \"3.6\" and sys_platform =
 six = "*"
 
 [[package]]
+name = "pyxlsb"
+version = "1.0.10"
+description = "Excel 2007-2010 Binary Workbook (xlsb) parser"
+optional = false
+python-versions = "*"
+groups = ["main"]
+files = [
+    {file = "pyxlsb-1.0.10-py2.py3-none-any.whl", hash = "sha256:87c122a9a622e35ca5e741d2e541201d28af00fb46bec492cfa9586890b120b4"},
+    {file = "pyxlsb-1.0.10.tar.gz", hash = "sha256:8062d1ea8626d3f1980e8b1cfe91a4483747449242ecb61013bc2df85435f685"},
+]
+
+[[package]]
 name = "requests"
 version = "2.32.5"
 description = "Python HTTP for Humans."
@@ -1098,4 +1110,4 @@ zstd = ["backports-zstd (>=1.0.0) ; python_version < \"3.14\""]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.11,<3.15"
-content-hash = "fbc946fcbf1623667065111447eaf60896b7d20a79d8e98ff90b2b75811bf52c"
+content-hash = "7c54a1d145d40b00fdf737dc7283d032e658f070c6d4e917ccd8bafba3959ca6"

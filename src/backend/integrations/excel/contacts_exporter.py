@@ -14,8 +14,8 @@ from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 
 
-ContactRow = Tuple[str, str, str, str, str]
-HEADERS = ["사번", "이름", "전화번호", "대리점명", "지사명"]
+ContactRow = Tuple[str, str, str, str, str, str, str]
+HEADERS = ["사번", "이름", "전화번호", "법인명", "점포명", "호칭", "카카오톡검색명"]
 
 
 def _apply_sheet_style(ws) -> None:
@@ -34,7 +34,7 @@ def _apply_sheet_style(ws) -> None:
 
     ws.row_dimensions[1].height = 20
 
-    widths = [12, 12, 18, 18, 14]
+    widths = [12, 12, 18, 18, 14, 12, 18]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
@@ -107,16 +107,17 @@ def create_template_xlsx(path: str) -> None:
     ws.title = "대상자"
     _apply_sheet_style(ws)
 
-    ws.append(["1001", "홍길동", "01011112222", "강남대리점", "서울"])
-    ws.append(["", "김영희", "", "", ""])
+    ws.append(["1001", "홍길동", "01011112222", "강남법인", "서울점", "팀장", "홍길동_강남"])
+    ws.append(["", "김영희", "", "", "", "", ""])
 
     ws2 = wb.create_sheet("안내")
     ws2["A1"] = "입력 규칙"
     ws2["A1"].font = Font(bold=True)
     ws2["A3"] = "1) 이름만 있어도 등록 가능합니다."
-    ws2["A4"] = "2) 권장 헤더: 사번 / 이름 / 전화번호 / 대리점명 / 지사명"
+    ws2["A4"] = "2) 권장 헤더: 사번 / 이름 / 전화번호 / 법인명 / 점포명 / 호칭 / 카카오톡검색명"
     ws2["A5"] = "3) 빈 사번/전화번호는 허용됩니다."
-    ws2["A6"] = f"4) 생성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    ws2["A6"] = "4) 카카오톡검색명: 카카오톡 친구 목록에서 검색할 이름(비어있으면 이름으로 검색)"
+    ws2["A7"] = f"5) 생성일시: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
     _atomic_save_workbook(wb, path)
 
@@ -133,8 +134,8 @@ def create_template_docx(path: str) -> None:
         hdr[i].text = h
 
     samples = [
-        ("1001", "홍길동", "01011112222", "강남대리점", "서울"),
-        ("", "김영희", "", "", ""),
+        ("1001", "홍길동", "01011112222", "강남법인", "서울점", "팀장", "홍길동_강남"),
+        ("", "김영희", "", "", "", "", ""),
     ]
     for row in samples:
         cells = table.add_row().cells
@@ -146,9 +147,9 @@ def create_template_docx(path: str) -> None:
 
 def create_template_txt(path: str) -> None:
     lines = [
-        "사번\t이름\t전화번호\t대리점명\t지사명",
-        "1001\t홍길동\t01011112222\t강남대리점\t서울",
-        "\t김영희\t\t\t",
+        "사번\t이름\t전화번호\t법인명\t점포명\t호칭\t카카오톡검색명",
+        "1001\t홍길동\t01011112222\t강남법인\t서울점\t팀장\t홍길동_강남",
+        "\t김영희\t\t\t\t\t",
         "박민수",
         "최지은",
     ]
@@ -197,3 +198,65 @@ def export_contacts_txt(path: str, rows: Iterable[ContactRow]) -> None:
     for row in rows:
         lines.append("\t".join([str(v or "") for v in row]))
     _atomic_write_text(path, "\n".join(lines))
+
+
+def _vcf_escape(value: str) -> str:
+    return (
+        (value or "")
+        .replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace(",", "\\,")
+        .replace(";", "\\;")
+    )
+
+
+def export_contacts_vcf(path: str, rows: Iterable[ContactRow]) -> int:
+    """
+    ✅ vCard(.vcf) 내보내기
+    - 카카오톡 친구 검색과 매칭되도록, 이름(N/FN)에는 카카오톡검색명을 사용(없으면 이름으로 대체)
+    - 폰 연락처 앱/카카오톡 동기화용
+    """
+    cards: list[str] = []
+    count = 0
+
+    for row in rows:
+        values = list(row) + [""] * 7
+        emp_id, name, phone, agency, branch, title, kakao_search_name = values[:7]
+
+        display_name = (kakao_search_name or name or "").strip()
+        if not display_name:
+            continue
+
+        lines = ["BEGIN:VCARD", "VERSION:3.0"]
+        lines.append(f"N:{_vcf_escape(display_name)};;;;")
+        lines.append(f"FN:{_vcf_escape(display_name)}")
+
+        phone = (phone or "").strip()
+        if phone:
+            lines.append(f"TEL;TYPE=CELL:{_vcf_escape(phone)}")
+
+        org_parts = [p for p in ((agency or "").strip(), (branch or "").strip()) if p]
+        if org_parts:
+            lines.append(f"ORG:{_vcf_escape(';'.join(org_parts))}")
+
+        title = (title or "").strip()
+        if title:
+            lines.append(f"TITLE:{_vcf_escape(title)}")
+
+        emp_id = (emp_id or "").strip()
+        name = (name or "").strip()
+        note_parts = []
+        if emp_id:
+            note_parts.append(f"사번 {emp_id}")
+        if name and name != display_name:
+            note_parts.append(f"이름 {name}")
+        if note_parts:
+            lines.append(f"NOTE:{_vcf_escape(' / '.join(note_parts))}")
+
+        lines.append("END:VCARD")
+        cards.append("\r\n".join(lines))
+        count += 1
+
+    text = ("\r\n".join(cards) + "\r\n") if cards else ""
+    _atomic_write_text(path, text, encoding="utf-8")
+    return count

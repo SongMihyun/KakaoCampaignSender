@@ -55,7 +55,7 @@ class SheetSnapshotCommand:
 
 EditCommand = CellEditCommand | SheetSnapshotCommand
 
-EXCEL_SAMPLE_HEADERS = ["사번", "이름", "전화번호", "대리점명", "지사명"]
+EXCEL_SAMPLE_HEADERS = ["사번", "이름", "전화번호", "법인명", "점포명", "호칭", "카카오톡검색명"]
 
 
 class SheetGridTableModel(QAbstractTableModel):
@@ -155,6 +155,25 @@ class SheetGridTableModel(QAbstractTableModel):
         self._sheet.ensure_rectangular()
         self.endResetModel()
         return len(cols)
+
+    def insert_row(self, at: int) -> None:
+        self._sheet.ensure_rectangular()
+        col_count = max(1, self._sheet.col_count)
+        at = max(0, min(at, len(self._sheet.rows)))
+        self.beginResetModel()
+        self._sheet.rows.insert(at, [""] * col_count)
+        self._sheet.ensure_rectangular()
+        self.endResetModel()
+
+    def insert_column(self, at: int) -> None:
+        self._sheet.ensure_rectangular()
+        col_count = self.columnCount()
+        at = max(0, min(at, col_count))
+        self.beginResetModel()
+        for row in self._sheet.rows:
+            row.insert(at, "")
+        self._sheet.ensure_rectangular()
+        self.endResetModel()
 
     def move_column(self, source_col: int, target_col: int) -> bool:
         self._sheet.ensure_rectangular()
@@ -341,6 +360,13 @@ class ColumnValueFilterProxyModel(QSortFilterProxyModel):
                 continue
             shift = sum(1 for d in deleted if d < col)
             shifted[col - shift] = values
+        self._allowed_values_by_col = shifted
+        self.invalidateFilter()
+
+    def shift_after_inserted_column(self, inserted_col: int) -> None:
+        shifted: dict[int, set[str]] = {}
+        for col, values in self._allowed_values_by_col.items():
+            shifted[col + 1 if col >= inserted_col else col] = values
         self._allowed_values_by_col = shifted
         self.invalidateFilter()
 
@@ -630,10 +656,14 @@ class CombinedColumnDialog(QDialog):
             return "홍길동"
         if "전화" in normalized or "연락" in normalized or "phone" in normalized:
             return "010-1234-5678"
-        if "대리점" in normalized or "매장" in normalized or "agency" in normalized:
+        if "법인" in normalized or "대리점" in normalized or "매장" in normalized or "agency" in normalized:
             return "멜츠"
-        if "지사" in normalized or "branch" in normalized:
+        if "점포" in normalized or "지사" in normalized or "branch" in normalized:
             return "분당"
+        if "호칭" in normalized or "직함" in normalized or "직책" in normalized or "title" in normalized:
+            return "팀장"
+        if "카카오" in normalized or "카톡" in normalized or "kakao" in normalized:
+            return "홍길동_강남"
         return "(빈값)"
 
     def _make_item(self, col: int) -> QListWidgetItem:
@@ -795,6 +825,8 @@ class ExcelEditorDialog(QDialog):
         self.btn_redo = QPushButton("↷")
         self.btn_redo.setToolTip("다시 실행")
         self.btn_redo.setFixedWidth(42)
+        self.btn_add_row = QPushButton("행 추가")
+        self.btn_add_col = QPushButton("열 추가")
         self.btn_delete_rows = QPushButton("행 삭제")
         self.btn_delete_cols = QPushButton("열 삭제")
         self.btn_move_col_left = QPushButton("←")
@@ -819,6 +851,8 @@ class ExcelEditorDialog(QDialog):
         top_bar.addWidget(self.btn_undo)
         top_bar.addWidget(self.btn_redo)
         top_bar.addSpacing(8)
+        top_bar.addWidget(self.btn_add_row)
+        top_bar.addWidget(self.btn_add_col)
         top_bar.addWidget(self.btn_delete_rows)
         top_bar.addWidget(self.btn_delete_cols)
         top_bar.addSpacing(8)
@@ -881,6 +915,8 @@ class ExcelEditorDialog(QDialog):
         self.chk_excel_format.toggled.connect(self._on_toggle_excel_format_view)
         self.btn_undo.clicked.connect(self._undo)
         self.btn_redo.clicked.connect(self._redo)
+        self.btn_add_row.clicked.connect(self._add_row)
+        self.btn_add_col.clicked.connect(self._add_column)
         self.btn_delete_rows.clicked.connect(self._delete_selected_rows)
         self.btn_delete_cols.clicked.connect(self._delete_selected_cols)
         self.btn_move_col_left.clicked.connect(lambda: self._move_current_column(-1))
@@ -1302,6 +1338,29 @@ class ExcelEditorDialog(QDialog):
         self._update_history_buttons()
         label = "셀 수정" if isinstance(command, CellEditCommand) else command.label
         self._set_status(f"다시 실행 완료: {label}")
+
+    def _add_row(self) -> None:
+        rows = self._selected_rows()
+        at = (max(rows) + 1) if rows else self.model.rowCount()
+        before_rows = self.model.get_rows_copy()
+        self.model.insert_row(at)
+        after_rows = self.model.get_rows_copy()
+        self._record_snapshot_command(before_rows, after_rows, "행 추가")
+        self._refresh_after_data_change()
+        self._last_find_anchor = None
+        self._set_status(f"행 추가 완료: {at + 1}행")
+
+    def _add_column(self) -> None:
+        cols = self._selected_cols()
+        at = (max(cols) + 1) if cols else self.model.columnCount()
+        before_rows = self.model.get_rows_copy()
+        self.model.insert_column(at)
+        after_rows = self.model.get_rows_copy()
+        self._record_snapshot_command(before_rows, after_rows, "열 추가")
+        self.proxy.shift_after_inserted_column(at)
+        self._refresh_after_data_change()
+        self._last_find_anchor = None
+        self._set_status(f"열 추가 완료: {get_column_letter(at + 1)}열")
 
     def _delete_selected_rows(self) -> None:
         rows = self._selected_rows()

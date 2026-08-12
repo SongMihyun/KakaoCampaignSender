@@ -21,6 +21,8 @@ class ContactRow:
     phone: str
     agency: str
     branch: str
+    title: str = ""
+    kakao_search_name: str = ""
 
 
 class GroupsRepo:
@@ -121,7 +123,9 @@ class GroupsRepo:
                 SELECT c.id, c.emp_id, c.name,
                        COALESCE(c.phone,'')  AS phone,
                        COALESCE(c.agency,'') AS agency,
-                       COALESCE(c.branch,'') AS branch
+                       COALESCE(c.branch,'') AS branch,
+                       COALESCE(c.title,'') AS title,
+                       COALESCE(c.kakao_search_name,'') AS kakao_search_name
                 FROM group_members gm
                 JOIN contacts c ON c.id = gm.contact_id
                 WHERE gm.group_id = ?
@@ -129,7 +133,8 @@ class GroupsRepo:
             """, (group_id,))
             return [
                 ContactRow(
-                    int(r["id"]), r["emp_id"], r["name"], r["phone"], r["agency"], r["branch"]
+                    int(r["id"]), r["emp_id"], r["name"], r["phone"], r["agency"], r["branch"],
+                    r["title"], r["kakao_search_name"],
                 )
                 for r in cur.fetchall()
             ]
@@ -185,7 +190,9 @@ class GroupsRepo:
                     SELECT id, emp_id, name,
                            COALESCE(phone,'')  AS phone,
                            COALESCE(agency,'') AS agency,
-                           COALESCE(branch,'') AS branch
+                           COALESCE(branch,'') AS branch,
+                           COALESCE(title,'') AS title,
+                           COALESCE(kakao_search_name,'') AS kakao_search_name
                     FROM contacts
                     ORDER BY name ASC, emp_id ASC
                     LIMIT {int(limit)};
@@ -195,20 +202,25 @@ class GroupsRepo:
                     SELECT id, emp_id, name,
                            COALESCE(phone,'')  AS phone,
                            COALESCE(agency,'') AS agency,
-                           COALESCE(branch,'') AS branch
+                           COALESCE(branch,'') AS branch,
+                           COALESCE(title,'') AS title,
+                           COALESCE(kakao_search_name,'') AS kakao_search_name
                     FROM contacts
                     WHERE emp_id LIKE ?
                        OR name  LIKE ?
                        OR phone LIKE ?
                        OR agency LIKE ?
                        OR branch LIKE ?
+                       OR title LIKE ?
+                       OR kakao_search_name LIKE ?
                     ORDER BY name ASC, emp_id ASC
                     LIMIT {int(limit)};
-                """, (like, like, like, like, like))
+                """, (like, like, like, like, like, like, like))
 
             return [
                 ContactRow(
-                    int(r["id"]), r["emp_id"], r["name"], r["phone"], r["agency"], r["branch"]
+                    int(r["id"]), r["emp_id"], r["name"], r["phone"], r["agency"], r["branch"],
+                    r["title"], r["kakao_search_name"],
                 )
                 for r in cur.fetchall()
             ]

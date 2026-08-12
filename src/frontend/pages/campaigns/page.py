@@ -303,7 +303,7 @@ class CampaignPage(QWidget):
             viewer = QLabel()
             viewer.setAlignment(Qt.AlignCenter)
             viewer.setStyleSheet(
-                "background:#f9fafb; border:1px solid #e5e7eb; border-radius:8px; padding:12px;"
+                "background:#191d26; border:1px solid rgba(255, 255, 255, 36); border-radius:8px; padding:12px; color:#8b93a1;"
             )
             pix = QPixmap()
             if pix.loadFromData(item.image_bytes or b""):

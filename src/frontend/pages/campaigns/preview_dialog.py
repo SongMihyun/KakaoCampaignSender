@@ -28,11 +28,11 @@ class CampaignPreviewDialog(QDialog):
         root.setSpacing(10)
 
         hdr = QLabel(f"캠페인: {campaign_title}")
-        hdr.setStyleSheet("font-size:16px; font-weight:800;")
+        hdr.setStyleSheet("font-size:16px; font-weight:800; color:#f2f4f7;")
         root.addWidget(hdr)
 
         desc = QLabel("이미지/문구가 저장된 순서대로 표시됩니다.")
-        desc.setStyleSheet("color:#6b7280;")
+        desc.setStyleSheet("color:#8b93a1;")
         root.addWidget(desc)
 
         # 스크롤 영역
@@ -49,15 +49,15 @@ class CampaignPreviewDialog(QDialog):
 
         if not items:
             empty = QLabel("(캠페인 아이템이 없습니다.)")
-            empty.setStyleSheet("color:#6b7280;")
+            empty.setStyleSheet("color:#8b93a1;")
             bv.addWidget(empty)
         else:
             for idx, it in enumerate(items, start=1):
                 card = QFrame()
                 card.setStyleSheet("""
                     QFrame {
-                        background:#ffffff;
-                        border:1px solid #e5e7eb;
+                        background:#191d26;
+                        border:1px solid rgba(255, 255, 255, 36);
                         border-radius:12px;
                     }
                 """)
@@ -68,18 +68,18 @@ class CampaignPreviewDialog(QDialog):
                 # 헤더 라인
                 if getattr(it, "item_type", "") == "TEXT":
                     tag = QLabel(f"{idx}. 문구")
-                    tag.setStyleSheet("font-weight:700;")
+                    tag.setStyleSheet("font-weight:700; color:#e8eaed;")
                     cv.addWidget(tag)
 
                     txt = QLabel(getattr(it, "text", "") or "(빈 문구)")
                     txt.setWordWrap(True)
-                    txt.setStyleSheet("font-size:13px;")
+                    txt.setStyleSheet("font-size:13px; color:#d7dae0;")
                     cv.addWidget(txt)
 
                 else:  # IMAGE
                     name = getattr(it, "image_name", "") or "(이미지)"
                     tag = QLabel(f"{idx}. 이미지 - {name}")
-                    tag.setStyleSheet("font-weight:700;")
+                    tag.setStyleSheet("font-weight:700; color:#e8eaed;")
                     cv.addWidget(tag)
 
                     img_label = QLabel()
@@ -87,9 +87,10 @@ class CampaignPreviewDialog(QDialog):
                     img_label.setMinimumHeight(240)
                     img_label.setStyleSheet("""
                         QLabel {
-                            background:#f9fafb;
-                            border:1px dashed #d1d5db;
+                            background:#12151c;
+                            border:1px dashed rgba(255, 255, 255, 46);
                             border-radius:12px;
+                            color:#8b93a1;
                         }
                     """)
                     cv.addWidget(img_label)

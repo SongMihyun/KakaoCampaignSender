@@ -30,7 +30,7 @@ class PasteImportDialog(QDialog):
         guide = QLabel(
             "지원 예시\n"
             "- 이름만 한 줄씩: 홍길동\n"
-            "- 엑셀 복사: 사번/이름/전화/대리점/지사 탭 구분\n"
+            "- 엑셀 복사: 사번/이름/전화/법인명/점포명/호칭/카카오톡검색명 탭 구분\n"
             "- 워드 표/문단, 메모장 목록도 가능\n"
             "- 이름만 있어도 등록됩니다."
         )
@@ -41,7 +41,7 @@ class PasteImportDialog(QDialog):
         self.editor.setPlaceholderText(
             "여기에 Ctrl+V로 붙여넣으세요.\n\n"
             "예시 1)\n홍길동\n김영희\n\n"
-            "예시 2)\n1001\t홍길동\t010-1111-2222\t강남대리점\t서울지사"
+            "예시 2)\n1001\t홍길동\t010-1111-2222\t강남법인\t서울점\t팀장\t홍길동_강남"
         )
         self.editor.setAcceptRichText(False)
         root.addWidget(self.editor, 1)

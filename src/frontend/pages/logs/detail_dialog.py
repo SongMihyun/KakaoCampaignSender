@@ -86,7 +86,7 @@ class LogDetailDialog(QDialog):
 
         sep = QFrame()
         sep.setFrameShape(QFrame.HLine)
-        sep.setStyleSheet("color:#e5e7eb;")
+        sep.setStyleSheet("color: rgba(255, 255, 255, 40);")
         root.addWidget(sep)
 
         crow = QHBoxLayout()
@@ -99,7 +99,7 @@ class LogDetailDialog(QDialog):
         self.lbl_campaign.setText(
             f"캠페인: {campaign_name} (ID={campaign_id})  —  더블클릭: 캠페인 미리보기"
         )
-        self.lbl_campaign.setStyleSheet("color:#2563eb; font-weight:700;")
+        self.lbl_campaign.setStyleSheet("color:#93c5fd; font-weight:700;")
         self.lbl_campaign.setCursor(Qt.PointingHandCursor)
         self.lbl_campaign.doubleClicked.connect(self._open_campaign_preview)
 

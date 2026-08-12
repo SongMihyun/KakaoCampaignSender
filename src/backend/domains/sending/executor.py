@@ -259,7 +259,8 @@ class SendExecutor:
             used_attempt = attempt + 1
 
             try:
-                raw_name = str(getattr(recipient, "name", "") or "")
+                raw_search_name = str(getattr(recipient, "kakao_search_name", "") or "").strip()
+                raw_name = raw_search_name or str(getattr(recipient, "name", "") or "")
                 name = raw_name.strip().replace("\u200b", "").replace("\ufeff", "")
                 if not name:
                     self._status_cb(f"대상자 정보 오류(이름 비어 있음) | {job.title} | emp_id={recipient.emp_id}")
@@ -480,8 +481,9 @@ class SendExecutor:
                 used_attempt = attempt + 1
 
                 try:
+                    tail_search_name = str(getattr(recipient, "kakao_search_name", "") or "").strip() or recipient.name
                     driver_result = self._driver.send_campaign_items(
-                        recipient.name,
+                        tail_search_name,
                         job.campaign_items,
                         send_mode=str(getattr(job, "send_mode", "clipboard") or "clipboard"),
                     )

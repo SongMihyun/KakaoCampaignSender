@@ -113,6 +113,8 @@ class SendingService:
                     "phone": str(getattr(r, "phone", "") or ""),
                     "agency": str(getattr(r, "agency", "") or ""),
                     "branch": str(getattr(r, "branch", "") or ""),
+                    "title": str(getattr(r, "title", "") or ""),
+                    "kakao_search_name": str(getattr(r, "kakao_search_name", "") or ""),
                 }
             )
 

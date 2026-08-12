@@ -17,7 +17,7 @@ class ImagePreviewDialog(QDialog):
         self.lbl = QLabel()
         self.lbl.setAlignment(Qt.AlignCenter)
         self.lbl.setStyleSheet("""
-            QLabel { background:#f9fafb; border:1px dashed #d1d5db; border-radius:12px; }
+            QLabel { background:#191d26; border:1px dashed rgba(255, 255, 255, 46); border-radius:12px; color:#8b93a1; }
         """)
         root.addWidget(self.lbl, 1)
 

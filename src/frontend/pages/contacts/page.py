@@ -30,6 +30,7 @@ from backend.integrations.excel.contacts_exporter import (
     export_contacts_xlsx,
     export_contacts_docx,
     export_contacts_txt,
+    export_contacts_vcf,
     create_template_xlsx,
     create_template_docx,
     create_template_txt,
@@ -70,7 +71,7 @@ class ContactCheckDelegate(QStyledItemDelegate):
 
         painter.save()
         if checked:
-            painter.fillRect(option.rect, QColor("#e5e7eb"))
+            painter.fillRect(option.rect, QColor(59, 130, 246, 40))
 
         size = 18
         rect = QRect(
@@ -133,7 +134,7 @@ class ContactsPage(QWidget):
         search_row = QHBoxLayout()
         search_row.setSpacing(8)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("이름, 사번, 전화, 대리점, 지사")
+        self.search.setPlaceholderText("이름, 사번, 전화, 법인, 점포, 호칭, 카카오톡검색명")
         btn_search_clear = style_button(QPushButton("초기화"), "ghost")
         self.btn_reload = style_button(QPushButton("새로고침"), "ghost")
         self.btn_delete = style_button(QPushButton("선택 삭제"), "danger")
@@ -248,12 +249,15 @@ class ContactsPage(QWidget):
         act_export_excel = QAction("엑셀로 내보내기", menu)
         act_export_word = QAction("워드로 내보내기", menu)
         act_export_text = QAction("메모장으로 내보내기", menu)
+        act_export_vcf = QAction("VCF(연락처)로 내보내기", menu)
         act_export_excel.triggered.connect(lambda: self._export_contacts("excel"))
         act_export_word.triggered.connect(lambda: self._export_contacts("word"))
         act_export_text.triggered.connect(lambda: self._export_contacts("text"))
+        act_export_vcf.triggered.connect(lambda: self._export_contacts("vcf"))
         menu.addAction(act_export_excel)
         menu.addAction(act_export_word)
         menu.addAction(act_export_text)
+        menu.addAction(act_export_vcf)
         menu.addSeparator()
         act_sample_excel = QAction("엑셀 샘플", menu)
         act_sample_word = QAction("워드 샘플", menu)
@@ -361,7 +365,9 @@ class ContactsPage(QWidget):
                 name=m.name,
                 phone=m.phone or "",
                 agency=m.agency or "",
-                branch=m.branch or ""
+                branch=m.branch or "",
+                title=getattr(m, "title", "") or "",
+                kakao_search_name=getattr(m, "kakao_search_name", "") or "",
             )
             for m in rows
         ]
@@ -394,11 +400,23 @@ class ContactsPage(QWidget):
         phone = (data.get("phone") or "").strip()
         agency = (data.get("agency") or "").strip()
         branch = (data.get("branch") or "").strip()
+        title = (data.get("title") or "").strip()
+        kakao_search_name = (data.get("kakao_search_name") or "").strip()
         if not name:
             QMessageBox.warning(self, "입력 오류", "이름은 필수입니다.")
             return
         try:
-            self.service.create_contact(ContactCreateDTO(emp_id=emp_id, name=name, phone=phone, agency=agency, branch=branch))
+            self.service.create_contact(
+                ContactCreateDTO(
+                    emp_id=emp_id,
+                    name=name,
+                    phone=phone,
+                    agency=agency,
+                    branch=branch,
+                    title=title,
+                    kakao_search_name=kakao_search_name,
+                )
+            )
         except ValueError as e:
             QMessageBox.warning(self, "중복 오류", str(e))
             return
@@ -453,7 +471,7 @@ class ContactsPage(QWidget):
     def _pick_import_file(self, mode: str = "all") -> None:
         try:
             if mode == "excel":
-                filters = [Filter("Excel Files", "*.xlsx;*.xlsm"), Filter("All Files", "*.*")]
+                filters = [Filter("Excel Files", "*.xlsx;*.xlsm;*.xlsb"), Filter("All Files", "*.*")]
                 default_ext = "xlsx"
             elif mode == "word":
                 filters = [Filter("Word Files", "*.docx"), Filter("All Files", "*.*")]
@@ -463,8 +481,8 @@ class ContactsPage(QWidget):
                 default_ext = "txt"
             else:
                 filters = [
-                    Filter("지원 파일", "*.xlsx;*.xlsm;*.docx;*.txt;*.csv;*.tsv"),
-                    Filter("Excel Files", "*.xlsx;*.xlsm"),
+                    Filter("지원 파일", "*.xlsx;*.xlsm;*.xlsb;*.docx;*.txt;*.csv;*.tsv"),
+                    Filter("Excel Files", "*.xlsx;*.xlsm;*.xlsb"),
                     Filter("Word Files", "*.docx"),
                     Filter("Text Files", "*.txt;*.csv;*.tsv"),
                     Filter("All Files", "*.*"),
@@ -480,7 +498,7 @@ class ContactsPage(QWidget):
 
     def _import_file_from_path(self, path: str, source_label: str) -> None:
         if not is_supported_contact_import_file(path):
-            QMessageBox.warning(self, "지원 형식 아님", "지원 확장자: .xlsx, .xlsm, .docx, .txt, .csv, .tsv")
+            QMessageBox.warning(self, "지원 형식 아님", "지원 확장자: .xlsx, .xlsm, .xlsb, .docx, .txt, .csv, .tsv")
             return
         self._set_busy(True)
         self._on_status(f"{source_label} 읽는 중...")
@@ -671,7 +689,7 @@ class ContactsPage(QWidget):
             idx = self.proxy.index(pr, 2)
             src_idx = self.proxy.mapToSource(idx)
             c = self.model.contact_at(src_idx.row())
-            export_rows.append((c.emp_id, c.name, c.phone, c.agency, c.branch))
+            export_rows.append((c.emp_id, c.name, c.phone, c.agency, c.branch, c.title, c.kakao_search_name))
         return export_rows
 
     def _export_contacts(self, kind: str = "excel") -> None:
@@ -684,6 +702,10 @@ class ContactsPage(QWidget):
                 filters = [Filter("Text Files", "*.txt"), Filter("All Files", "*.*")]
                 default_filename = "contacts_export.txt"
                 default_ext = "txt"
+            elif kind == "vcf":
+                filters = [Filter("vCard Files", "*.vcf"), Filter("All Files", "*.*")]
+                default_filename = "contacts_export.vcf"
+                default_ext = "vcf"
             else:
                 filters = [Filter("Excel Files", "*.xlsx"), Filter("All Files", "*.*")]
                 default_filename = "contacts_export.xlsx"
@@ -698,6 +720,8 @@ class ContactsPage(QWidget):
             path += ".docx"
         elif kind == "text" and not path.lower().endswith(".txt"):
             path += ".txt"
+        elif kind == "vcf" and not path.lower().endswith(".vcf"):
+            path += ".vcf"
         elif kind == "excel" and not path.lower().endswith(".xlsx"):
             path += ".xlsx"
         self._set_busy(True)
@@ -706,11 +730,15 @@ class ContactsPage(QWidget):
             rows = self._collect_current_rows()
             if kind == "word":
                 export_contacts_docx(path, rows)
+                return len(rows)
             elif kind == "text":
                 export_contacts_txt(path, rows)
+                return len(rows)
+            elif kind == "vcf":
+                return export_contacts_vcf(path, rows)
             else:
                 export_contacts_xlsx(path, rows)
-            return len(rows)
+                return len(rows)
         def done(cnt: int):
             self._set_busy(False)
             self._on_status(f"내보내기 완료: {cnt}건")

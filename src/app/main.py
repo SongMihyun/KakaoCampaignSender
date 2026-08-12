@@ -131,6 +131,15 @@ def main() -> None:
 
     app = QApplication(sys.argv)
 
+    try:
+        from PySide6.QtGui import QIcon
+        from frontend.layout.header import ICON_PATH
+
+        if ICON_PATH:
+            app.setWindowIcon(QIcon(ICON_PATH))
+    except Exception:
+        pass
+
     # 로그인 화면이 스플래시에 가려지지 않도록 먼저 로그인 후 스플래시를 띄운다.
     try:
         from backend.domains.auth import AuthService

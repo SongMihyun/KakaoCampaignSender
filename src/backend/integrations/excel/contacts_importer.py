@@ -10,22 +10,25 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from openpyxl import load_workbook
+from pyxlsb import open_workbook as open_xlsb_workbook
 
 
-PreviewRow = Tuple[str, str, str, str, str]  # (emp_id, name, phone, agency, branch)
+PreviewRow = Tuple[str, str, str, str, str, str, str]  # (emp_id, name, phone, agency, branch, title, kakao_search_name)
 
 
 _HEADER_ALIASES: dict[str, set[str]] = {
-    "emp_id": {"사번", "사원번호", "empid", "emp_id", "employeeid", "employee_id", "id"},
-    "name": {"이름", "성명", "name"},
+    "emp_id": {"사번", "사원번호", "인사코드", "empid", "emp_id", "employeeid", "employee_id", "id"},
+    "name": {"이름", "성명", "인사명", "name"},
     "phone": {"전화번호", "전화", "휴대폰", "휴대전화", "연락처", "phone", "mobile", "tel"},
-    "agency": {"대리점명", "대리점", "agency"},
-    "branch": {"지사명", "지사", "branch"},
+    "agency": {"법인명", "법인", "대리점명", "대리점", "agency"},
+    "branch": {"점포명", "점포", "지사명", "지사", "branch"},
+    "title": {"호칭", "직함", "직책", "title"},
+    "kakao_search_name": {"카카오톡검색명", "카카오검색명", "카톡검색명", "카카오톡이름", "kakao_search_name", "kakaosearchname"},
 }
 
 _DOCX_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 _TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
-_SUPPORTED_EXTS = {".xlsx", ".xlsm", ".docx", ".txt", ".csv", ".tsv"}
+_SUPPORTED_EXTS = {".xlsx", ".xlsm", ".xlsb", ".docx", ".txt", ".csv", ".tsv"}
 
 
 @dataclass
@@ -49,6 +52,8 @@ def import_contacts_file(path: str) -> ImportResult:
     try:
         if ext in {".xlsx", ".xlsm"}:
             raw_rows = _read_xlsx_rows(path)
+        elif ext == ".xlsb":
+            raw_rows = _read_xlsb_rows(path)
         elif ext == ".docx":
             raw_rows = _read_docx_rows(path)
         elif ext in {".txt", ".csv", ".tsv"}:
@@ -57,7 +62,7 @@ def import_contacts_file(path: str) -> ImportResult:
             return ImportResult(
                 rows=[],
                 skipped=0,
-                errors=["지원하지 않는 파일 형식입니다. 지원 확장자: .xlsx, .xlsm, .docx, .txt, .csv, .tsv"],
+                errors=["지원하지 않는 파일 형식입니다. 지원 확장자: .xlsx, .xlsm, .xlsb, .docx, .txt, .csv, .tsv"],
             )
     except Exception as e:
         return ImportResult(rows=[], skipped=0, errors=[f"파일 파싱 실패: {e}"])
@@ -86,6 +91,36 @@ def _read_xlsx_rows(path: str) -> list[list[str]]:
     rows: list[list[str]] = []
     for row in ws.iter_rows(values_only=True):
         rows.append([_normalize_cell(v) for v in row])
+    return rows
+
+
+_XLSB_HEADER_SCAN_ROWS = 50
+
+
+def _read_xlsb_rows(path: str) -> list[list[str]]:
+    with open_xlsb_workbook(path) as wb:
+        sheet_names = wb.sheets
+        if not sheet_names:
+            return []
+
+        best_name = sheet_names[0]
+        best_score = -1
+        for name in sheet_names:
+            with wb.get_sheet(name) as sheet:
+                for i, row in enumerate(sheet.rows()):
+                    if i >= _XLSB_HEADER_SCAN_ROWS:
+                        break
+                    header = _detect_header_map([_normalize_cell(cell.v) for cell in row])
+                    if header:
+                        if len(header) > best_score:
+                            best_score = len(header)
+                            best_name = name
+                        break
+
+        rows: list[list[str]] = []
+        with wb.get_sheet(best_name) as sheet:
+            for row in sheet.rows():
+                rows.append([_normalize_cell(cell.v) for cell in row])
     return rows
 
 
@@ -193,6 +228,8 @@ def _build_import_result(raw_rows: Sequence[Sequence[str]]) -> ImportResult:
                 rec["phone"],
                 rec["agency"],
                 rec["branch"],
+                rec["title"],
+                rec["kakao_search_name"],
             )
         )
 
@@ -223,18 +260,23 @@ def _row_to_record(row: Sequence[str], header_map: dict[str, int] | None) -> dic
             "phone": _get_cell(row, header_map.get("phone")),
             "agency": _get_cell(row, header_map.get("agency")),
             "branch": _get_cell(row, header_map.get("branch")),
+            "title": _get_cell(row, header_map.get("title")),
+            "kakao_search_name": _get_cell(row, header_map.get("kakao_search_name")),
         }
+
+    empty = {"emp_id": "", "name": "", "phone": "", "agency": "", "branch": "", "title": "", "kakao_search_name": ""}
 
     values = [_cleanup_text(v) for v in row if _cleanup_text(v)]
     if not values:
-        return {"emp_id": "", "name": "", "phone": "", "agency": "", "branch": ""}
+        return dict(empty)
 
     if len(values) == 1:
-        return {"emp_id": "", "name": values[0], "phone": "", "agency": "", "branch": ""}
+        return {**empty, "name": values[0]}
 
     starts_with_emp_id = _looks_like_emp_id(values[0]) and len(values) >= 2 and _looks_like_nameish(values[1])
     if starts_with_emp_id:
         return {
+            **empty,
             "emp_id": values[0],
             "name": values[1] if len(values) >= 2 else "",
             "phone": values[2] if len(values) >= 3 else "",
@@ -243,10 +285,10 @@ def _row_to_record(row: Sequence[str], header_map: dict[str, int] | None) -> dic
         }
 
     if len(values) == 2 and _looks_like_phone(values[1]):
-        return {"emp_id": "", "name": values[0], "phone": values[1], "agency": "", "branch": ""}
+        return {**empty, "name": values[0], "phone": values[1]}
 
     return {
-        "emp_id": "",
+        **empty,
         "name": values[0],
         "phone": values[1] if len(values) >= 2 else "",
         "agency": values[2] if len(values) >= 3 else "",

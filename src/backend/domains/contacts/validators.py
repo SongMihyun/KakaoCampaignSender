@@ -20,6 +20,8 @@ def normalize_create(dto: ContactCreateDTO) -> ContactCreateDTO:
         phone=normalize_optional(dto.phone),
         agency=normalize_optional(dto.agency),
         branch=normalize_optional(dto.branch),
+        title=normalize_optional(dto.title),
+        kakao_search_name=normalize_optional(dto.kakao_search_name),
     )
 
 
@@ -34,4 +36,6 @@ def normalize_update(dto: ContactUpdateDTO) -> ContactUpdateDTO:
         phone=normalize_optional(dto.phone),
         agency=normalize_optional(dto.agency),
         branch=normalize_optional(dto.branch),
+        title=normalize_optional(dto.title),
+        kakao_search_name=normalize_optional(dto.kakao_search_name),
     )

@@ -14,10 +14,12 @@ class Contact:
     phone: str
     agency: str
     branch: str
+    title: str = ""
+    kakao_search_name: str = ""
 
 
 class ContactsTableModel(QAbstractTableModel):
-    HEADERS = ["", "No", "사번", "이름", "전화번호", "대리점명", "지사명"]
+    HEADERS = ["", "No", "사번", "이름", "전화번호", "법인명", "점포명", "호칭", "카카오톡검색명"]
 
     def __init__(self, rows: list[Contact] | None = None):
         super().__init__()
@@ -50,7 +52,9 @@ class ContactsTableModel(QAbstractTableModel):
 
         if item.id in self._checked_ids:
             if role == Qt.BackgroundRole:
-                return QColor("#e5e7eb")
+                return QColor(59, 130, 246, 40)
+            if role == Qt.ForegroundRole:
+                return QColor("#f2f4f7")
             if role == Qt.FontRole:
                 font = QFont()
                 font.setWeight(QFont.Medium)
@@ -69,6 +73,10 @@ class ContactsTableModel(QAbstractTableModel):
                 return item.agency
             if c == 6:
                 return item.branch
+            if c == 7:
+                return item.title
+            if c == 8:
+                return item.kakao_search_name
 
         return None
 

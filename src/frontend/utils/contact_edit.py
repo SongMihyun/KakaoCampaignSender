@@ -25,6 +25,8 @@ def _make_fallback_preset(fallback_preset: Any):
                 "phone": (fallback_preset.get("phone") or "").strip(),
                 "agency": (fallback_preset.get("agency") or "").strip(),
                 "branch": (fallback_preset.get("branch") or "").strip(),
+                "title": (fallback_preset.get("title") or "").strip(),
+                "kakao_search_name": (fallback_preset.get("kakao_search_name") or "").strip(),
             },
         )()
 
@@ -73,6 +75,8 @@ def edit_contact_by_id(
     new_phone = (data.get("phone") or "").strip()
     new_agency = (data.get("agency") or "").strip()
     new_branch = (data.get("branch") or "").strip()
+    new_title = (data.get("title") or "").strip()
+    new_kakao_search_name = (data.get("kakao_search_name") or "").strip()
 
     if not new_name:
         QMessageBox.warning(parent, "입력 오류", "이름은 필수입니다.")
@@ -87,6 +91,8 @@ def edit_contact_by_id(
                 phone=new_phone,
                 agency=new_agency,
                 branch=new_branch,
+                title=new_title,
+                kakao_search_name=new_kakao_search_name,
             )
         )
     except ValueError as e:

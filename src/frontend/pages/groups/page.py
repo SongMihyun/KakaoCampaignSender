@@ -67,7 +67,9 @@ class GroupsPage(QWidget):
     COL_PHONE = 3
     COL_AGENCY = 4
     COL_BRANCH = 5
-    COL_ID_HIDDEN = 6
+    COL_TITLE = 6
+    COL_KAKAO = 7
+    COL_ID_HIDDEN = 8
 
     def __init__(
         self,
@@ -134,7 +136,7 @@ class GroupsPage(QWidget):
 
         cand_search_row = QHBoxLayout()
         self.cand_search = QLineEdit()
-        self.cand_search.setPlaceholderText("이름, 사번, 전화, 대리점, 지사")
+        self.cand_search.setPlaceholderText("이름, 사번, 전화, 법인, 점포, 호칭, 카카오톡검색명")
         self.btn_cand_clear = style_button(QPushButton("초기화"), "ghost")
         cand_search_row.addWidget(self.cand_search, 1)
         cand_search_row.addWidget(self.btn_cand_clear)
@@ -143,9 +145,9 @@ class GroupsPage(QWidget):
         self.tbl_candidates = QTableView()
         self._setup_table(self.tbl_candidates)
 
-        self.candidates_model = QStandardItemModel(0, 7, self)
+        self.candidates_model = QStandardItemModel(0, 9, self)
         self.candidates_model.setHorizontalHeaderLabels(
-            ["No", "사번", "이름", "전화번호", "대리점명", "지사명", "ID"]
+            ["No", "사번", "이름", "전화번호", "법인명", "점포명", "호칭", "카카오톡검색명", "ID"]
         )
         self.tbl_candidates.setModel(self.candidates_model)
 
@@ -172,7 +174,7 @@ class GroupsPage(QWidget):
 
         mem_search_row = QHBoxLayout()
         self.mem_search = QLineEdit()
-        self.mem_search.setPlaceholderText("이름, 사번, 전화, 대리점, 지사")
+        self.mem_search.setPlaceholderText("이름, 사번, 전화, 법인, 점포, 호칭, 카카오톡검색명")
         self.btn_mem_clear = style_button(QPushButton("초기화"), "ghost")
         mem_search_row.addWidget(self.mem_search, 1)
         mem_search_row.addWidget(self.btn_mem_clear)
@@ -181,9 +183,9 @@ class GroupsPage(QWidget):
         self.tbl_members = QTableView()
         self._setup_table(self.tbl_members)
 
-        self.members_model = QStandardItemModel(0, 7, self)
+        self.members_model = QStandardItemModel(0, 9, self)
         self.members_model.setHorizontalHeaderLabels(
-            ["No", "사번", "이름", "전화번호", "대리점명", "지사명", "ID"]
+            ["No", "사번", "이름", "전화번호", "법인명", "점포명", "호칭", "카카오톡검색명", "ID"]
         )
         self.tbl_members.setModel(self.members_model)
 
@@ -277,6 +279,8 @@ class GroupsPage(QWidget):
         table.setColumnWidth(self.COL_NAME, 60)
         table.setColumnWidth(self.COL_PHONE, 100)
         table.setColumnWidth(self.COL_AGENCY, 70)
+        table.setColumnWidth(self.COL_BRANCH, 70)
+        table.setColumnWidth(self.COL_TITLE, 60)
         h.setStretchLastSection(True)
 
         h.setSectionResizeMode(self.COL_NO, QHeaderView.Fixed)
@@ -284,7 +288,9 @@ class GroupsPage(QWidget):
         h.setSectionResizeMode(self.COL_NAME, QHeaderView.Fixed)
         h.setSectionResizeMode(self.COL_PHONE, QHeaderView.Fixed)
         h.setSectionResizeMode(self.COL_AGENCY, QHeaderView.Fixed)
-        h.setSectionResizeMode(self.COL_BRANCH, QHeaderView.Stretch)
+        h.setSectionResizeMode(self.COL_BRANCH, QHeaderView.Fixed)
+        h.setSectionResizeMode(self.COL_TITLE, QHeaderView.Fixed)
+        h.setSectionResizeMode(self.COL_KAKAO, QHeaderView.Stretch)
 
     def _hide_id_column(self, table: QTableView) -> None:
         table.setColumnHidden(self.COL_ID_HIDDEN, True)
@@ -545,6 +551,8 @@ class GroupsPage(QWidget):
             "phone": model.item(row, self.COL_PHONE).text() if model.item(row, self.COL_PHONE) else "",
             "agency": model.item(row, self.COL_AGENCY).text() if model.item(row, self.COL_AGENCY) else "",
             "branch": model.item(row, self.COL_BRANCH).text() if model.item(row, self.COL_BRANCH) else "",
+            "title": model.item(row, self.COL_TITLE).text() if model.item(row, self.COL_TITLE) else "",
+            "kakao_search_name": model.item(row, self.COL_KAKAO).text() if model.item(row, self.COL_KAKAO) else "",
         }
 
         ok = edit_contact_by_id(
@@ -669,9 +677,11 @@ class GroupsPage(QWidget):
         phone = QStandardItem(m.phone or "")
         agency = QStandardItem(m.agency or "")
         branch = QStandardItem(m.branch or "")
+        title = QStandardItem(getattr(m, "title", "") or "")
+        kakao_search_name = QStandardItem(getattr(m, "kakao_search_name", "") or "")
         hidden_id = QStandardItem(str(m.id))
 
-        items = [no_item, emp, name, phone, agency, branch, hidden_id]
+        items = [no_item, emp, name, phone, agency, branch, title, kakao_search_name, hidden_id]
 
         for it in items:
             it.setEditable(False)
