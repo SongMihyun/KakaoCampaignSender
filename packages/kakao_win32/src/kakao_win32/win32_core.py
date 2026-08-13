@@ -13,6 +13,11 @@ if not hasattr(wintypes, "LRESULT"):
     # LRESULT = LONG_PTR (WPARAM/LPARAM과 동일 계열 포인터 크기)
     wintypes.LRESULT = wintypes.LPARAM  # type: ignore[attr-defined]
 
+if not hasattr(wintypes, "ULONG_PTR"):
+    # ULONG_PTR: 포인터 크기의 부호없는 정수(SendInput의 dwExtraInfo 등에서 사용).
+    # 일부 Python 빌드의 ctypes.wintypes에는 정의돼 있지 않아 직접 보강한다.
+    wintypes.ULONG_PTR = ctypes.c_size_t  # type: ignore[attr-defined]
+
 # -----------------------------------------------------------------------------
 # Win32 core bindings + common helpers
 # -----------------------------------------------------------------------------

@@ -133,10 +133,11 @@ def main() -> None:
 
     try:
         from PySide6.QtGui import QIcon
-        from frontend.layout.header import ICON_PATH
+        from frontend.dialogs.login_dialog import resolve_icon_path
 
-        if ICON_PATH:
-            app.setWindowIcon(QIcon(ICON_PATH))
+        icon_path = resolve_icon_path()
+        if icon_path:
+            app.setWindowIcon(QIcon(icon_path))
     except Exception:
         pass
 
