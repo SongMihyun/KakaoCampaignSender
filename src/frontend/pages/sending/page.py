@@ -1,6 +1,7 @@
 ﻿# FILE: src/frontend/pages/sending/page.py
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime
 from typing import Callable, Optional
@@ -1263,6 +1264,55 @@ class SendPage(QWidget):
         dlg = CampaignPreviewDialog(campaign_title=title, items=items, parent=self)
         dlg.exec()
 
+    @staticmethod
+    def _sanitize_report_name_part(text: str, *, max_len: int = 30) -> str:
+        s = str(text or "").strip()
+        s = re.sub(r'[\\/:*?"<>|]', "_", s)
+        s = re.sub(r"\s+", " ", s).strip()
+        if len(s) > max_len:
+            s = s[:max_len].rstrip() + "…"
+        return s or "미지정"
+
+    @classmethod
+    def _build_report_file_stem(cls, jobs: list, *, total_targets: int) -> str:
+        """
+        리포트 파일명: 대상그룹(총인원수)_캠페인명(사진수)_날짜_시간
+        (여러 발송리스트가 한 번에 발송되면 그룹/캠페인명은 +로 이어붙임)
+        """
+        group_names: list[str] = []
+        campaign_names: list[str] = []
+        image_count = 0
+
+        for job in jobs:
+            g = (getattr(job, "group_name", "") or "").strip() or "전체"
+            if g not in group_names:
+                group_names.append(g)
+
+            c = (getattr(job, "campaign_name", "") or "").strip() or "캠페인"
+            if c not in campaign_names:
+                campaign_names.append(c)
+
+            for item in (getattr(job, "campaign_items", None) or []):
+                if isinstance(item, dict):
+                    item_type = str(item.get("item_type", "") or "").upper()
+                else:
+                    item_type = str(getattr(item, "item_type", "") or "").upper()
+                if item_type == "IMAGE":
+                    image_count += 1
+
+        def _join(names: list[str]) -> str:
+            label = "+".join(names[:3])
+            if len(names) > 3:
+                label += f"외{len(names) - 3}"
+            return label
+
+        group_label = cls._sanitize_report_name_part(_join(group_names))
+        campaign_label = cls._sanitize_report_name_part(_join(campaign_names))
+        date_part = time.strftime("%Y%m%d")
+        time_part = time.strftime("%H%M%S")
+
+        return f"{group_label}({int(total_targets)})_{campaign_label}({image_count})_{date_part}_{time_part}"
+
     def _start_send_jobs(
         self,
         *,
@@ -1320,7 +1370,8 @@ class SendPage(QWidget):
         self._run_logger = run_logger
 
         run_id = time.strftime("%Y%m%d_%H%M%S")
-        report_writer = SendReportWriter(base_dir=user_data_dir(), run_id=run_id)
+        file_stem = self._build_report_file_stem(filtered, total_targets=total_targets)
+        report_writer = SendReportWriter(base_dir=user_data_dir(), run_id=run_id, file_stem=file_stem)
         report_writer.set_meta(total_lists=len(filtered), total_targets=total_targets)
 
         self._worker = self.sending_service.create_worker(

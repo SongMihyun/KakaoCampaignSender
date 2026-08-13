@@ -34,6 +34,7 @@ STATUS_CODES: dict[int, StatusInfo] = {
     5003: StatusInfo(5003, "클립보드 전송 실패", "clipboard", "클립보드 복사/붙여넣기 과정에 실패했습니다.", ("클립보드 점유", "보안 프로그램 간섭"), ("잠시 후 재시도",)),
     6001: StatusInfo(6001, "사용자 중지", "user_stop", "사용자가 발송을 중지했습니다."),
     6002: StatusInfo(6002, "사용자 취소", "user_cancel", "사용자가 작업을 취소했습니다."),
+    6003: StatusInfo(6003, "미발송", "not_sent", "발송이 중지되어 이 대상자에게는 시도조차 되지 않았습니다.", ("사용자 중지/일시정지 중 종료",), ("재발송 대상으로 추출 후 다시 발송",)),
     7001: StatusInfo(7001, "재시도 후 실패", "retry", "재시도 후에도 발송에 실패했습니다.", ("일시 오류 지속",), ("실패 대상 재시도",)),
     7002: StatusInfo(7002, "최대 재시도 초과", "retry", "설정된 최대 재시도 횟수를 초과했습니다.", ("카카오톡 응답 없음",), ("속도 모드 낮추기", "카카오톡 재실행")),
     9000: StatusInfo(9000, "알 수 없는 오류", "unknown", "분류되지 않은 오류입니다."),
@@ -52,6 +53,8 @@ def status_from_result(status: str, reason: str = "") -> StatusInfo:
     r = str(reason or "").lower()
     if s.startswith("SUCCESS"):
         return STATUS_CODES[1000]
+    if s == "NOT_SENT":
+        return STATUS_CODES[6003]
     if "OPEN_CHAT_FAIL" in s or "open_chat_fail" in r:
         return STATUS_CODES[3002]
     if s == "SKIP" or "empty_name" in r:

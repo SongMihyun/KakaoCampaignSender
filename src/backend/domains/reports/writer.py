@@ -29,7 +29,7 @@ def _safe_int(x: Any, default: int = 0) -> int:
 
 
 class SendReportWriter:
-    def __init__(self, *, base_dir: Path, run_id: str) -> None:
+    def __init__(self, *, base_dir: Path, run_id: str, file_stem: Optional[str] = None) -> None:
         self._lock = threading.Lock()
 
         self._base_dir = Path(base_dir)
@@ -37,7 +37,8 @@ class SendReportWriter:
         self._reports_dir.mkdir(parents=True, exist_ok=True)
 
         self._run_id = str(run_id)
-        self._path = self._reports_dir / f"send_report_{self._run_id}.json"
+        stem = str(file_stem or f"send_report_{self._run_id}").strip() or f"send_report_{self._run_id}"
+        self._path = self._reports_dir / f"{stem}.json"
 
         self._report = SendReport(run_id=self._run_id, started_at=_now_ts())
         self._list_map: Dict[int, int] = {}
@@ -131,6 +132,7 @@ class SendReportWriter:
         step: str = "",
         reason: str = "",
         attempt: int = 0,
+        contact_id: int = 0,
     ) -> None:
         with self._lock:
             idx = self._list_map.get(int(list_index))
@@ -140,6 +142,7 @@ class SendReportWriter:
             info = status_from_result(status, reason)
             actual_code = _safe_int(status_code, 0) or info.code
             rr = ReportRecipient(
+                contact_id=_safe_int(contact_id, 0),
                 emp_id=str(emp_id or ""),
                 name=str(name or ""),
                 phone=str(phone or ""),

@@ -141,6 +141,13 @@ def main() -> None:
     except Exception:
         pass
 
+    try:
+        from frontend.win_dark_titlebar import install_dark_titlebar_for_all_windows
+
+        install_dark_titlebar_for_all_windows(app)
+    except Exception:
+        pass
+
     # 로그인 화면이 스플래시에 가려지지 않도록 먼저 로그인 후 스플래시를 띄운다.
     try:
         from backend.domains.auth import AuthService

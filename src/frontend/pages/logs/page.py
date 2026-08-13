@@ -52,6 +52,8 @@ class LogsPage(QWidget):
         *,
         logs_service,
         campaigns_service=None,
+        groups_service=None,
+        send_lists_service=None,
         on_reset_all: Optional[Callable[[], None]] = None,
     ) -> None:
         super().__init__()
@@ -59,6 +61,8 @@ class LogsPage(QWidget):
 
         self.logs_service = logs_service
         self.campaigns_service = campaigns_service
+        self.groups_service = groups_service
+        self.send_lists_service = send_lists_service
         self._on_reset_all = on_reset_all
 
         self._active_source: str = "DB"
@@ -109,6 +113,8 @@ class LogsPage(QWidget):
         self.cbo_status.addItem("말미재시도예약(TAIL_RETRY_SCHEDULED)", "TAIL_RETRY_SCHEDULED")
         self.cbo_status.addItem("말미재시도성공(SUCCESS(TAIL_RETRY))", "SUCCESS(TAIL_RETRY)")
         self.cbo_status.addItem("말미재시도실패(FAIL(TAIL_RETRY))", "FAIL(TAIL_RETRY)")
+        self.cbo_status.addItem("미발송(NOT_SENT)", "NOT_SENT")
+        self.cbo_status.addItem("사용자중지(STOPPED_BY_USER)", "STOPPED_BY_USER")
 
         self.txt_keyword = QLineEdit()
         self.txt_keyword.setPlaceholderText("검색: 수신자/사유/채널 키워드")
@@ -200,6 +206,9 @@ class LogsPage(QWidget):
         self.btn_retry = style_button(QPushButton("실패 대상 추출"), "secondary")
         btn_row.addWidget(self.btn_retry)
 
+        self.btn_create_resend_list = style_button(QPushButton("실패+미발송 재발송 리스트 만들기"), "accent")
+        btn_row.addWidget(self.btn_create_resend_list)
+
         btn_row.addStretch(1)
 
         self.reset_btn = style_button(QPushButton("로그·리포트 삭제"), "danger")
@@ -215,6 +224,7 @@ class LogsPage(QWidget):
         self.btn_export.clicked.connect(self.export_csv)
         self.reset_btn.clicked.connect(self.reset_logs_and_reports)
         self.btn_retry.clicked.connect(self.show_retry_targets)
+        self.btn_create_resend_list.clicked.connect(self.create_resend_list)
 
         self.btn_open_log_file.clicked.connect(self.open_log_file)
         self.btn_open_wipe_log.clicked.connect(self.open_wipe_log)
@@ -291,7 +301,7 @@ class LogsPage(QWidget):
         self.cbo_reports.addItem("(리포트 선택: 선택 시 표에 상세 표시)", None)
 
         files = sorted(
-            self._reports_dir().glob("send_report_*.json"),
+            self._reports_dir().glob("*.json"),
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         )
@@ -628,12 +638,104 @@ class LogsPage(QWidget):
 
         QMessageBox.information(self, "재시도 대상(FAIL)", preview)
 
+    def create_resend_list(self) -> None:
+        """
+        현재 열려 있는 리포트에서 실패(FAIL*) + 미발송(NOT_SENT) 대상만 뽑아
+        새 그룹으로 묶고, 같은 캠페인으로 재발송용 발송리스트를 만든다.
+        (성공한 대상은 제외되므로 중복 발송 없이 나머지만 다시 보낼 수 있다.)
+        """
+        if self._active_source != "REPORT":
+            QMessageBox.information(
+                self, "안내", "상단에서 발송 리포트 파일을 먼저 선택하세요(리포트 모드에서만 가능)."
+            )
+            return
+
+        if not self.groups_service or not self.send_lists_service:
+            QMessageBox.information(self, "안내", "재발송 리스트 생성 기능이 연결되어 있지 않습니다.")
+            return
+
+        candidates = self.logs_service.get_resend_candidates_from_rows(self._report_rows)
+        if not candidates:
+            QMessageBox.information(self, "안내", "이 리포트에는 실패/미발송 대상이 없습니다.")
+            return
+
+        by_campaign: Dict[Any, List[Dict[str, Any]]] = {}
+        for c in candidates:
+            campaign_id = c.get("campaign_id")
+            if not campaign_id:
+                continue
+            key = (campaign_id, c.get("campaign_name", ""))
+            by_campaign.setdefault(key, []).append(c)
+
+        if not by_campaign:
+            QMessageBox.information(self, "안내", "캠페인 정보가 없는 대상뿐이라 재발송 리스트를 만들 수 없습니다.")
+            return
+
+        total_targets = sum(len(items) for items in by_campaign.values())
+        ok = QMessageBox.question(
+            self,
+            "재발송 리스트 생성",
+            f"실패/미발송 대상 {total_targets}명으로 새 그룹 + 발송리스트를 만듭니다.\n"
+            f"(캠페인 {len(by_campaign)}개로 나뉘어 생성됩니다)\n\n계속하시겠습니까?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if ok != QMessageBox.Yes:
+            return
+
+        from backend.domains.groups.dto import GroupCreateDTO
+        from backend.domains.send_lists.dto import SendListCreateDTO
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        created: List[tuple] = []
+        errors: List[str] = []
+
+        for (campaign_id, campaign_name), items in by_campaign.items():
+            contact_ids = sorted({int(c["contact_id"]) for c in items})
+            group_name = f"재발송_{campaign_name or campaign_id}_{ts}"
+            try:
+                group_id = self.groups_service.create_group(
+                    GroupCreateDTO(name=group_name, memo=f"실패/미발송 재발송용 자동 생성 ({len(contact_ids)}명)")
+                )
+                self.groups_service.add_members(group_id, contact_ids)
+                self.send_lists_service.create_or_replace(
+                    SendListCreateDTO(
+                        target_mode="GROUP",
+                        group_id=group_id,
+                        group_name=group_name,
+                        campaign_id=int(campaign_id),
+                        campaign_name=str(campaign_name or ""),
+                    )
+                )
+                created.append((group_name, len(contact_ids)))
+            except Exception as e:
+                errors.append(f"{campaign_name or campaign_id}: {e}")
+
+        if created:
+            try:
+                from frontend.app.app_events import app_events
+
+                app_events.groups_changed.emit()
+            except Exception:
+                pass
+
+        summary_lines = [f"- {name}: {cnt}명" for name, cnt in created]
+        msg = "재발송용 그룹/발송리스트를 만들었습니다.\n\n" + "\n".join(summary_lines)
+        msg += "\n\n'발송' 화면에서 방금 만든 발송리스트를 확인하세요."
+        if errors:
+            msg += "\n\n[생성 실패]\n" + "\n".join(errors)
+
+        if created:
+            QMessageBox.information(self, "완료", msg)
+        else:
+            QMessageBox.critical(self, "오류", "재발송 리스트 생성에 모두 실패했습니다.\n\n" + "\n".join(errors))
+
     def reset_logs_and_reports(self) -> None:
         ok = QMessageBox.question(
             self,
             "전체 삭제",
             "1) send_logs 테이블 초기화\n"
-            "2) send_report_*.json 리포트 파일 전체 삭제\n\n"
+            "2) 발송 리포트(*.json) 파일 전체 삭제\n\n"
             "계속하시겠습니까?",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
@@ -651,7 +753,7 @@ class LogsPage(QWidget):
         failed: List[str] = []
 
         try:
-            for path in list(self._reports_dir().glob("send_report_*.json")):
+            for path in list(self._reports_dir().glob("*.json")):
                 try:
                     path.unlink(missing_ok=True)
                     deleted += 1

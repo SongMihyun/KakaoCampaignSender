@@ -124,6 +124,18 @@ class LogsService:
 
         return out
 
+    def get_resend_candidates_from_rows(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        statuses: tuple = ("FAIL", "NOT_SENT"),
+        report_reader=None,
+    ) -> List[Dict[str, Any]]:
+        reader = report_reader or self.report_reader
+        if reader is None or not hasattr(reader, "build_resend_candidates"):
+            return []
+        return reader.build_resend_candidates(rows, statuses=statuses)
+
     def get_retry_targets(self) -> List[str]:
         return self.repo.get_retry_targets()
 

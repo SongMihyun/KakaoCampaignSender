@@ -6,6 +6,7 @@ from typing import Any, Dict, List
 
 @dataclass
 class ReportRecipient:
+    contact_id: int = 0
     emp_id: str = ""
     name: str = ""
     phone: str = ""

@@ -67,6 +67,10 @@ class SendExecutor:
         self._UploadPipelineStalled = None
         self._load_driver_exceptions()
 
+        # ✅ list_index -> 이미 리포트에 결과가 기록된 recipient.contact_id 집합.
+        #    중지로 인해 도달하지 못한 대상자를 미발송(NOT_SENT)으로 보강 기록하는 데 사용.
+        self._reported_contact_ids: dict[int, set] = {}
+
     def execute(self) -> SendRunResult:
         result = SendRunResult(list_done=0, success=0, fail=0, stopped=False)
 
@@ -81,6 +85,13 @@ class SendExecutor:
         if not self._prepare_driver():
             return result
 
+        # ✅ 모든 발송리스트(job)를 미리 리포트에 등록해둔다. 실행 도중 중지되어
+        #    아예 시작도 못한 리스트가 있어도, 나중에 _finalize_report에서
+        #    미발송(NOT_SENT) 대상자를 채워 넣을 수 있으려면 list_index가
+        #    먼저 등록되어 있어야 한다.
+        for pre_index, pre_job in enumerate(self._jobs, start=1):
+            self._report_add_list(job=pre_job, list_index=pre_index)
+
         try:
             for list_index, job in enumerate(self._jobs, start=1):
                 if self._check_stop(result, "발송 강제 중지됨(F11)"):
@@ -89,7 +100,6 @@ class SendExecutor:
                     break
 
                 self._log_list_start(job=job, list_index=list_index, total_lists=total_lists)
-                self._report_add_list(job=job, list_index=list_index)
 
                 self._list_changed_cb(job.title, list_index, total_lists)
                 self._progress_cb(0)
@@ -606,6 +616,13 @@ class SendExecutor:
         reason: str,
         attempt: int,
     ) -> None:
+        try:
+            contact_id = int(getattr(recipient, "contact_id", 0) or 0)
+            if contact_id:
+                self._reported_contact_ids.setdefault(int(list_index), set()).add(contact_id)
+        except Exception:
+            pass
+
         if not self._report_writer:
             return
 
@@ -613,6 +630,7 @@ class SendExecutor:
             info = status_from_result(status, reason)
             self._report_writer.add_recipient_result(
                 list_index=list_index,
+                contact_id=int(getattr(recipient, "contact_id", 0) or 0),
                 emp_id=recipient.emp_id,
                 name=recipient.name,
                 phone=recipient.phone,
@@ -628,7 +646,35 @@ class SendExecutor:
         except Exception:
             pass
 
+    def _backfill_not_sent(self) -> None:
+        """
+        중지/일시정지 등으로 아예 시도되지 못한 대상자를 NOT_SENT(미발송)로
+        리포트에 채워 넣는다. job.recipients는 발송 도중 변형되지 않으므로
+        (실제 시도 순서만 소비하고 리스트 자체는 그대로) 항상 원본 전체 대상자다.
+        """
+        if not self._report_writer:
+            return
+
+        for list_index, job in enumerate(self._jobs, start=1):
+            reported = self._reported_contact_ids.get(list_index, set())
+            for recipient in job.recipients:
+                contact_id = int(getattr(recipient, "contact_id", 0) or 0)
+                if contact_id and contact_id in reported:
+                    continue
+                self._report_add_recipient_result(
+                    list_index=list_index,
+                    recipient=recipient,
+                    status="NOT_SENT",
+                    reason="발송 중지로 인해 미발송",
+                    attempt=0,
+                )
+
     def _finalize_report(self, result: SendRunResult) -> None:
+        try:
+            self._backfill_not_sent()
+        except Exception:
+            pass
+
         try:
             if self._report_writer:
                 self._report_writer.finish(

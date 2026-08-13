@@ -123,6 +123,51 @@ class SendReportReader:
 
         return filtered
 
+    def build_resend_candidates(
+        self,
+        rows: List[Dict[str, Any]],
+        *,
+        statuses: tuple = ("FAIL", "NOT_SENT"),
+    ) -> List[Dict[str, Any]]:
+        """
+        실패(FAIL*) + 미발송(NOT_SENT) 대상을 재발송용으로 추출한다.
+        각 항목은 contact_id/campaign_id/campaign_name을 포함해서
+        새 그룹+발송리스트 생성에 바로 쓸 수 있다. contact_id가 없는 행(구버전
+        리포트 등)은 재발송 대상을 특정할 수 없으므로 제외한다.
+        """
+        prefixes = tuple(str(s or "").upper() for s in statuses)
+        out: List[Dict[str, Any]] = []
+        seen: set = set()
+
+        for row in rows:
+            status = str(row.get("status", "") or "").upper()
+            if not any(status.startswith(p) for p in prefixes):
+                continue
+
+            contact_id = int(row.get("contact_id", 0) or 0)
+            if not contact_id:
+                continue
+
+            key = (contact_id, row.get("campaign_id"))
+            if key in seen:
+                continue
+            seen.add(key)
+
+            out.append(
+                {
+                    "contact_id": contact_id,
+                    "recipient": str(row.get("recipient", "") or ""),
+                    "status": status,
+                    "reason": str(row.get("reason", "") or ""),
+                    "campaign_id": row.get("campaign_id"),
+                    "campaign_name": str(row.get("_campaign_name", "") or ""),
+                    "group_name": str(row.get("_group_name", "") or ""),
+                    "list_title": str(row.get("_list_title", "") or ""),
+                }
+            )
+
+        return out
+
     def build_retry_targets(
         self,
         rows: List[Dict[str, Any]],
@@ -177,6 +222,7 @@ class SendReportReader:
         name = str(recipient_obj.get("name", "") or "")
         emp_id = str(recipient_obj.get("emp_id", "") or "")
         phone = str(recipient_obj.get("phone", "") or "")
+        contact_id = int(recipient_obj.get("contact_id", 0) or 0)
 
         recipient = name
         if emp_id or phone:
@@ -199,6 +245,7 @@ class SendReportReader:
             "batch_id": batch_id,
             "channel": channel,
             "recipient": recipient,
+            "contact_id": contact_id,
             "status": status,
             "status_code": status_code,
             "status_message": status_message,

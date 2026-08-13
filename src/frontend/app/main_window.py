@@ -65,22 +65,6 @@ from frontend.pages.logs.page import LogsPage
 from frontend.pages.sending.page import SendPage
 
 
-def _apply_dark_titlebar(hwnd: int) -> None:
-    """Windows 10 1809+/11: 네이티브 타이틀바를 다크 모드로 칠한다(실패해도 무해)."""
-    try:
-        import ctypes
-
-        value = ctypes.c_int(1)
-        for attr in (20, 19):  # 20 = 최신, 19 = 구형 Windows 10 빌드용 fallback
-            res = ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                ctypes.c_void_p(int(hwnd)), attr, ctypes.byref(value), ctypes.sizeof(value)
-            )
-            if res == 0:
-                break
-    except Exception:
-        pass
-
-
 def _dark_palette() -> QPalette:
     pal = QPalette()
     pal.setColor(QPalette.Window, QColor("#12151c"))
@@ -121,7 +105,6 @@ class MainWindow(QMainWindow):
                 self.setWindowIcon(QIcon(icon_path))
         except Exception:
             pass
-        _apply_dark_titlebar(int(self.winId()))
         self._skip_finalize_pending_update_once = False
 
         root = QWidget()
@@ -249,6 +232,8 @@ class MainWindow(QMainWindow):
         self.logs_page = LogsPage(
             logs_service=self.logs_service,
             campaigns_service=self.campaigns_service,
+            groups_service=self.groups_service,
+            send_lists_service=self.send_lists_service,
             on_reset_all=self.reset_application,
         )
 
