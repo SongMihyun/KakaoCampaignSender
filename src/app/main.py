@@ -35,39 +35,30 @@ def _com_init_sta_main_best_effort() -> bool:
     return False
 
 
-def _check_and_install_update_before_login(app) -> bool:
-    """
-    로그인 화면을 띄우기 전에 업데이트를 확인한다.
-    새 버전이 있으면 다운로드 → 검증 → 즉시 설치 예약 후 앱을 종료한다.
-    (설치가 끝나면 새 버전으로 자동 재시작되므로, 로그인은 새 버전에서 한 번만 하면 된다.)
-
-    반환값 True면 호출 측에서 즉시 종료(sys.exit)해야 한다.
-    """
+def _prepare_update_with_ui(app, splash_msg) -> None:
     from PySide6.QtCore import Qt
     from PySide6.QtWidgets import QMessageBox, QProgressDialog
 
     from app.relaunch import relaunch_executable_and_args
     from app.version import __version__, LATEST_JSON_URL
-    from backend.updates.updater import Updater, is_newer, finalize_update_on_app_close, write_pending_installer_marker
+    from backend.updates.updater import UpdatePlan, Updater, is_newer, set_pending_update
 
     current_version = (__version__ or "").strip()
     is_release_build = bool(getattr(sys, "frozen", False)) and current_version and current_version != "__VERSION__"
     if not is_release_build:
-        return False
+        return
 
-    try:
-        updater = Updater(LATEST_JSON_URL, timeout_sec=5.0)
-        manifest = updater.fetch_latest_manifest()
-    except Exception:
-        return False
+    splash_msg("업데이트 확인 중...")
 
+    updater = Updater(LATEST_JSON_URL, timeout_sec=7.0)
+    manifest = updater.fetch_latest_manifest()
     if not manifest or not manifest.version or not manifest.url:
-        return False
+        return
     if not is_newer(manifest.version, current_version):
-        return False
+        return
 
     progress = QProgressDialog("새 버전 설치 파일 다운로드 중...", "", 0, 100)
-    progress.setWindowTitle("업데이트")
+    progress.setWindowTitle("업데이트 다운로드")
     progress.setWindowModality(Qt.ApplicationModal)
     progress.setMinimumDuration(0)
     progress.setCancelButton(None)
@@ -88,37 +79,41 @@ def _check_and_install_update_before_login(app) -> bool:
         app.processEvents()
 
     try:
-        installer_path = updater.download_installer(manifest.url, on_progress=on_progress)
+        installer_path = updater.download_installer(
+            manifest.url,
+            on_progress=on_progress,
+        )
         progress.setValue(100)
     except Exception as e:
         progress.close()
-        QMessageBox.warning(None, "업데이트 실패", f"업데이트 다운로드에 실패했습니다.\n{e}\n\n기존 버전으로 계속 진행합니다.")
-        return False
+        QMessageBox.warning(None, "업데이트 실패", f"업데이트 다운로드에 실패했습니다.\n{e}")
+        return
     finally:
         progress.close()
 
     if not updater.verify_sha256(installer_path, manifest.sha256):
-        QMessageBox.warning(None, "업데이트 실패", "설치 파일 검증에 실패했습니다. 기존 버전으로 계속 진행합니다.")
-        return False
+        QMessageBox.warning(None, "업데이트 실패", "설치 파일 검증에 실패했습니다. 다음 실행 때 다시 시도합니다.")
+        return
 
     relaunch_exe, relaunch_args, relaunch_cwd = relaunch_executable_and_args()
-    write_pending_installer_marker(
-        installer_path,
-        relaunch_executable=relaunch_exe,
-        relaunch_args=tuple(relaunch_args),
-        relaunch_working_dir=relaunch_cwd,
+    set_pending_update(
+        UpdatePlan(
+            True,
+            latest=manifest,
+            installer_path=installer_path,
+            relaunch_executable=relaunch_exe,
+            relaunch_args=tuple(relaunch_args),
+            relaunch_working_dir=relaunch_cwd,
+            reason="prepared",
+        )
     )
-    started = finalize_update_on_app_close()
-    if not started:
-        QMessageBox.warning(None, "업데이트 실패", "업데이트 설치 예약에 실패했습니다. 기존 버전으로 계속 진행합니다.")
-        return False
 
     QMessageBox.information(
         None,
-        "업데이트",
-        f"새 버전 {manifest.version}을(를) 설치합니다.\n잠시 후 카센더가 새 버전으로 다시 시작됩니다.",
+        "업데이트 준비 완료",
+        f"버전 {manifest.version} 설치 파일을 다운로드했습니다.\n\n"
+        "앱을 종료하면 자동으로 설치가 진행되고, 설치가 끝나면 카센더를 다시 실행합니다.",
     )
-    return True
 
 
 def main() -> None:
@@ -143,16 +138,6 @@ def main() -> None:
         icon_path = resolve_icon_path()
         if icon_path:
             app.setWindowIcon(QIcon(icon_path))
-    except Exception:
-        pass
-
-    # ✅ 로그인 전에 업데이트부터 확인한다. 새 버전이 있으면 바로 설치를 예약하고
-    #    앱을 종료한다 — 로그인은 새 버전에서 한 번만 하면 되도록.
-    try:
-        if _check_and_install_update_before_login(app):
-            sys.exit(0)
-    except SystemExit:
-        raise
     except Exception:
         pass
 
@@ -195,6 +180,20 @@ def main() -> None:
             app.processEvents()
         except Exception:
             pass
+
+    try:
+        if splash is not None:
+            splash.hide()
+        _prepare_update_with_ui(app, _splash_msg)
+    except Exception:
+        pass
+    finally:
+        if splash is not None:
+            try:
+                splash.show()
+                app.processEvents()
+            except Exception:
+                pass
 
     _splash_msg("데이터베이스 초기화 중…")
     try:
