@@ -138,6 +138,16 @@ class SendPage(QWidget):
     HOTKEY_ID_PAUSE_TOGGLE = 1002
     ROLE_CONTACT_ID = int(Qt.UserRole) + 101
 
+    # ✅ 대상자 사이 대기 시간(ms) 범위. 항상 똑같은 간격으로 기계적으로 보내면
+    #    카카오톡 스팸/제재 탐지에 걸리기 쉬워서, 속도 모드별로 무작위 범위를 둔다.
+    #    (executor._next_delay_ms가 이 범위 안에서 매번 다른 값을 뽑고, 가끔 더 긴
+    #    텀도 섞는다.)
+    _SPEED_DELAY_RANGE_MS = {
+        "slow": (1200, 3200),
+        "normal": (600, 1800),
+        "fast": (350, 900),
+    }
+
     def __init__(
         self,
         *,
@@ -1374,11 +1384,13 @@ class SendPage(QWidget):
         report_writer = SendReportWriter(base_dir=user_data_dir(), run_id=run_id, file_stem=file_stem)
         report_writer.set_meta(total_lists=len(filtered), total_targets=total_targets)
 
+        delay_ms, delay_ms_max = self._SPEED_DELAY_RANGE_MS.get(speed_mode, self._SPEED_DELAY_RANGE_MS["normal"])
         self._worker = self.sending_service.create_worker(
             driver=self.sender_driver,
             jobs=filtered,
             parent=self,
-            delay_ms=500,
+            delay_ms=delay_ms,
+            delay_ms_max=delay_ms_max,
             max_retry=2,
             retry_sleep_ms=250,
             run_logger=run_logger,

@@ -40,6 +40,7 @@ class MultiSendWorker(QThread):
         max_retry: int = 2,
         retry_sleep_ms: int = 250,
         *,
+        delay_ms_max: int | None = None,
         run_logger=None,
         report_writer=None,
     ) -> None:
@@ -47,6 +48,7 @@ class MultiSendWorker(QThread):
         self._driver = driver
         self._jobs = list(jobs or [])
         self._delay_ms = max(0, int(delay_ms))
+        self._delay_ms_max = delay_ms_max
         self._max_retry = max(0, int(max_retry))
         self._retry_sleep_ms = max(0, int(retry_sleep_ms))
         self._run_logger = run_logger
@@ -156,6 +158,7 @@ class MultiSendWorker(QThread):
             driver=self._driver,
             jobs=self._jobs,
             delay_ms=self._delay_ms,
+            delay_ms_max=self._delay_ms_max,
             max_retry=self._max_retry,
             retry_sleep_ms=self._retry_sleep_ms,
             report_writer=self._report_writer,

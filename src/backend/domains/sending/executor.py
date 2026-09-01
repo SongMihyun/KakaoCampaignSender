@@ -1,6 +1,7 @@
 # FILE: src/backend/domains/sending/executor.py
 from __future__ import annotations
 
+import random
 import time
 from typing import Callable, Optional
 
@@ -28,6 +29,7 @@ class SendExecutor:
         driver,
         jobs,
         delay_ms: int,
+        delay_ms_max: Optional[int] = None,
         max_retry: int,
         retry_sleep_ms: int,
         run_logger=None,
@@ -46,6 +48,7 @@ class SendExecutor:
         self._driver = driver
         self._jobs = list(jobs or [])
         self._delay_ms = max(0, int(delay_ms))
+        self._delay_ms_max = max(self._delay_ms, int(delay_ms_max)) if delay_ms_max else self._delay_ms
         self._max_retry = max(0, int(max_retry))
         self._retry_sleep_ms = max(0, int(retry_sleep_ms))
         self._run_logger = run_logger
@@ -239,10 +242,25 @@ class SendExecutor:
             if self._wait_if_paused(result):
                 return tail_retry, True
 
-            if self._sleep_with_stop(self._delay_ms, result):
+            if self._sleep_with_stop(self._next_delay_ms(), result):
                 return tail_retry, True
 
         return tail_retry, False
+
+    def _next_delay_ms(self) -> int:
+        """
+        대상자 사이 대기 시간을 매번 무작위로 흔든다. 항상 똑같은 간격으로
+        기계적으로 보내면 카카오톡 쪽 스팸/제재 탐지에 걸리기 쉬워서,
+        범위 내 무작위 값 + 가끔(약 4% 확률) 사람이 잠깐 멈춘 것 같은
+        긴 텀(3~9초 추가)을 섞는다.
+        """
+        if self._delay_ms_max > self._delay_ms:
+            base = random.randint(self._delay_ms, self._delay_ms_max)
+        else:
+            base = self._delay_ms
+        if random.random() < 0.04:
+            base += random.randint(3000, 9000)
+        return base
 
     def _send_single_recipient(self, *, job, recipient, list_index: int) -> dict:
         last_err: Optional[Exception] = None
