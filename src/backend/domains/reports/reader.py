@@ -8,6 +8,51 @@ from typing import Any, Dict, List
 from backend.core.status_codes import status_from_result
 
 
+def collect_previously_sent_contact_ids(reports_dir: str | Path) -> set[int]:
+    """
+    과거 발송 리포트(*.json) 전체를 훑어서, 한 번이라도 SUCCESS로 기록된
+    contact_id 집합을 모은다. "이 사람에게 카센더로 보낸 적이 있는가"를
+    판단하는 용도 — 카카오톡 서버가 실제로 대화방을 처음 만드는지는 알 수
+    없지만, 우리가 통제 가능한 가장 근접한 대체 지표다.
+    새 발송 시작 전에 한 번만 호출해서 결과를 재사용하는 걸 권장한다
+    (리포트 파일이 많아지면 매 대상자마다 다시 스캔하기엔 비효율적).
+    """
+    contact_ids: set[int] = set()
+
+    try:
+        paths = list(Path(reports_dir).glob("*.json"))
+    except Exception:
+        return contact_ids
+
+    for path in paths:
+        try:
+            obj = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+
+        lists = obj.get("lists", []) or []
+        if not isinstance(lists, list):
+            continue
+
+        for lst in lists:
+            if not isinstance(lst, dict):
+                continue
+            recipients = lst.get("recipients", []) or []
+            if not isinstance(recipients, list):
+                continue
+            for r in recipients:
+                if not isinstance(r, dict):
+                    continue
+                status = str(r.get("status", "") or "").upper()
+                if not status.startswith("SUCCESS"):
+                    continue
+                cid = int(r.get("contact_id", 0) or 0)
+                if cid:
+                    contact_ids.add(cid)
+
+    return contact_ids
+
+
 class SendReportReader:
     """
     발송 리포트(JSON) 파싱 전담.

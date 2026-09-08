@@ -30,6 +30,8 @@ class SendExecutor:
         jobs,
         delay_ms: int,
         delay_ms_max: Optional[int] = None,
+        new_contact_extra_delay_ms: Optional[tuple[int, int]] = None,
+        known_contact_ids: Optional[set] = None,
         max_retry: int,
         retry_sleep_ms: int,
         run_logger=None,
@@ -49,6 +51,10 @@ class SendExecutor:
         self._jobs = list(jobs or [])
         self._delay_ms = max(0, int(delay_ms))
         self._delay_ms_max = max(self._delay_ms, int(delay_ms_max)) if delay_ms_max else self._delay_ms
+        self._new_contact_extra_delay_ms = tuple(new_contact_extra_delay_ms) if new_contact_extra_delay_ms else None
+        # ✅ "카센더로 한 번이라도 성공 발송한 적 있는 contact_id" 집합.
+        #    여기 없는 대상자는 새로 대화방을 열 가능성이 높다고 보고 대기시간을 더 늘린다.
+        self._known_contact_ids: set = set(known_contact_ids or ())
         self._max_retry = max(0, int(max_retry))
         self._retry_sleep_ms = max(0, int(retry_sleep_ms))
         self._run_logger = run_logger
@@ -213,6 +219,9 @@ class SendExecutor:
                 f"[{list_index}/{total_lists}] {job.title} | {recipient_index}/{total} | {recipient.name}"
             )
 
+            contact_id = int(getattr(recipient, "contact_id", 0) or 0)
+            is_new_contact = bool(contact_id) and contact_id not in self._known_contact_ids
+
             send_outcome = self._send_single_recipient(
                 job=job,
                 recipient=recipient,
@@ -235,6 +244,8 @@ class SendExecutor:
                     tail_retry.append(recipient)
             elif send_outcome["ok"]:
                 result.success += 1
+                if contact_id:
+                    self._known_contact_ids.add(contact_id)
             else:
                 result.fail += 1
 
@@ -242,17 +253,21 @@ class SendExecutor:
             if self._wait_if_paused(result):
                 return tail_retry, True
 
-            if self._sleep_with_stop(self._next_delay_ms(), result):
+            if self._sleep_with_stop(self._next_delay_ms(is_new_contact=is_new_contact), result):
                 return tail_retry, True
 
         return tail_retry, False
 
-    def _next_delay_ms(self) -> int:
+    def _next_delay_ms(self, *, is_new_contact: bool = False) -> int:
         """
         대상자 사이 대기 시간을 매번 무작위로 흔든다. 항상 똑같은 간격으로
         기계적으로 보내면 카카오톡 쪽 스팸/제재 탐지에 걸리기 쉬워서,
         범위 내 무작위 값 + 가끔(약 4% 확률) 사람이 잠깐 멈춘 것 같은
         긴 텀(3~9초 추가)을 섞는다.
+
+        ✅ is_new_contact=True(카센더로 성공 발송한 적 없는 대상자, 즉 처음으로
+        대화방을 새로 열 가능성이 높은 경우)면 추가로 더 긴 대기시간을 얹는다.
+        카카오의 "짧은 기간 내 다수 채팅방 생성" 감지 기준을 직접 겨냥한 것.
         """
         if self._delay_ms_max > self._delay_ms:
             base = random.randint(self._delay_ms, self._delay_ms_max)
@@ -260,6 +275,11 @@ class SendExecutor:
             base = self._delay_ms
         if random.random() < 0.04:
             base += random.randint(3000, 9000)
+
+        if is_new_contact:
+            lo, hi = self._new_contact_extra_delay_ms or (2000, 6000)
+            base += random.randint(int(lo), int(hi))
+
         return base
 
     def _send_single_recipient(self, *, job, recipient, list_index: int) -> dict:

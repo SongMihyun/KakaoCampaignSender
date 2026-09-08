@@ -34,6 +34,7 @@ from app.paths import user_data_dir
 
 from backend.domains.contacts.service import ContactsService
 from backend.domains.campaigns.service import CampaignsService
+from backend.domains.reports.reader import collect_previously_sent_contact_ids
 from backend.domains.reports.writer import SendReportWriter
 from backend.domains.send_lists.dto import SendListCreateDTO
 from backend.domains.sending.service import SendingService
@@ -1385,12 +1386,18 @@ class SendPage(QWidget):
         report_writer.set_meta(total_lists=len(filtered), total_targets=total_targets)
 
         delay_ms, delay_ms_max = self._SPEED_DELAY_RANGE_MS.get(speed_mode, self._SPEED_DELAY_RANGE_MS["normal"])
+        try:
+            known_contact_ids = collect_previously_sent_contact_ids(Path(user_data_dir()) / "Reports")
+        except Exception:
+            known_contact_ids = set()
         self._worker = self.sending_service.create_worker(
             driver=self.sender_driver,
             jobs=filtered,
             parent=self,
             delay_ms=delay_ms,
             delay_ms_max=delay_ms_max,
+            new_contact_extra_delay_ms=(2000, 6000),
+            known_contact_ids=known_contact_ids,
             max_retry=2,
             retry_sleep_ms=250,
             run_logger=run_logger,
