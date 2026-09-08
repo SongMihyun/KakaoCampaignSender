@@ -9,7 +9,7 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 
 
-SUPPORTED_EDITOR_EXTS = {".xlsx", ".xlsm", ".xltx", ".xltm"}
+SUPPORTED_EDITOR_EXTS = {".xlsx", ".xlsm", ".xltx", ".xltm", ".pdf"}
 
 
 @dataclass
@@ -54,7 +54,10 @@ def is_supported_excel_editor_file(path: str) -> bool:
 def load_workbook_grid(path: str) -> WorkbookGrid:
     ext = Path(path).suffix.lower()
     if ext not in SUPPORTED_EDITOR_EXTS:
-        raise ValueError("지원 확장자: .xlsx, .xlsm, .xltx, .xltm")
+        raise ValueError("지원 확장자: .xlsx, .xlsm, .xltx, .xltm, .pdf")
+
+    if ext == ".pdf":
+        return _load_pdf_grid(path)
 
     keep_vba = ext == ".xlsm"
     wb = load_workbook(filename=path, read_only=True, data_only=False, keep_vba=keep_vba)
@@ -98,6 +101,21 @@ def load_workbook_grid(path: str) -> WorkbookGrid:
             wb.close()
         except Exception:
             pass
+
+
+def _load_pdf_grid(path: str) -> WorkbookGrid:
+    from backend.integrations.excel.pdf_table_reader import read_pdf_table_rows
+
+    rows = read_pdf_table_rows(path)
+    if not rows:
+        rows = [[""]]
+
+    max_cols = max((len(r) for r in rows), default=1) or 1
+    normalized = [row + [""] * (max_cols - len(row)) for row in rows]
+
+    sheet = SheetGrid(name=Path(path).stem[:31] or "PDF", rows=normalized)
+    sheet.ensure_rectangular()
+    return WorkbookGrid(source_path=path, sheets=[sheet])
 
 
 def save_workbook_grid_to_xlsx(grid: WorkbookGrid, path: str) -> None:

@@ -479,10 +479,14 @@ class ContactsPage(QWidget):
             elif mode == "text":
                 filters = [Filter("Text Files", "*.txt;*.csv;*.tsv"), Filter("All Files", "*.*")]
                 default_ext = "txt"
+            elif mode == "pdf":
+                filters = [Filter("PDF Files", "*.pdf"), Filter("All Files", "*.*")]
+                default_ext = "pdf"
             else:
                 filters = [
-                    Filter("지원 파일", "*.xlsx;*.xlsm;*.xlsb;*.docx;*.txt;*.csv;*.tsv"),
+                    Filter("지원 파일", "*.xlsx;*.xlsm;*.xlsb;*.pdf;*.docx;*.txt;*.csv;*.tsv"),
                     Filter("Excel Files", "*.xlsx;*.xlsm;*.xlsb"),
+                    Filter("PDF Files", "*.pdf"),
                     Filter("Word Files", "*.docx"),
                     Filter("Text Files", "*.txt;*.csv;*.tsv"),
                     Filter("All Files", "*.*"),
@@ -498,7 +502,7 @@ class ContactsPage(QWidget):
 
     def _import_file_from_path(self, path: str, source_label: str) -> None:
         if not is_supported_contact_import_file(path):
-            QMessageBox.warning(self, "지원 형식 아님", "지원 확장자: .xlsx, .xlsm, .xlsb, .docx, .txt, .csv, .tsv")
+            QMessageBox.warning(self, "지원 형식 아님", "지원 확장자: .xlsx, .xlsm, .xlsb, .pdf, .docx, .txt, .csv, .tsv")
             return
         self._set_busy(True)
         self._on_status(f"{source_label} 읽는 중...")

@@ -106,7 +106,10 @@ class EditorToolsPage(QWidget):
         try:
             path = pick_open_file(
                 title="엑셀 파일 선택",
-                filters=[Filter("Excel Files", "*.xlsx;*.xlsm;*.xltx;*.xltm"), Filter("All Files", "*.*")],
+                filters=[
+                    Filter("Excel/PDF Files", "*.xlsx;*.xlsm;*.xltx;*.xltm;*.pdf"),
+                    Filter("All Files", "*.*"),
+                ],
                 default_ext="xlsx",
             )
         except Exception as e:
@@ -115,7 +118,7 @@ class EditorToolsPage(QWidget):
         if not path:
             return
         if not is_supported_excel_editor_file(path):
-            QMessageBox.warning(self, "지원 형식 아님", "지원 확장자: .xlsx, .xlsm, .xltx, .xltm")
+            QMessageBox.warning(self, "지원 형식 아님", "지원 확장자: .xlsx, .xlsm, .xltx, .xltm, .pdf")
             return
         self._set_busy(True)
         self._on_status("엑셀 편집기 로드 중...")

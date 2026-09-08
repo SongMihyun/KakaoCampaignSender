@@ -28,7 +28,7 @@ _HEADER_ALIASES: dict[str, set[str]] = {
 
 _DOCX_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 _TEXT_ENCODINGS = ("utf-8-sig", "utf-8", "cp949", "euc-kr")
-_SUPPORTED_EXTS = {".xlsx", ".xlsm", ".xlsb", ".docx", ".txt", ".csv", ".tsv"}
+_SUPPORTED_EXTS = {".xlsx", ".xlsm", ".xlsb", ".pdf", ".docx", ".txt", ".csv", ".tsv"}
 
 
 @dataclass
@@ -54,6 +54,8 @@ def import_contacts_file(path: str) -> ImportResult:
             raw_rows = _read_xlsx_rows(path)
         elif ext == ".xlsb":
             raw_rows = _read_xlsb_rows(path)
+        elif ext == ".pdf":
+            raw_rows = _read_pdf_rows(path)
         elif ext == ".docx":
             raw_rows = _read_docx_rows(path)
         elif ext in {".txt", ".csv", ".tsv"}:
@@ -62,7 +64,7 @@ def import_contacts_file(path: str) -> ImportResult:
             return ImportResult(
                 rows=[],
                 skipped=0,
-                errors=["지원하지 않는 파일 형식입니다. 지원 확장자: .xlsx, .xlsm, .xlsb, .docx, .txt, .csv, .tsv"],
+                errors=["지원하지 않는 파일 형식입니다. 지원 확장자: .xlsx, .xlsm, .xlsb, .pdf, .docx, .txt, .csv, .tsv"],
             )
     except Exception as e:
         return ImportResult(rows=[], skipped=0, errors=[f"파일 파싱 실패: {e}"])
@@ -92,6 +94,12 @@ def _read_xlsx_rows(path: str) -> list[list[str]]:
     for row in ws.iter_rows(values_only=True):
         rows.append([_normalize_cell(v) for v in row])
     return rows
+
+
+def _read_pdf_rows(path: str) -> list[list[str]]:
+    from backend.integrations.excel.pdf_table_reader import read_pdf_table_rows
+
+    return read_pdf_table_rows(path)
 
 
 _XLSB_HEADER_SCAN_ROWS = 50
